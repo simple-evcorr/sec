@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.7.4 - sec.man
-.\" Copyright (C) 2000-2013 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.7.5 - sec.man
+.\" Copyright (C) 2000-2014 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "June 2013" "SEC 2.7.4"
+.TH sec 1 "January 2014" "SEC 2.7.5"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -170,7 +170,8 @@ the
 field. This is done by substituting $1 with its current value which yields 
 .IR "Three SSH login failures within 1m for user risto" .
 SEC will then check if there already exists an event correlation operation
-identified with this string. If the operation is not found, SEC will create 
+identified with this string and triggered by the same rule. 
+If the operation is not found, SEC will create 
 a new operation for the user name risto, and the occurrence time of the input 
 event will be recorded into the operation. 
 Note that for event occurrence time SEC always uses the current time 
@@ -217,8 +218,34 @@ for *different* users within 1 minute.
 In order to avoid clashes between operations started by different rules, 
 operation ID contains not only the value set by the
 .I desc
-field, but also the rule file name and the rule number inside the file
-(see EVENT CORRELATION OPERATIONS section for more information).
+field, but also the rule file name and the rule number inside the file.
+For example, if the rule file /etc/sec/sshd.rules contains one rule
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from [\\d.]+ port \\d+ ssh2
+.br
+desc=Three SSH login failures within 1m for user $1
+.br
+action=pipe '%s' /bin/mail -s 'SSH login alert' root@localhost
+.br
+window=60
+.br
+thresh=3
+.PP
+and the event
+.PP
+Dec 16 16:24:59 myserver sshd[13685]: Failed password for risto from 10.12.2.5 port 41063 ssh2
+.PP
+is the first matching event for the above rule, this event will trigger
+a new event correlation operation with the ID
+.PP
+/etc/sec/sshd.rules | 0 | Three SSH login failures within 1m for user risto
+.PP
+(0 is the number assigned to the first rule in the file, 
+see EVENT CORRELATION OPERATIONS section for more information).
 .PP
 The following simple example demonstrates that event correlation schemes
 can be defined by combining several rules. In this example, two rules
@@ -285,7 +312,7 @@ prevents further matches for the same user name, since a synthetic event
 for <username> can match the rule only if the context alias 
 USER_<username>_COUNTED *does not* exist (as requested by the
 .I context
-field; see CONTEXT EXPRESSIONS section for more information). 
+field; see CONTEXTS AND CONTEXT EXPRESSIONS section for more information). 
 The operation started by the rule sends an e-mail warning to the local 
 root-user if 30 synthetic events have been observed within 1 minute (see the
 .I thresh
@@ -615,20 +642,56 @@ separating the option name from the option value. For example,
 and
 .B \-\-conf <file_pattern>
 options are equivalent.
-.SH CONFIGURATION FILE
-The SEC configuration file consists of rule definitions which are separated 
-by empty and comment lines.
+.SH CONFIGURATION FILES
+Each SEC configuration file consists of rule definitions which are separated 
+by empty lines, whitespace lines and/or comment lines.
 Each rule definition consists of keyword=value fields, one keyword and value 
-per line. Values are case sensitive only where character case is important 
-(like the values specifying regular expressions).
+per line. Values are case insensitive only where character case is not 
+important (like the values specifying rule types, e.g., 'Single' and 'single'
+are treated identically).
 The backslash character (\\) may be used at the end of a line to continue 
 the current rule field in the next line. 
 Lines which begin with the number sign (#) are treated as comments and 
 ignored (whitespace characters may precede #). Any comment line, 
-empty line, or end of file will terminate the preceding rule definition.
+empty line, whitespace line, or end of file will terminate the preceding 
+rule definition.
 For inserting comments into rule definitions, the
 .I rem
-keyword can be used.
+keyword can be used. For example, the following lines define two rules:
+.PP
+type=Single
+.br
+rem=this rule matches any line which contains \\
+    three consecutive A characters and writes the string \\
+    "three A characters were observed" to standard output
+.br
+ptype=SubStr
+.br
+pattern=AAA
+.br
+desc=Three A characters
+.br
+action=write - three A characters were observed
+.br
+# This comment line ends preceding rule definition.
+.br
+# The following rule works like the previous rule,
+.br
+# but looks for three consecutive B characters and
+.br
+# writes the string "three B characters were observed"
+.br
+# to standard output
+.br
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=BBB
+.br
+desc=Three B characters
+.br
+action=write - three B characters were observed
 .PP
 Apart from keywords that are part of rule definitions, 
 .I label
@@ -657,17 +720,150 @@ definition).
 .TP
 .IR DontCont " (default value)"
 after an event has matched the rule, search for matching rules ends 
-in the configuration file.
+in the *current* configuration file.
+.TP
+.I EndMatch
+after an event has matched the rule, search for matching rules ends 
+for *all* configuration files.
 .PP
-Before describing each rule type in detail, the following sections discuss
-patterns, pattern types and match variables, context expressions, and action 
-lists.
-.SS "PATTERNS, PATTERN TYPES AND MATCH VARIABLES"
+SEC rules from the same configuration file are matched against input 
+in the order they have been given in the file.
+For example, consider a configuration file which contains the following 
+rule sequence:
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=AAA
+.br
+rem=after this rule has matched, continue from last rule
+.br
+continue=GoTo lastRule
+.br
+desc=Three A characters
+.br
+action=write - three A characters were observed
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=BBB
+.br
+rem=after this rule has matched, don't consider following rules, \\
+    since 'continue' defaults to 'DontCont'
+.br
+desc=Three B characters
+.br
+action=write - three B characters were observed
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=CCC
+.br
+rem=after this rule has matched, continue from next rule
+.br
+continue=TakeNext
+.br
+desc=Three C characters
+.br
+action=write - three C characters were observed
+.PP
+label=lastRule
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=DDD
+.br
+desc=Three D characters
+.br
+action=write - three D characters were observed
+.PP
+For the input line "AAABBBCCCDDD", this ruleset writes strings
+"three A characters were observed" and "three D characters were observed"
+to standard output. If the input line is "BBBCCCDDD", the string
+"three B characters were observed" is written to standard output.
+For the input line "CCCDDD", strings "three C characters were observed"
+and "three D characters were observed" are sent to standard output, while
+the input line "DDD" produces the output string 
+"three D characters were observed".
+.PP
+If there are two or more configuration files, rule sequence from every file 
+is matched against input (unless explicitly specified otherwise). 
+For example, suppose SEC is started with the command line
+.PP
+/usr/bin/sec --input=- \\
+             --conf=/etc/sec/sec1.rules --conf=/etc/sec/sec2.rules
+.PP
+and the configuration file /etc/sec/sec1.rules has the following content:
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=AAA
+.br
+desc=Three A characters
+.br
+action=write - three A characters were observed
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=BBB
+.br
+continue=EndMatch
+.br
+desc=Three B characters
+.br
+action=write - three B characters were observed
+.PP
+Also, suppose the  configuration file /etc/sec/sec2.rules has the following 
+content:
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=CCC
+.br
+desc=Three C characters
+.br
+action=write - three C characters were observed
+.PP
+If SEC receives the line "AAABBBCCC" from standard input, rules from both
+configuration files are tried, and as a result, the strings
+"three A characters were observed" and "three C characters were observed"
+are written to standard output. Note that rules from /etc/sec/sec1.rules
+are tried first against the input line, since the option
+.B --conf=/etc/sec/sec1.rules 
+is given before 
+.B --conf=/etc/sec/sec2.rules 
+in the SEC command line (see also INPUT PROCESSING AND TIMING section for 
+a more detailed discussion).
+If SEC receives the line "BBBCCC" from standard input, the second rule
+from /etc/sec/sec1.rules produces a match, and the string
+"three B characters were observed" is written to standard output.
+Since the rule contains
+.I continue=EndMatch
+statement,
+the search for matching rules will end for all configuration files, and
+rules from /etc/sec/sec2.rules will not be not tried. Without this statement,
+the search for matching rules would continue in /etc/sec/sec2.rules,
+and the first rule would write the string "three C characters were observed"
+to standard output.
+.SH "PATTERNS, PATTERN TYPES AND MATCH VARIABLES"
 Patterns and pattern types are defined with 
 .I pattern*
 and
 .I ptype*
-fields.
+rule fields.
 Many pattern types define the number of lines 
 .I N 
 which the pattern matches (if 
@@ -1003,10 +1199,77 @@ set by the first pattern. If the pattern is a regular expression, all
 special characters inside substituted values are masked with the Perl
 .BR quotemeta ()
 function and the final expression is checked for correctness.
-.SS "CONTEXT EXPRESSIONS"
+.SH "CONTEXTS AND CONTEXT EXPRESSIONS"
+A SEC context is a memory based entity which has one or more names,
+a lifetime, and an event store. Also, an action list can be set up
+for a context which is executed immediately before the context expires.
+.PP
+For example, the action
+.I create MYCONTEXT 3600 (report MYCONTEXT /bin/mail root@localhost)
+creates the context 
+.B MYCONTEXT 
+which has a lifetime of 3600 seconds and empty event store.
+Also, immediately before 
+.B MYCONTEXT 
+expires and is dropped from memory, the action
+.I report MYCONTEXT /bin/mail root@localhost
+is executed which mails the event store of 
+.B MYCONTEXT 
+to root@localhost. 
+.PP
+Contexts can be used for event aggregation and reporting.
+Suppose the following actions are executed in this order:
+.PP
+create MYCONTEXT 
+.br
+add MYCONTEXT This is a test
+.br
+alias MYCONTEXT MYALIAS
+.br
+add MYALIAS This is another test
+.br
+report MYCONTEXT /bin/mail root@localhost
+.br
+delete MYALIAS
+.PP
+The first action creates the context 
+.B MYCONTEXT 
+with infinite lifetime
+and empty event store. The second action appends the string 
+"This is a test" to the event store of 
+.BR MYCONTEXT . 
+The third action
+sets up an alias name 
+.B MYALIAS 
+for the context (names 
+.B MYCONTEXT 
+and 
+.B MYALIAS
+refer to the same context data structure). The fourth action appends
+the string "This is another test" to the event store of the context.
+The fifth action writes the lines
+.PP
+This is a test
+.br
+This is another test
+.PP
+to the standard input of the
+.I /bin/mail root@localhost 
+command. The sixth action deletes the context data structure
+from memory and drops its names 
+.B MYCONTEXT 
+and 
+.BR MYALIAS .
+.PP
+Since contexts are accessible from all rules and event correlation operations,
+they can be used for data sharing and joining several rules into one event 
+correlation scheme.
+In order to check for the presence of contexts from rules,
+context expressions can be employed.
+.PP
 Context expressions are boolean expressions that are defined with the
 .I context*
-fields. Context expressions can be used for restricting the matches
+rule fields. Context expressions can be used for restricting the matches
 produced by patterns, since if the expression evaluates FALSE, the rule will
 not match an input event.
 .PP
@@ -1125,10 +1388,10 @@ input parameter $_[0] holds a reference to the hash of variable name-value
 pairs:
 .PP
 varset SSH && SSH :> ( sub { $_[0]->{"user"} eq "risto" } )
-.SS "ACTION LISTS"
+.SH "ACTIONS, ACTION LISTS AND ACTION LIST VARIABLES"
 Action lists are defined with the
 .I action*
-fields. An action list consists of action definitions that are separated 
+rule fields. An action list consists of action definitions that are separated 
 by semicolons. 
 Each action definition begins with a keyword specifying the action type. 
 Depending on the action type, parameters may follow, and non-constant
@@ -1136,6 +1399,26 @@ parameters may contain match variables.
 In order to use semicolons inside a non-constant parameter, 
 the parameter must be enclosed in parentheses (the outermost set of
 parentheses will be removed by SEC during configuration file parsing).
+.PP
+For example, the following action list consists of 
+.I delete
+and
+.I shellcmd
+actions:
+.PP
+delete MYCONTEXT; shellcmd (rm /tmp/sec1.tmp; rm /tmp/sec2.tmp)
+.PP
+The
+.I delete
+action deletes the context
+.BR MYCONTEXT ,
+while the
+.I shellcmd
+action executes the command line 
+.IR "rm /tmp/sec1.tmp; rm /tmp/sec2.tmp" .
+Since the command line contains a semicolon, it has been enclosed in
+parentheses, since otherwise the semicolon would be mistakenly considered
+a separator between two actions.
 .PP
 Apart from match variables, SEC supports 
 .I action list variables
@@ -1646,21 +1929,26 @@ otherwise terminates the execution of the entire action list.
 .PP
 .B Examples:
 .PP
+Follow the /var/log/trapd.log file and feed to SEC input all lines that are 
+appended to the file:
+.PP
 spawn /bin/tail -f /var/log/trapd.log
 .PP
-Follow the /var/log/trapd.log file and feed to SEC input all lines that are 
-appended to the file.
+Mail the timestamp and the value of the $0 variable to the local root:
 .PP
 pipe '%t: $0' /bin/mail -s "alert message" root@localhost
 .PP
-Mail the timestamp and the value of the $0 variable to the local root.
+Add the value of the $0 variable to the event store of the context 
+.BR "ftp_<the value of $1>" , 
+and set the context to expire after 30 minutes. 
+When the context expires, its event store will be mailed to the local root:
 .PP
 add ftp_$1 $0; set ftp_$1 1800 (report ftp_$1 /bin/mail root@localhost)
 .PP
-Add the value of the $0 variable to the event store of the context 
-.BR "ftp_<the value of $1>" . 
-Also extend the context's lifetime for 30 minutes, so that when the context
-expires, its event store will be mailed to the local root.
+Create a subroutine for weeding out comment lines from the input list, and 
+use this subroutine for removing comment lines from the event store of the 
+context 
+.BR C1 :
 .PP
 eval %funcptr ( sub { my(@buf) = split(/\\n/, $_[0]); \\
 .br
@@ -1668,13 +1956,12 @@ my(@ret) = grep(!/^#/, @buf); return @ret; } ); \\
 .br
 copy C1 %in; call %out %funcptr %in; fill C1 %out
 .PP
-Create a subroutine for weeding out comment lines from the input list, and 
-use this subroutine for removing comment lines from the event store of the 
-context 
-.BR C1 .
-.PP
 The following action list achieves the same goal as the previous action list
-with while and if actions:
+with 
+.I while 
+and 
+.I if 
+actions:
 .PP
 getsize %size C1; while %size ( shift C1 %event; \\
 .br
@@ -1683,7 +1970,7 @@ lcall %nocomment %event -> ( sub { $_[0] !~ /^#/ } ); \\
 if %nocomment ( add C1 %event ); \\
 .br
 lcall %size %size -> ( sub { $_[0]-1; } ) )
-.SS "OTHER ISSUES"
+.SH "PARSING ISSUES"
 As already noted, SEC context expressions and action lists may contain
 parentheses which are used for grouping and masking purposes. When SEC parses
 its configuration, it checks whether parentheses in context expressions and
@@ -1704,6 +1991,8 @@ by SEC during configuration file parsing). For example, the above action
 could be written as
 .PP
 action=eval %o (print "\\)";)
+.SH "RULE TYPES"
+This section provides a detailed discussion of SEC rule types.
 .SS "SINGLE RULE"
 The
 .B Single
@@ -1718,7 +2007,7 @@ fixed to Single (value is case insensitive, so single or sIngLe can be
 used instead).
 .TP 
 .IR continue " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, 
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
 values are case insensitive). 
 .TP 
 .I ptype
@@ -1839,8 +2128,8 @@ The SingleWithScript rule supports the following fields:
 fixed to SingleWithScript (value is case insensitive).
 .TP 
 .IR continue " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive).
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive).
 .TP 
 .I ptype
 pattern type (value is case insensitive).
@@ -1913,10 +2202,10 @@ field.
 When an event has matched the rule, SEC evaluates the operation description 
 string given with the
 .I desc
-field. If the operation for the given string does not exist, SEC will create
-it with the lifetime of T seconds, and the operation immediately executes an 
-action list. If the operation exists, it consumes the matching event without 
-any action. 
+field. If the operation for the given string and rule does not exist, 
+SEC will create it with the lifetime of T seconds, and the operation 
+immediately executes an action list. If the operation exists, it consumes 
+the matching event without any action. 
 .PP
 The SingleWithSuppress rule supports the following fields:
 .TP 
@@ -1924,8 +2213,8 @@ The SingleWithSuppress rule supports the following fields:
 fixed to SingleWithSuppress (value is case insensitive).
 .TP 
 .IR continue " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive).
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive).
 .TP 
 .I ptype
 pattern type (value is case insensitive).
@@ -2002,10 +2291,10 @@ and
 field, SEC evaluates the operation description string given with the
 .I desc
 field. 
-If the operation for the given string exists, it consumes the matching event 
-without any action. If the operation does not exist, SEC will create
-it with the lifetime of T seconds, and the operation immediately executes an 
-action list defined by the
+If the operation for the given string and rule exists, it consumes 
+the matching event without any action. If the operation does not exist, 
+SEC will create it with the lifetime of T seconds, and the operation 
+immediately executes an action list defined by the
 .I action
 field. SEC will also copy the match conditions given with the 
 .I pattern2
@@ -2029,8 +2318,8 @@ The Pair rule supports the following fields:
 fixed to Pair (value is case insensitive).
 .TP 
 .IR continue " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive). Specifies the point-of-continue after a match by
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive). Specifies the point-of-continue after a match by
 .I pattern
 and
 .IR context .
@@ -2048,7 +2337,8 @@ variable map for
 .IR pattern .
 .TP 
 .IR context " (optional)"
-context expression.
+context expression, evaluated together with
+.IR pattern .
 .TP 
 .I desc
 operation description string.
@@ -2057,8 +2347,8 @@ operation description string.
 action list.
 .TP
 .IR continue2 " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive). Specifies the point-of-continue after a match by
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive). Specifies the point-of-continue after a match by
 .I pattern2
 and
 .IR context2 .
@@ -2076,7 +2366,8 @@ variable map for
 .IR pattern2 .
 .TP 
 .IR context2 " (optional)"
-context expression.
+context expression, evaluated together with
+.IR pattern2 .
 .TP 
 .I desc2
 format string that sets the %s variable for
@@ -2137,9 +2428,42 @@ the server to root@localhost.
 The operation will then run for 3600 seconds and silently consume further 
 "server not responding" messages for the same server. If this operation
 observes "server OK" message for the *same* server, it will log the message
-"Server <servername> is responding again" and finish (because the
+"Server <servername> is responding again" and finish. 
+.PP
+For example, if SEC observes the following event at 22:39:48
+.PP
+Dec 18 22:39:48 test kernel: nfs: server box1 not responding, still trying
+.PP
+an event correlation operation is created for server box1 which issues
+an e-mail warning about this server immediately. After that, the operation 
+will run for 3600 seconds (until 23:39:48), waiting for an event which would 
+contain the substring
+"kernel: nfs: server box1 OK"
+(because the
 .I pattern2
-field contains the  $1 match variable which evaluates to the server name).
+field contains the $1 match variable which evaluates to the server name).
+.PP
+If any further error messages appear for server box1 during the 3600
+second lifetime of the operation, e.g.,
+.PP
+Dec 18 22:40:28 test kernel: nfs: server box1 not responding, still trying
+.br
+Dec 18 22:41:09 test kernel: nfs: server box1 not responding, still trying
+.PP
+these messages will be silently consumed by the operation. 
+If before its expiration the operation observes an event which contains 
+the substring  "kernel: nfs: server box1 OK", e.g.,
+.PP
+Dec 18 22:42:27 test kernel: nfs: server box1 OK
+.PP
+the operation will log the message "Server box1 is responding again" 
+and terminate immediately.
+If no such message appears during the 3600 second lifetime of the operation,
+the operation will expire without taking any action. Please note that if the
+.I window
+field would be either removed from the rule definition or set to 0, 
+the operation would never silently expire, but would terminate only after 
+observing an event which contains the substring  "kernel: nfs: server box1 OK".
 .SS "PAIRWITHWINDOW RULE"
 The
 .B PairWithWindow
@@ -2155,9 +2479,9 @@ and
 field, SEC evaluates the operation description string given with the
 .I desc
 field. 
-If the operation for the given string exists, it consumes the matching event 
-without any action. If the operation does not exist, SEC will create
-it with the lifetime of T seconds. 
+If the operation for the given string and rule exists, it consumes 
+the matching event without any action. If the operation does not exist, 
+SEC will create it with the lifetime of T seconds. 
 SEC will also copy the match conditions given with the 
 .I pattern2
 and
@@ -2184,8 +2508,8 @@ The PairWithWindow rule supports the following fields:
 fixed to PairWithWindow (value is case insensitive).
 .TP 
 .IR continue " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive). Specifies the point-of-continue after a match by
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive). Specifies the point-of-continue after a match by
 .I pattern
 and
 .IR context .
@@ -2203,7 +2527,8 @@ variable map for
 .IR pattern .
 .TP 
 .IR context " (optional)"
-context expression.
+context expression, evaluated together with
+.IR pattern .
 .TP 
 .I desc
 operation description string.
@@ -2212,8 +2537,8 @@ operation description string.
 action list.
 .TP
 .IR continue2 " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive). Specifies the point-of-continue after a match by
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive). Specifies the point-of-continue after a match by
 .I pattern2
 and
 .IR context2 .
@@ -2231,7 +2556,8 @@ variable map for
 .IR pattern2 .
 .TP 
 .IR context2 " (optional)"
-context expression.
+context expression, evaluated together with
+.IR pattern2 .
 .TP 
 .I desc2
 format string that sets the %s variable for
@@ -2288,22 +2614,66 @@ Dec 27 19:00:27 test sshd[10526]: Accepted password for risto from 10.1.2.7 port
 .PP
 When an SSH login failure is observed for a user name and a source IP address, 
 an operation is created for this user name and IP address combination which 
-expects a successful login for the *same* user name *and* IP address during 60 
-seconds.
-For example, when the rule matches the event
-.PP
-Dec 27 19:00:24 test sshd[10526]: Failed password for risto from 10.1.2.7 port 52622 ssh2
-.PP
-an operation is started which expects an event matching the regular
-expression
-.PP
-sshd\\[\\d+\\]: Accepted .+ for risto from 10\\.1\\.2\\.7 port \\d+ ssh2
-.PP
-If the user fails to log in from the same IP address during 60 seconds, 
-the operation sends an e-mail warning to root@localhost before finishing, 
+will expect a successful login for the *same* user name and *same* IP address 
+during 60 seconds.
+If the user will not log in from the same IP address during 60 seconds, 
+the operation will send an e-mail warning to root@localhost before finishing, 
 otherwise it will log the message 
 "SSH login successful for <username> from <ipaddress> after initial failure" 
 and finish.
+.PP
+Suppose the following events are generated by an SSH daemon,
+and each event timestamp reflects the time SEC observes the event:
+.PP
+Dec 30 13:02:01 test sshd[30517]: Failed password for risto from 10.1.2.7 port 42172 ssh2
+.br
+Dec 30 13:02:30 test sshd[30810]: Failed password for root from 192.168.1.104 port 46125 ssh2
+.br
+Dec 30 13:02:37 test sshd[30517]: Failed password for risto from 10.1.2.7 port 42172 ssh2
+.br
+Dec 30 13:02:59 test sshd[30810]: Failed password for root from 192.168.1.104 port 46125 ssh2
+.br
+Dec 30 13:03:04 test sshd[30810]: Accepted password for root from 192.168.1.104 port 46125 ssh2
+.PP
+When the first event is observed at 13:02:01, an operation is started for 
+user risto and IP address 10.1.2.7 which will expect a successful login
+for risto from 10.1.2.7. The operation will run for 60 seconds,
+waiting for an event which would match the regular expression
+.PP
+sshd\\[\\d+\\]: Accepted .+ for risto from 10\\.1\\.2\\.7 port \\d+ ssh2
+.PP
+When the second event is observed at 13:02:30, another operation is started
+for user root and IP address 192.168.1.104 which will expect root
+to log in successfully from 192.168.1.104. This operation will run for
+60 seconds, waiting for an event matching the regular expression
+.PP
+sshd\\[\\d+\\]: Accepted .+ for root from 192\\.168\\.1\\.104 port \\d+ ssh2
+.PP
+The third event at 13:02:37 represents a second login failure for user
+risto and IP address 10.1.2.7, and is silently consumed by the first 
+operation. Likewise, the fourth event at 13:02:59 is silently consumed
+by the second operation.
+The first operation will run until 13:03:01 and then expire without seeing 
+a successful login for risto from 10.1.2.7. Before terminating, the operation 
+will send an e-mail warning to root@localhost that user risto has not
+managed to log in from 10.1.2.7 during one minute.
+At 13:03:04, the second operation will observe an event which matches
+its regular expression
+.PP
+sshd\\[\\d+\\]: Accepted .+ for root from 192\\.168\\.1\\.104 port \\d+ ssh2
+.PP
+After seeing this event, the operation will log the message
+"SSH login successful for root from 192.168.1.104 after initial failure"
+and terminate immediately.
+Please note that the match by the regular expression 
+.PP
+sshd\\[\\d+\\]: Accepted .+ for root from 192\\.168\\.1\\.104 port \\d+ ssh2
+.PP
+sets the $1 match variable to 1 and unsets $2. Therefore, the %1 and %2
+match variables have to be used in the 
+.I desc2
+field, in order to refer to the original values of $1 (root) and $2
+(192.168.1.104) when the operation was created.
 .SS SINGLEWITHTHRESHOLD RULE
 The
 .B SingleWithThreshold
@@ -2318,9 +2688,9 @@ field, respectively.
 When an event has matched the rule, SEC evaluates the operation description 
 string given with the 
 .I desc 
-field. If the operation for the given string does not exist, SEC will create 
-it with the lifetime of T seconds. The operation will memorize the occurrence 
-time of the event (current time as returned by the
+field. If the operation for the given string and rule does not exist, 
+SEC will create it with the lifetime of T seconds. The operation will 
+memorize the occurrence time of the event (current time as returned by the
 .BR time (2)
 system call), and compare the number of memorized occurrence times with 
 the threshold N. If the operation has observed N events, it executes the
@@ -2342,8 +2712,8 @@ The SingleWithThreshold rule supports the following fields:
 fixed to SingleWithThreshold (value is case insensitive).
 .TP 
 .IR continue " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive).
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive).
 .TP 
 .I ptype
 pattern type (value is case insensitive).
@@ -2404,36 +2774,38 @@ login failure events. Each operation counts events for one user name, and
 if the operation has observed three login failures within 60 seconds,
 it sends an e-mail warning to root@localhost. 
 .PP
-If the rule matches five login failure events for different users at
-the following times:
+Suppose the following events are generated by an SSH daemon,
+and each event timestamp reflects the time SEC observes the event:
 .PP
-Dec 28 01:42:21 PM UTC - login failure for risto
+Dec 28 01:42:21 test sshd[28132]: Failed password for risto from 10.1.2.7 port 42172 ssh2
 .br
-Dec 28 01:43:10 PM UTC - login failure for risto
+Dec 28 01:43:10 test sshd[28132]: Failed password for risto from 10.1.2.7 port 42172 ssh2
 .br
-Dec 28 01:43:29 PM UTC - login failure for risto
+Dec 28 01:43:29 test sshd[28132]: Failed password for risto from 10.1.2.7 port 42172 ssh2
 .br
-Dec 28 01:44:00 PM UTC - login failure for risto2
+Dec 28 01:44:00 test sshd[28149]: Failed password for risto2 from 10.1.2.7 port 42176 ssh2
 .br
-Dec 28 01:44:03 PM UTC - login failure for risto
+Dec 28 01:44:03 test sshd[28211]: Failed password for risto from 10.1.2.7 port 42192 ssh2
 .br
-Dec 28 01:44:07 PM UTC - login failure for risto
+Dec 28 01:44:07 test sshd[28211]: Failed password for risto from 10.1.2.7 port 42192 ssh2
 .PP
-then a counting operation is started for the user risto at 
-Dec 28 01:42:21 PM UTC.
-At Dec 28 01:43:22 PM UTC, the beginning of the event correlation 
-window is moved to Dec 28 01:43:10 PM UTC for this operation. 
-At Dec 28 01:44:00 PM UTC, a second counting operation is started
-for the user risto2.
-The threshold condition for the first operation will be satisfied at 
-Dec 28 01:44:03 PM UTC (since the operation 
-has seen three events within 53 seconds) and thus an e-mail
-warning will be issued. Finally, the event occurring at 
-Dec 28 01:44:07 PM UTC will be consumed silently by the first 
-operation (the operation will run until Dec 28 01:44:10 PM UTC).
-If there will be no further login failure events for the user risto2,
-the second operation will exist until Dec 28 01:45:00 PM UTC without
-taking any action.
+When the first event is observed at 01:42:21, a counting operation is started 
+for user risto, with its event correlation window ending at 01:43:21.
+Since by 01:43:21 two SSH login failures for user risto have occurred, 
+the threshold condition remains unsatisfied for the operation. 
+Therefore, the beginning of its event correlation window will be moved 
+to 01:43:10
+(the occurrence time of the second event), leaving the first event outside 
+the window.
+At 01:44:00, another counting operation is started for user risto2.
+The threshold condition for the first operation will become satisfied 
+at 01:44:03 (since the operation has seen three login failure events for
+user risto within 60 seconds), 
+and thus an e-mail warning will be issued. Finally, the event occurring 
+at 01:44:07 will be consumed silently by the first operation (the operation 
+will run until 01:44:10).
+Since there will be no further login failure events for user risto2,
+the second operation will exist until 01:45:00 without taking any action.
 .SS "SINGLEWITH2THRESHOLDS RULE"
 The
 .B SingleWith2Thresholds
@@ -2451,9 +2823,9 @@ field, respectively.
 When an event has matched the rule, SEC evaluates the operation description 
 string given with the 
 .I desc 
-field. If the operation for the given string does not exist, SEC will create 
-it with the lifetime of T1 seconds. The operation will memorize the occurrence 
-time of the event (current time as returned by the
+field. If the operation for the given string and rule does not exist, 
+SEC will create it with the lifetime of T1 seconds. The operation will 
+memorize the occurrence time of the event (current time as returned by the
 .BR time (2)
 system call), and compare the number of memorized occurrence times with 
 the threshold N1. If the operation has observed N1 events, it executes the
@@ -2474,8 +2846,8 @@ The SingleWith2Thresholds rule supports the following fields:
 fixed to SingleWith2Thresholds (value is case insensitive).
 .TP 
 .IR continue " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive).
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive).
 .TP 
 .I ptype
 pattern type (value is case insensitive).
@@ -2555,8 +2927,44 @@ a counting operation for this router which sends an e-mail warning to
 root@localhost if another such message is received from the same router
 within 300 seconds. After sending the warning, the operation will continue to
 run until no SYS-3-CPUHOG syslog messages have been received from the router 
-for 3600 seconds. When this condition is satisfied, the operation will log 
+for 3600 seconds. When this condition becomes satisfied, the operation will log 
 the message "Router <routername> CPU load has been normal for 1h" and finish.
+.PP
+Suppose the following events are generated by a router,
+and each event timestamp reflects the time SEC observes the event:
+.PP
+Dec 30 12:23:25 router1.mydomain Router1: %SYS-3-CPUHOG: cpu is hogged
+.br
+Dec 30 12:25:38 router1.mydomain Router1: %SYS-3-CPUHOG: cpu is hogged
+.br
+Dec 30 12:28:53 router1.mydomain Router1: %SYS-3-CPUHOG: cpu is hogged
+.PP
+When the first event is observed at 12:23:25, a counting operation is started
+for router Router1. The appearance of the second event at 12:25:38
+fulfills the threshold condition given with the 
+.I thresh
+and
+.I window
+fields (two events have been observed within 300 seconds). Therefore, 
+the operation will send an e-mail warning about the CPU overload of Router1
+to root@localhost. 
+.PP
+After that, the operation will start another counting round, expecting to see 
+no SYS-3-CPUHOG events (since 
+.IR thresh2=0 )
+for Router1 during the following 3600 seconds (the beginning of 
+the operation's event correlation window will be moved to 12:25:38 for 
+the second counting round).
+Since the appearance of the third event at 12:28:53 violates the threshold 
+condition given with the
+.I thresh2
+and
+.I window2
+fields, the beginning of the event correlation window will be moved 
+to 12:28:53.
+Since there will be no further SYS-3-CPUHOG messages for Router1,
+the operation will run until 13:28:53 and then expire, logging the message
+"Router Router1 CPU load has been normal for 1h" before finishing.
 .SS EVENTGROUP RULE
 The
 .B EventGroup
@@ -2577,9 +2985,9 @@ the SingleWithThreshold operation.
 When an event has matched the rule, SEC evaluates the operation description 
 string given with the 
 .I desc 
-field. If the operation for the given string does not exist, SEC will create 
-it with the lifetime of T seconds. The operation will memorize the occurrence 
-time of the event (current time as returned by the
+field. If the operation for the given string and rule does not exist, 
+SEC will create it with the lifetime of T seconds. The operation will 
+memorize the occurrence time of the event (current time as returned by the
 .BR time (2)
 system call), and compare the number of memorized occurrence times for each
 eK with the threshold cK. 
@@ -2632,8 +3040,8 @@ The EventGroup rule supports the following fields:
 (value is case insensitive, N defaults to 1).
 .TP 
 .IR continue " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive). Specifies the point-of-continue after a match by
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive). Specifies the point-of-continue after a match by
 .I pattern
 and
 .IR context .
@@ -2651,7 +3059,8 @@ variable map for
 .IR pattern .
 .TP 
 .IR context " (optional)"
-context expression.
+context expression, evaluated together with
+.IR pattern .
 .TP 
 .IR count " (optional)"
 action list for execution after a match by
@@ -2669,8 +3078,8 @@ and
 .B ...
 .TP 
 .IR continueN " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive). Specifies the point-of-continue after a match by
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive). Specifies the point-of-continue after a match by
 .I patternN
 and
 .IR contextN .
@@ -2688,7 +3097,8 @@ variable map for
 .IR patternN .
 .TP 
 .IR contextN " (optional)"
-context expression.
+context expression, evaluated together with
+.IR patternN .
 .TP 
 .IR countN " (optional)"
 action list for execution after a match by
@@ -2718,7 +3128,7 @@ action list.
 .IR slide " (optional)"
 action list.
 .TP
-.I multact " (optional)"
+.IR multact " (optional)"
 Yes or No (values are case insensitive, default is No).
 .TP 
 .I window
@@ -2739,6 +3149,129 @@ and
 fields.
 .PP
 .B Examples:
+.PP
+The following example rule cross-correlates iptables events,
+Apache web server access log messages with 4xx response codes,
+and SSH login failure events:
+.PP
+type=EventGroup3
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (?:invalid user )?\\S+ from ([\\d.]+) port \\d+ ssh2
+.br
+thresh=2
+.br
+ptype2=RegExp
+.br
+pattern2=^([\\d.]+) \\S+ \\S+ \\[.+?\\] ".+? HTTP\\/[\\d.]+" 4\\d+
+.br
+thresh2=3
+.br
+ptype3=RegExp
+.br
+pattern3=kernel: iptables:.* SRC=([\\d.]+)
+.br
+thresh3=5
+.br
+desc=Repeated probing from host $1
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=120
+.PP
+The rule starts an event correlation operation for an IP address if SSH login
+failure event, iptables event, or Apache 4xx event is observed 
+for that IP address. The operation sends an e-mail warning to root@localhost
+if within 120 seconds three threshold conditions are satisfied for the IP
+address it tracks -- 
+(1) at least two SSH login failure events have occurred for this client IP,
+(2) at least three Apache 4xx events have occured for this client IP, 
+(3) at least five iptables events have been observed for this source IP. 
+.PP
+Suppose the following events occur, and each event timestamp reflects 
+the time SEC observes the event: 
+.PP
+192.168.1.104 - - [05/Jan/2014:01:11:22 +0200] "GET /test.html HTTP/1.1" 404 286 "-" "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:26.0) Gecko/20100101 Firefox/26.0"
+.br
+Jan  5 01:12:52 localhost kernel: iptables: IN=eth0 OUT= MAC=08:00:27:8e:a1:3a:00:1d:e0:7e:89:b1:08:00 SRC=192.168.1.104 DST=192.168.1.107 LEN=60 TOS=0x10 PREC=0x00 TTL=64 ID=48422 DF PROTO=TCP SPT=46351 DPT=21 WINDOW=29200 RES=0x00 SYN URGP=0 
+.br
+Jan  5 01:12:53 localhost kernel: iptables: IN=eth0 OUT= MAC=08:00:27:8e:a1:3a:00:1d:e0:7e:89:b1:08:00 SRC=192.168.1.104 DST=192.168.1.107 LEN=60 TOS=0x10 PREC=0x00 TTL=64 ID=48423 DF PROTO=TCP SPT=46351 DPT=21 WINDOW=29200 RES=0x00 SYN URGP=0 
+.br
+Jan  5 01:13:01 localhost kernel: iptables: IN=eth0 OUT= MAC=08:00:27:8e:a1:3a:00:1d:e0:7e:89:b1:08:00 SRC=192.168.1.104 DST=192.168.1.107 LEN=60 TOS=0x10 PREC=0x00 TTL=64 ID=20048 DF PROTO=TCP SPT=44963 DPT=23 WINDOW=29200 RES=0x00 SYN URGP=0 
+.br
+Jan  5 01:13:02 localhost kernel: iptables: IN=eth0 OUT= MAC=08:00:27:8e:a1:3a:00:1d:e0:7e:89:b1:08:00 SRC=192.168.1.104 DST=192.168.1.107 LEN=60 TOS=0x10 PREC=0x00 TTL=64 ID=20049 DF PROTO=TCP SPT=44963 DPT=23 WINDOW=29200 RES=0x00 SYN URGP=0 
+.br
+Jan  5 01:13:08 localhost kernel: iptables: IN=eth0 OUT= MAC=08:00:27:8e:a1:3a:00:1d:e0:7e:89:b1:08:00 SRC=192.168.1.104 DST=192.168.1.107 LEN=60 TOS=0x10 PREC=0x00 TTL=64 ID=36362 DF PROTO=TCP SPT=56918 DPT=25 WINDOW=29200 RES=0x00 SYN URGP=0 
+.br
+Jan  5 01:13:09 localhost kernel: iptables: IN=eth0 OUT= MAC=08:00:27:8e:a1:3a:00:1d:e0:7e:89:b1:08:00 SRC=192.168.1.104 DST=192.168.1.107 LEN=60 TOS=0x10 PREC=0x00 TTL=64 ID=36363 DF PROTO=TCP SPT=56918 DPT=25 WINDOW=29200 RES=0x00 SYN URGP=0
+.br
+192.168.1.104 - - [05/Jan/2014:01:13:51 +0200] "GET /test.html HTTP/1.1" 404 286 "-" "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:26.0) Gecko/20100101 Firefox/26.0"
+.br
+192.168.1.104 - - [05/Jan/2014:01:13:54 +0200] "GET /test.html HTTP/1.1" 404 286 "-" "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:26.0) Gecko/20100101 Firefox/26.0"
+.br
+192.168.1.104 - - [05/Jan/2014:01:14:00 +0200] "GET /login.html HTTP/1.1" 404 287 "-" "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:26.0) Gecko/20100101 Firefox/26.0"
+.br
+192.168.1.104 - - [05/Jan/2014:01:14:03 +0200] "GET /login.html HTTP/1.1" 404 287 "-" "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:26.0) Gecko/20100101 Firefox/26.0"
+.br
+192.168.1.104 - - [05/Jan/2014:01:14:03 +0200] "GET /login.html HTTP/1.1" 404 287 "-" "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:26.0) Gecko/20100101 Firefox/26.0"
+.br
+Jan  5 01:14:11 localhost sshd[1810]: Failed password for root from 192.168.1.104 port 46125 ssh2
+.br
+Jan  5 01:14:12 localhost sshd[1810]: Failed password for root from 192.168.1.104 port 46125 ssh2
+.br
+Jan  5 01:14:18 localhost sshd[1822]: Failed password for root from 192.168.1.104 port 46126 ssh2
+.br
+Jan  5 01:14:19 localhost sshd[1822]: Failed password for root from 192.168.1.104 port 46126 ssh2
+.br
+192.168.1.104 - - [05/Jan/2014:01:14:34 +0200] "GET /test.html HTTP/1.1" 404 286 "-" "Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:26.0) Gecko/20100101 Firefox/26.0"
+.PP
+The Apache 4xx event at 01:11:22 starts an event correlation operation 
+for 192.168.1.104 which has the event correlation window of 120 seconds,  
+thus ending at 01:13:22.
+Between 01:12:52 and 01:13:09, six iptables events appear for 192.168.1.104,
+and the appearance of the fifth event at 01:13:08 fulfills the third threshold
+condition (within 120 seconds, at least five iptables events have been
+observed). 
+.PP
+Since by 01:13:22 (the end of the event correlation window) no additional
+events have occurred, the first and second threshold condition
+remain unsatisfied. 
+Therefore, the beginning of the event correlation window will be moved 
+to 01:12:52
+(the occurrence time of the earliest event which is at most 120 seconds old).
+As a result, the end of the window will move from 01:13:22 to 01:14:52.
+The only event which is left outside the window is the Apache 4xx event
+at 01:11:22, and thus the threshold condition for iptables events 
+remains satisfied.
+.PP
+Between 01:13:51 and 01:14:03, five Apache 4xx events occur, and the appearance
+of the third event at 01:14:00 fulfills the second threshold condition
+(within 120 seconds, at least three Apache 4xx events have been observed).
+These events are followed by four SSH login failure events which occur
+between 01:14:11 and 01:14:19. The appearance of the second event at 01:14:12 
+fulfills the first threshold condition
+(within 120 seconds, at least two SSH login failure events have been observed). 
+Since at this particular moment (01:14:12) the other two conditions are also 
+fulfilled, the operation sends an e-mail warning about 192.168.1.104 
+to root@localhost. 
+After that, the operation silently consumes all further matching events 
+for 192.168.1.104 until 01:14:52, and then terminates.
+.PP
+Please note that if the above rule definition would contain
+.I multact=yes
+statement, the operation would continue sending e-mails at each matching 
+event after 01:14:12, provided that all threshold conditions are satisfied.
+Therefore, the operation would send three additional e-mails at 01:14:18,
+01:14:19, and 01:14:34. 
+Also, the operation would not terminate after its window ends at 01:14:52,
+but would rather slide the window forward and expect new events.
+At the occurence of any iptables, SSH login failure or Apache 4xx event
+for 192.168.1.104, the operation would produce a warning e-mail
+if all threshold conditions are fulfilled.
+.PP
+The following example rule cross-correlates iptables events and SSH login 
+events:
 .PP
 type=EventGroup3
 .br
@@ -2776,27 +3309,52 @@ end=delete OPER_$+{ip}
 .br
 window=120
 .PP
-This rule runs event correlation operations for processing iptables and SSH
-login events, e.g.,
-.PP
-Dec 27 19:00:06 test kernel: iptables: IN=eth0 OUT= MAC=00:13:72:8a:83:d2:00:1b:25:07:e2:1b:08:00 SRC=10.1.2.7 DST=10.2.5.5 LEN=60 TOS=0x00 PREC=0x00 TTL=62 ID=1881 DF PROTO=TCP SPT=34342 DPT=23 WINDOW=5840 RES=0x00 SYN URGP=0
-.br
-Dec 27 19:00:24 test sshd[10526]: Failed password for risto from 10.1.2.7 port 52622 ssh2
-.br
-Dec 27 19:00:27 test sshd[10526]: Accepted password for risto from 10.1.2.7 port 52622 ssh2
-.PP
 The rule starts an event correlation operation for an IP address if SSH login
 failure or iptables event was observed for that IP address. The operation 
-exists for 120 seconds (since when the event correlation window is about to 
-slide, the operation terminates itself with the
+exists for 120 seconds (since when the event correlation window slides 
+forward, the operation terminates itself with the
 .I reset 
 action as specified with the
 .I slide
 field).
 The operation sends an e-mail warning to root@localhost if within 120 seconds 
-two conditions hold for the IP address it tracks -- at least one iptables 
-event was observed for the IP *and* and least one login failure for a user 
-which was followed by a successful login for the same user.
+three threshold conditions are satisfied for the IP address it tracks -- 
+(1) at least one iptables event has been observed for this source IP, 
+(2) at least one SSH login failure has been observed for this client IP, 
+(3) at least one successful SSH login has been observed for this client IP 
+and for some user, provided that the operation has previously observed
+an SSH login failure for the same user and same client IP.
+.PP
+Suppose the following events occur, and each event timestamp reflects 
+the time SEC observes the event: 
+.PP
+Dec 27 19:00:06 test kernel: iptables: IN=eth0 OUT= MAC=00:13:72:8a:83:d2:00:1b:25:07:e2:1b:08:00 SRC=10.1.2.7 DST=10.2.5.5 LEN=60 TOS=0x00 PREC=0x00 TTL=62 ID=1881 DF PROTO=TCP SPT=34342 DPT=23 WINDOW=5840 RES=0x00 SYN URGP=0
+.br
+Dec 27 19:00:14 test sshd[10520]: Accepted password for root from 10.1.2.7 port 52609 ssh2
+.br
+Dec 27 19:00:24 test sshd[10526]: Failed password for risto from 10.1.2.7 port 52622 ssh2
+.br
+Dec 27 19:00:27 test sshd[10526]: Accepted password for risto from 10.1.2.7 port 52622 ssh2
+.PP
+The iptables event at 19:00:06 starts an event correlation operation 
+for 10.1.2.7 which has the event correlation window of 120 seconds.
+Immediately after the operation has been started, it creates the context 
+OPER_10.1.2.7.
+The second event at 19:00:14 does not match the rule, since
+the context LOGIN_FAILED_root_10.1.2.7 does not exist.
+The third event at 19:00:24 matches the rule, and the operation which
+is running for 10.1.2.7 sets up the alias name LOGIN_FAILED_risto_10.1.2.7 
+for the context OPER_10.1.2.7.
+Finally, the fourth event at 19:00:27 matches the rule, since the context
+LOGIN_FAILED_risto_10.1.2.7 exists, and the event is therefore processed
+by the operation (the presence of the context indicates that the operation
+has previously observed a login failure for user risto from 10.1.2.7).
+At this particular moment (19:00:27), all three threshold conditions for
+the operation are fulfilled, and therefore it sends an e-mail warning 
+about 10.1.2.7 to root@localhost. After that, the operation silently consumes 
+all further matching events for 10.1.2.7 until 19:02:06, and then terminates. 
+Immediately before termination, the operation deletes the context OPER_10.1.2.7
+which also drops its alias name LOGIN_FAILED_risto_10.1.2.7.
 .PP
 .SS "SUPPRESS RULE"
 The
@@ -3003,8 +3561,8 @@ The Jump rule supports the following fields:
 fixed to Jump (value is case insensitive).
 .TP 
 .IR continue " (optional)"
-TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
-insensitive).
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive).
 .TP 
 .I ptype
 pattern type (value is case insensitive).
@@ -3126,16 +3684,17 @@ type=Options
 joincfset=linux solaris
 .SH EVENT CORRELATION OPERATIONS
 In order to identify event correlation operations,
-SEC assigns a key to every operation that is composed from the configuration 
-file name, the rule ID, and the operation description string
+SEC assigns an ID to every operation that is composed from the configuration 
+file name, the rule number, and the operation description string
 (defined by the
 .I desc
 field of the rule).
-If there are N rules in the configuration file, the rule IDs belong to
-the range 0..N-1, and the ID of the k-th rule is k-1.
-Note that since the configuration file name and rule ID are part of the key,
-different rules can start operations with identical description strings
-without a danger of a clash.
+If there are N rules in the configuration file, the rule numbers belong to
+the range 0..N-1, and the number of the k-th rule is k-1.
+Note that since the configuration file name and rule number are part of 
+the operation ID, different rules can have identical
+.I desc
+fields without a danger of a clash between operations.
 .PP
 For example, if the configuration file my.conf contains only one rule
 .PP
@@ -3153,17 +3712,17 @@ window=60
 .br
 thresh=3
 .PP
-then the ID of this rule is 0.
+then the number of this rule is 0.
 When this rule matches an input event "user admin login failure on tty1", 
 the 
 .I desc
 field yields an operation description string
 .IR "Repeated login failures for user admin on tty1" , 
-and the event will be processed by the operation with the following key:
+and the event will be processed by the operation with the following ID:
 .PP
 my.conf | 0 | Repeated login failures for user admin on tty1
 .PP
-(If the operation for this key does not exist, SEC will start it.)
+(If the operation for this ID does not exist, SEC will start it.)
 By tuning the
 .I desc
 field of the rule, the scope of individual event correlation operations can 
@@ -3202,10 +3761,88 @@ and
 .I reset
 actions only work for operations started by the rules from the same 
 configuration file.
+.PP
+For example, consider the configuration file /etc/sec/sshd.rules that 
+contains the following rules:
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from [\\d.]+ port \\d+ ssh2
+.br
+desc=Three SSH login failures within 1m for user $1
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=60
+.br
+thresh=3
+.PP
+type=Single
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Accepted .+ for (\\S+) from [\\d.]+ port \\d+ ssh2
+.br
+desc=SSH login successful for user $1
+.br
+action=reset -1 Three SSH login failures within 1m for user $1
+.PP
+Suppose the following events are generated by an SSH daemon, and each
+event timestamp reflects the time SEC observes the event:
+.PP
+Dec 29 15:00:03 test sshd[14129]: Failed password for risto from 10.1.2.7 port 31312 ssh2
+.br
+Dec 29 15:00:08 test sshd[14129]: Failed password for risto from 10.1.2.7 port 31312 ssh2
+.br
+Dec 29 15:00:17 test sshd[14129]: Accepted password for risto from 10.1.2.7 port 31312 ssh2
+.br
+Dec 29 15:00:52 test sshd[14142]: Failed password for risto from 10.1.1.2 port 17721 ssh2
+.PP
+The first event at 15:00:03 starts an event correlation operation with the ID
+.PP
+/etc/sec/sshd.rules | 0 | Three SSH login failures within 1m for user risto
+.PP
+However, when the third event occurs at 15:00:17, the second rule matches
+it and terminates the operation with the action
+.PP
+reset -1 Three SSH login failures within 1m for user risto
+.PP
+The -1 parameter of
+.I reset
+restricts the action to operations started by the previous rule 
+(i.e., the first rule that has a number 0), while the
+.I Three SSH login failures within 1m for user risto
+parameter refers to the operation description string. Together with 
+the current configuration file name (/etc/sec/sshd.rules), 
+the parameters yield the operation ID
+.PP
+/etc/sec/sshd.rules | 0 | Three SSH login failures within 1m for user risto
+.PP
+(If the operation with the given ID would not exist,
+.I reset
+would perform no operation.)
+.PP
+As a consequence, the fourth event at 15:00:52 starts another operation with
+the same ID as the terminated operation had. Without the second rule, 
+the operation that was started at 15:00:03 would not be terminated, 
+and the appearance of the fourth event would trigger a warning e-mail from 
+that operation.
 .SH INPUT PROCESSING AND TIMING
 SEC processes input data iteratively by reading one line at each iteration,
 writing this line into a relevant input buffer, and matching the content
 of the updated buffer with rules from configuration files.
+If during the matching process an action list is executed which creates new
+input events (e.g., through the
+.I event
+action), they are *not* written to buffer(s) immediately,
+but rather consumed at following iterations.
+.PP
+Note that when both synthetic events and regular input are available for 
+processing, synthetic events are always consumed first.
+When all synthetic events have been consumed iteratively, 
+SEC will start processing new data from input files.
 .PP
 With the
 .B \-\-jointbuf
@@ -3222,26 +3859,130 @@ if the input line comes from file F, the buffer of F is updated as described
 previously.
 There is also a separate buffer for synthetic and internal events.
 .PP
-Note that when both synthetic events and regular input are available for 
-reading, synthetic events are always consumed first.
-When all synthetic events have been consumed iteratively, 
-SEC will start reading new data from input files.
+Suppose SEC is started with the following command line
 .PP
-After the relevant buffer has been updated (every update 
-adds one fresh line and drops one old line), rules from 
-configuration files are processed, matching the rules against the updated 
-content of the buffer.
-If during this matching process an action list is executed which creates new
-input events (e.g., through the
-.I event
-action), they are *not* written to buffers immediately, but rather consumed
-at following iterations. 
+/usr/bin/sec --conf=/etc/sec/test-multiline.conf --jointbuf \\
+             --input=/var/log/prog1.log --input=/var/log/prog2.log
+.PP
+and the configuration file /etc/sec/test-multiline.conf has the following
+content:
+.PP
+type=Single
+.br
+rem=this rule matches two consecutive lines where the first \\
+    line contains "test1" and the second line "test2", and \\
+    writes the matching lines to standard output
+.br
+ptype=RegExp2
+.br
+pattern=test1.*\\n.*test2
+.br
+desc=two consecutive test lines
+.br
+action=write - $0
+.PP
+When the following lines appear in input files /var/log/prog1.log and
+/var/log/prog2.log
+.PP
+Dec 31 12:33:12 test prog1: test1 (file /var/log/prog1.log)
+.br
+Dec 31 12:34:09 test prog2: test1 (file /var/log/prog2.log)
+.br
+Dec 31 12:39:35 test prog1: test2 (file /var/log/prog1.log)
+.br
+Dec 31 12:41:53 test prog2: test2 (file /var/log/prog2.log)
+.PP
+they are stored in a common input buffer. Therefore, rule fires after
+the third event has appeared, and writes the following
+lines to standard output:
+.PP
+Dec 31 12:34:09 test prog2: test1 (file /var/log/prog2.log)
+.br
+Dec 31 12:39:35 test prog1: test2 (file /var/log/prog1.log)
+.PP
+However, if SEC is started with the 
+.B \-\-nojointbuf 
+option, separate input buffers are set up for /var/log/prog1.log and
+/var/log/prog2.log. 
+Therefore, the rule fires after the third event has occurred,
+and writes the following lines to standard output:
+.PP
+Dec 31 12:33:12 test prog1: test1 (file /var/log/prog1.log)
+.br
+Dec 31 12:39:35 test prog1: test2 (file /var/log/prog1.log)
+.PP
+The rule also fires after the fourth event has occurred,
+producing the following output:
+.PP
+Dec 31 12:34:09 test prog2: test1 (file /var/log/prog2.log)
+.br
+Dec 31 12:41:53 test prog2: test2 (file /var/log/prog2.log)
+.PP
+The content of input buffers can be modified with the
+.I rewrite
+action, and modifications become visible immediately during 
+ongoing event processing iteration.
+Suppose SEC is started with the following command line
+.PP
+/usr/bin/sec --conf=/etc/sec/test-rewrite.conf \\
+             --input=- --nojointbuf
+.PP
+and the configuration file /etc/sec/test-rewrite.conf has the following
+content:
+.PP
+type=Single
+.br
+rem=this rule matches two consecutive lines where the first \\
+    line contains "test1" and the second line "test2", and \\
+    joins these lines in the input buffer
+.br
+ptype=RegExp2
+.br
+pattern=^(.*test1.*)\\n(.*test2.*)$
+.br
+continue=TakeNext
+.br
+desc=join two test lines
+.br
+action=rewrite 2 Joined $1 and $2
+.PP
+type=Single
+.br
+rem=this rule matches a line which begins with "Joined", \\
+    and writes this line to standard output
+.br
+ptype=RegExp
+.br
+pattern=^Joined
+.br
+desc=output joined lines
+.br
+action=write - $0
+.PP
+When the following two lines appear in standard input
+.PP
+This is a test1
+.br
+This is a test2
+.PP
+they are matched by the first rule which uses the
+.I rewrite 
+action for replacing those two lines in the input buffer with a new content.
+The last line in the input buffer ("This is a test2") is replaced with
+"Joined This is a test1 and This is a test2", while the previous line in
+the input buffer ("This is a test1") is replaced with an empty string.
+Since the rule contains
+.I continue=TakeNext
+statement, the matching process will continue from the following rule.
+This rule matches the last line in the input buffer if it begins 
+with "Joined", and writes the line to standard output, producing
+.PP
+Joined This is a test1 and This is a test2
 .PP
 After each event processing iteration, the pattern match cache is cleared. 
 In other words, if a match is cached with the rule
 .I varmap*
 field, it is available during ongoing iteration only. 
-.PP
 Note that results from a successful pattern matching are also cached when 
 the subsequent context expression evaluation yields FALSE. 
 This allows for reusing results from partial rule matches.
@@ -4154,10 +4895,10 @@ SECRC
 environment variable is set, SEC expects it to contain the name of its 
 resource file. Resource file lines which are empty or which begin with 
 the number sign (#) are ignored (whitespace may precede #).
-Each remaining line is added to the
+Each remaining line is appended to the
 .B argv
 array of SEC as a *single* element.
-Also, the lines are added to
+Also, the lines are appended to
 .B argv
 in the order they appear in the resource file.
 Therefore, if the SEC command line option has a value, the option name

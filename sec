@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.4 - sec
-# Copyright (C) 2000-2013 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.7.5 - sec
+# Copyright (C) 2000-2014 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -170,8 +170,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.4";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2013 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.5";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2014 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -254,6 +254,7 @@ use constant TVALUE		=> 8;
 use constant DONTCONT		=> 0;
 use constant TAKENEXT		=> 1;
 use constant GOTO		=> 2;
+use constant ENDMATCH		=> 3;
 
 use constant NONE		=> 0;
 use constant LOGONLY		=> 1;
@@ -628,6 +629,7 @@ sub analyze_continue {
 
   if (uc($continue) eq "TAKENEXT")  { return (TAKENEXT, undef); }
   elsif (uc($continue) eq "DONTCONT")  { return (DONTCONT, undef); }
+  elsif (uc($continue) eq "ENDMATCH")  { return (ENDMATCH, undef); }
   elsif ($continue =~ /^goto\s+(.*\S)/i)  { return (GOTO, $1); }
 
   log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
@@ -3234,7 +3236,8 @@ sub check_rule {
 #         of rules. Note that 'continue=TakeNext' is treated as 
 #         'continue=GoTo <nextrule>' (i.e., the number of the next rule is 
 #         stored). Also note that 'continue=DontCont' is treated as 
-#         'continue=GoTo <lastrule+1>'. Although Suppress rule doesn't support
+#         'continue=GoTo <lastrule+1>', and 'continue=EndMatch' as 
+#         'continue=GoTo -1'. Although Suppress rule doesn't support
 #         continue-statement, internally 'continue=GoTo <lastrule+1>' is used
 #         for simplifying the rule processing at run time.
 
@@ -3283,6 +3286,8 @@ sub resolve_labels {
           $ref->{"GotoRuleList"}->[$j] = $i + 1;
         } elsif ($ref->{"WhatNextList"}->[$j] == DONTCONT) { 
           $ref->{"GotoRuleList"}->[$j] = $n; 
+        } elsif ($ref->{"WhatNextList"}->[$j] == ENDMATCH) {
+          $ref->{"GotoRuleList"}->[$j] = -1;
         }
 
       }
@@ -3318,6 +3323,8 @@ sub resolve_labels {
           $ref->{"GotoRule"} = $i + 1;
         } elsif ($ref->{"WhatNext"} == DONTCONT) { 
           $ref->{"GotoRule"} = $n; 
+        } elsif ($ref->{"WhatNext"} == ENDMATCH) {
+          $ref->{"GotoRule"} = -1;
         }
       }
 
@@ -3349,6 +3356,8 @@ sub resolve_labels {
           $ref->{"GotoRule2"} = $i + 1;
         } elsif ($ref->{"WhatNext2"} == DONTCONT) { 
           $ref->{"GotoRule2"} = $n; 
+        } elsif ($ref->{"WhatNext2"} == ENDMATCH) {
+          $ref->{"GotoRule2"} = -1;
         }
       }
 
@@ -7834,7 +7843,9 @@ sub process_eventgroup_rule {
 #             par2 - reference to the hash of match values
 #             par3 - name of the configuration file
 #             par4 - trace hash for detecting loops during recursive calls
-# Action: process the Jump rule after a match has been found
+# Action: process the Jump rule after a match has been found. If the 
+#         processing of rule file sets referenced by Jump is terminated by 
+#         the continue*=EndMatch statement, return 1, otherwise return 0.
 
 sub process_jump_rule {
 
@@ -7844,7 +7855,7 @@ sub process_jump_rule {
   my($trace) = $_[3];
   my($cfsetlist, $cfset, $cf);
 
-  if (!exists($rule->{"CFSet"})) { return; }
+  if (!exists($rule->{"CFSet"})) { return 0; }
 
   if (!defined($trace))  { $trace = {}; }
 
@@ -7870,13 +7881,23 @@ sub process_jump_rule {
     }
 
     # process the files in the set by calling process_rules() recursively; 
-    # the set name is recorded to %trace, in order to detect loops
+    # the set name is recorded to %trace, in order to detect loops;
+    # if the processing in the rule file set is terminated by the
+    # continue*=EndMatch statement, end processing and return 1
 
     $trace->{$cfset} = 1;
-    foreach $cf (@{$cfset2cfile{$cfset}}) { process_rules($cf, $trace); }
+
+    foreach $cf (@{$cfset2cfile{$cfset}}) { 
+      if (process_rules($cf, $trace)) { 
+        delete $trace->{$cfset};
+        return 1; 
+      }
+    }
+
     delete $trace->{$cfset};
   }
 
+  return 0;
 }
 
 
@@ -8048,21 +8069,33 @@ sub match_1pattern_rule {
     # increment the counter that reflects the rule usage
     ++$rule->{"MatchCount"};
 
+    # process the rule (note that the GoTo field is set to $index+1 
+    # if continue=TakeNext; -1 if continue=EndMatch; "total number 
+    # of rules in the current configuration file" if continue=DontCont
+
     # if rule is of type SUPPRESS, return immediately (note that 
     # the GotoRule field is set to total number of rules in the current 
     # configuration file which denotes end of processing for the file)
 
     if ($rule->{"Type"} == SUPPRESS)  { return $rule->{"GotoRule"}; }
 
-    # for other rule types, process the rule (note that $trace is
-    # included in the parameter list for the sake of Jump rules)
+    # if rule is of type JUMP, process the rule with the extra $trace
+    # parameter for detecting processing loops, and return the number of 
+    # the rule specified with continue; if during recursive processing 
+    # continue*=EndMatch statement was encountered, return -1 as if 
+    # continue=EndMatch for this Jump rule
 
-    $processrulefunc[$rule->{"Type"}]->($rule, \%subst, $conffile, $trace);
+    if ($rule->{"Type"} == JUMP) { 
+      if ($processrulefunc[JUMP]->($rule, \%subst, $conffile, $trace)) {
+        return -1;
+      } else {
+        return $rule->{"GotoRule"}; 
+      }
+    }
 
-    # return the number of the rule specified with continue (note that
-    # for TakeNext the GotoRule field is set to $index+1, while for
-    # DontCont it is set to total number of rules in the file)
+    # generic processing for other rule types
 
+    $processrulefunc[$rule->{"Type"}]->($rule, \%subst, $conffile);
     return $rule->{"GotoRule"};
 
   } 
@@ -8128,8 +8161,9 @@ sub match_2pattern_rule {
       $processrulefunc[$rule->{"Type"}]->($rule, \%subst, $conffile);
 
       # return the number of the rule specified with continue (note that
-      # for TakeNext the GotoRule field is set to $index+1, while for
-      # DontCont it is set to total number of rules in the file)
+      # for TakeNext the GotoRule field is set to $index+1, for DontCont 
+      # it is set to total number of rules in the file, while for EndMatch
+      # it is set to -1)
 
       return $rule->{"GotoRule"};
 
@@ -8208,7 +8242,8 @@ sub match_eventgroup_rule {
 
       # return the number of the rule specified with continue for current 
       # pattern (note that for TakeNext the GotoRule field is set to $index+1, 
-      # while for DontCont it is set to total number of rules in the file)
+      # for DontCont it is set to total number of rules in the file, while 
+      # for EndMatch it is set to -1)
 
       return $rule->{"GotoRuleList"}->[$i];
 
@@ -8224,7 +8259,8 @@ sub match_eventgroup_rule {
 # Parameters: par1 - name of the configuration file
 #             par2 - trace hash for detecting loops during recursive calls
 # Action: match the rules from configuration file par1 against the current
-#         content of input buffer
+#         content of input buffer. If during the matching continue*=EndMatch
+#         statement is encountered, return 1, otherwise return 0.
 
 sub process_rules {
 
@@ -8236,6 +8272,7 @@ sub process_rules {
   $n = scalar(@{$configuration{$conffile}});
 
   while ($i < $n) { 
+
     $rule = $configuration{$conffile}->[$i];
 
     # skip the CALENDAR rule
@@ -8243,8 +8280,14 @@ sub process_rules {
 
     # match the i-th rule against input
     $i = $matchrulefunc[$rule->{"Type"}]->($conffile, $i, $trace);
+
+    # if the rule matching function returned -1 for the offset of 
+    # the next rule to be matched, terminate all matching and return 1
+
+    if ($i == -1)  { return 1; }
   }
 
+  return 0;
 }
 
 
@@ -8832,6 +8875,7 @@ sub continue2str {
   if ($whatnext == DONTCONT) { return "don't continue"; }
   elsif ($whatnext == TAKENEXT) { return "take next"; }
   elsif ($whatnext == GOTO) { return "goto rule " . ($gotorule + 1); }
+  elsif ($whatnext == ENDMATCH) { return "end matching"; }
   else { return "Unknown continue value"; }
 
 }
@@ -9739,7 +9783,9 @@ sub internal_event {
 
   %pmatch_cache = ();
 
-  foreach $conffile (@maincfiles)  { process_rules($conffile); }
+  foreach $conffile (@maincfiles) { 
+    if (process_rules($conffile)) { last; } 
+  }
 
   ++$processedlines;
 
@@ -11425,7 +11471,9 @@ sub main_loop {
 
       # process rules from configuration files
 
-      foreach $conffile (@maincfiles)  { process_rules($conffile); }
+      foreach $conffile (@maincfiles) { 
+        if (process_rules($conffile)) { last; }
+      }
 
       if ($intcontexts)  { delete $context_list{$context}; }
 

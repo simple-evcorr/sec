@@ -1,3 +1,9 @@
+--- version 2.7.5
+
+* starting from this version, continue* rule parameters accept 'EndMatch'
+  as a value.
+
+
 --- version 2.7.4
 
 * added support for the 'owritecl' action.
