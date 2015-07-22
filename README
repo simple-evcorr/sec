@@ -1,0 +1,47 @@
+SEC (Simple Event Correlator) 2.6.0
+
+Introduction:
+-------------
+SEC is a tool for accomplishing event correlation tasks in the domains of 
+log analysis, system monitoring, network and security management, etc.
+Event correlation is a procedure where a stream of events is processed, 
+in order to detect (and act on) certain event groups that occur within 
+predefined time windows. Unlike most other event correlation products which
+are heavyweight solutions, SEC is a lightweight and platform-independent
+event correlator which runs as a single process.
+
+Availability:
+-------------
+This program is distributed under the terms of GNU General Public License, 
+and can be downloaded from http://simple-evcorr.sourceforge.net
+
+Release Notes:
+--------------
+SEC has been tested primarily on Linux and Solaris, but since it is written 
+in Perl and does not use any platform dependent subroutines, it should also
+work on other OS platforms.
+Because SEC is generally not tested against outdated Perl releases, it is 
+recommended to run SEC with at least Perl 5.6 (see http://www.perl.org for 
+the latest stable release). 
+SEC uses Perl Getopt, POSIX, Fcntl, IO::Handle, and Sys::Syslog modules
+which are included in the standard Perl installation.
+
+Files in this package:
+----------------------
+COPYING - copy of GNU General Public License
+ChangeLog - changes starting from version 1.0
+README - this file
+contrib - SEC user contributions
+sec - SEC program
+sec.man - SEC man page
+
+Author: 
+-------
+Risto Vaarandi (ristov at users d0t s0urcef0rge d0t net)
+
+Acknowledgements:
+-----------------
+This work is supported by SEB.
+The author thanks the following people for supplying software patches and 
+documentation fixes: Al Sorrell, James Brown, John P. Rouillard, Jon Frazier,
+Mark D. Nagel, Rick Casey, and William Gertz.

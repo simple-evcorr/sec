@@ -1,0 +1,3369 @@
+.\"
+.\" SEC (Simple Event Correlator) 2.6.0 - sec.man
+.\" Copyright (C) 2000-2011 Risto Vaarandi
+.\"
+.\" This program is free software; you can redistribute it and/or
+.\" modify it under the terms of the GNU General Public License
+.\" as published by the Free Software Foundation; either version 2
+.\" of the License, or (at your option) any later version.
+.\"
+.\" This program is distributed in the hope that it will be useful,
+.\" but WITHOUT ANY WARRANTY; without even the implied warranty of
+.\" MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+.\" GNU General Public License for more details.
+.\"
+.\" You should have received a copy of the GNU General Public License
+.\" along with this program; if not, write to the Free Software
+.\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+.\" 
+.TH sec 1 "March 2011" "SEC 2.6.0"
+.SH NAME
+sec \- simple event correlator
+.SH SYNOPSIS
+.TP 
+.B sec
+[--conf=<file pattern> ...]
+.br
+[--input=<file pattern>[=<context>] ...]
+.br
+[--input_timeout=<input timeout>]
+.br
+[--timeout_script=<timeout script>]
+.br
+[--reopen_timeout=<reopen timeout>]
+.br
+[--check_timeout=<check timeout>]
+.br
+[--poll_timeout=<poll timeout>]
+.br
+[--blocksize=<io block size>]
+.br
+[--bufsize=<input buffer size>]
+.br
+[--evstoresize=<event store size>]
+.br
+[--cleantime=<clean time>]
+.br
+[--log=<logfile>]
+.br
+[--syslog=<facility>]
+.br
+[--debug=<debuglevel>]
+.br
+[--pid=<pidfile>]
+.br
+[--dump=<dumpfile>]
+.br
+[--quoting | --noquoting]
+.br
+[--tail | --notail]
+.br
+[--fromstart | --nofromstart]
+.br
+[--detach | --nodetach]
+.br
+[--intevents | --nointevents]
+.br
+[--intcontexts | --nointcontexts]
+.br
+[--testonly | --notestonly]
+.br
+[--help] [-?]
+.br
+[--version]
+.SH DESCRIPTION
+SEC is a tool for accomplishing event correlation tasks in the domains of 
+log analysis, system monitoring, network and security management, etc.
+Event correlation is a procedure where a stream of events is processed, 
+in order to detect (and act on) certain event groups that occur within 
+predefined time windows. Unlike most other event correlation products which
+are heavyweight solutions, SEC is a lightweight and platform-independent
+event correlator which runs as a single process.
+.PP
+SEC reads lines from files, named pipes, or standard input,
+matches the lines with patterns (regular expressions, Perl subroutines, etc.) 
+for recognizing input events, and 
+correlates events according to the rules in its configuration file(s). 
+Rules are matched against input in the order they are given in 
+the configuration file.
+If there are two or more configuration files, rule sequence from every file
+is matched against input (unless explicitly specified otherwise).
+SEC can produce output by executing external programs (e.g., 
+.BR snmptrap (1)
+or
+.BR mail (1)), 
+by writing to files, by calling precompiled Perl subroutines, etc. 
+.PP
+Some SEC rules start event correlation operations, while other rules react
+immediately to input events or system clock. For example, the following
+rule correlates SSH failed login syslog events:
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from [\\d.]+ port \\d+ ssh2
+.br
+desc=Three SSH login failures within 1m for user $1
+.br
+action=pipe '%s' mail -s 'SSH login alert' root@localhost
+.br
+window=60
+.br
+thresh=3
+.PP
+The 
+.I pattern
+field of the rule defines the pattern for recognizing input events, while the
+.I ptype
+field defines its type (regular expression). Suppose that user risto fails to 
+log in over SSH and the following message is logged by sshd:
+.PP
+Dec 16 16:24:59 myserver sshd[13685]: Failed password for risto from 10.12.2.5 port 41063 ssh2
+.PP
+This input message will match the regular expression
+pattern of the above rule, and the match variable $1 will be set to the string
+.IR risto .
+After a match, SEC will evaluate the operation description string given with 
+the
+.I desc
+field. This is done by substituting $1 with its current value which yields 
+.IR "Three SSH login failures within 1m for user risto" .
+SEC will then check if there already exists an event correlation operation
+identified with this string. If the operation is not found, SEC will create 
+a new operation for the user name risto, and the occurrence time of the input 
+event will be recorded into the operation. 
+Note that for event occurrence time SEC always uses the current time 
+as returned by the
+.BR time (2)
+system call, *not* the timestamp extracted from the event. 
+Suppose that after 25 seconds, 
+a similar SSH login failure event for the same user name is observed. In this
+case, a running operation will be found for the operation description string
+.IR "Three SSH login failures within 1m for user risto" ,
+and the occurrence time of the second event is recorded into the operation.
+If after 30 seconds a third event for the user name risto is observed, 
+the operation has processed 3 events within 55 seconds. Since the threshold
+condition "3 events within 60 seconds" (as defined by the
+.I thresh
+and
+.I window
+fields) is now satisfied, SEC will execute the action defined with the
+.I action 
+field -- it will fork a command 
+.PP
+mail -s 'SSH login alert' root@localhost 
+.PP
+with a pipe connected to its standard input. Then, SEC writes the operation 
+description string 
+.I "Three SSH login failures within 1m for user risto"
+(held by the %s special variable)
+to the standard input of the command through the pipe.
+In other words, an e-mail warning is sent to the local root-user. 
+Finally, since there are 5 seconds left until the end of
+the event correlation window, the operation will consume the following SSH
+login failure events for user risto without any further action, and finish 
+after 5 seconds.
+.PP
+The above example illustrates that the
+.I desc
+field of a SEC rule defines the scope of event correlation and influences the
+number of operations created by the rule. For example, if we set the
+.I desc 
+field to 
+.IR "Three SSH login failures within 1m" ,
+the root-user would be alerted even on 3 SSH login failure events 
+for *different* users within 1 minute (see EVENT CORRELATION OPERATIONS 
+section for more information).
+.PP
+The following simple example demonstrates that event correlation schemes
+can be defined by combining several rules. In this example, two rules
+harness contexts and synthetic events for achieving their goal:
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from [\\d.]+ port \\d+ ssh2
+.br
+desc=Three SSH login failures within 1m for user $1
+.br
+action=event 3_SSH_LOGIN_FAILURES_FOR_$1
+.br
+window=60
+.br
+thresh=3
+.PP
+type=EventGroup
+.br
+init=create USER_COUNTING
+.br
+end=delete USER_COUNTING
+.br
+ptype=RegExp
+.br
+pattern=3_SSH_LOGIN_FAILURES_FOR_(\\S+)
+.br
+context=!USER_$1_COUNTED
+.br
+count=alias USER_COUNTING USER_$1_COUNTED
+.br
+desc=Repeated SSH login failures for 30 distinct users within 1m
+.br
+action=pipe '%s' mail -s 'SSH login alert' root@localhost
+.br
+window=60
+.br
+thresh=30
+.PP
+The first rule looks almost identical to the rule from the previous example, 
+but its
+.I action
+field is different -- after three SSH login failures have been observed for 
+the same user name within one minute by an event correlation operation, 
+the operation will emit the synthetic event 
+3_SSH_LOGIN_FAILURES_FOR_<username>. Although synthetic events are created
+by SEC, they are treated like regular events received from input sources and 
+are matched against SEC rules. 
+The regular expression pattern of the second rule will match the
+3_SSH_LOGIN_FAILURES_FOR_<username> event and start a new event correlation
+operation if no such events have been previously seen. When the operation is 
+initialized, the context USER_COUNTING is created, and when the operation 
+finishes, this context is deleted (as specified by the
+.I init
+and
+.I end
+fields). Also, each time a synthetic event for some user name has matched 
+the rule, a context alias for that user name is created (see the 
+.I count
+field). Note that this
+prevents further matches for the same user name, since a synthetic event
+for <username> can match the rule only if the context alias 
+USER_<username>_COUNTED *does not* exist (as requested by the
+.I context
+field). The operation started by the rule sends an e-mail warning to the local 
+root-user if 30 synthetic events have been observed within 1 minute (see the
+.I thresh
+and
+.I window
+fields). Note that due to the use of the USER_<username>_COUNTED aliases, all 
+synthetic events concern different user names. After sending an e-mail warning,
+the operation will continue to run until the 1 minute event correlation
+window expires. When the operation finishes, the deletion of the 
+USER_COUNTING context also erases the USER_<username>_COUNTED aliases. 
+.PP
+The above examples have presented the event correlation capabilities of SEC 
+in a very brief fashion.
+The following sections will provide an in-depth  discussion of SEC features.
+.SH OPTIONS
+.TP
+.B --conf=<file pattern>
+expand <file pattern> to filenames (with the Perl 
+.BR glob () 
+function) and read event correlation rules from every file. Multiple
+.B --conf
+options can be specified at command line. Each time SEC receives a signal
+that forces a configuration reload, <file pattern> is re-evaluated. See also
+TIMING section for a discussion on rule processing order for
+multiple configuration files.
+.TP 
+.B --input=<file pattern>[=<context>]
+expand <file pattern> to filenames (with the Perl
+.BR glob ()
+function) and use the files as input sources. An input file can be a regular 
+file, named pipe, or standard input if 
+.B -
+was specified. Multiple
+.B --input
+options can be specified at command line. Each time SEC receives a signal
+that forces it to reopen its input files, <file pattern> is re-evaluated.
+If SEC experiences a system error when reading from an input file, it will
+close the file (use the
+.B --reopen_timeout
+option for reopening the file). If <context> is given, SEC will set up the 
+context <context> each time it reads a line from input files that correspond
+to <file pattern>. This will help the user to write rules that match data from
+particular input source(s) only. When there is an
+.B --input
+option with <context> specified, it will automatically enable the
+.B --intcontexts
+option. See INTERNAL EVENTS AND CONTEXTS section for more information.
+.TP 
+.BR --input_timeout=<input_timeout> ", " --timeout_script=<timeout_script>
+if SEC has not observed new data in an input file during <input_timeout>
+seconds (or the file was closed <input_timeout> seconds ago), <timeout_script> 
+will be executed with command line parameters 1 and <the name of the input 
+file>. If fresh data become available again, <timeout_script> will be executed
+with command line parameters 0 and <the name of the input file>.
+.TP 
+.B --reopen_timeout=<reopen_timeout>
+if an input file is in closed state (e.g., because SEC has failed to open it
+at startup), SEC will attempt to reopen the file after every
+<reopen_timeout> seconds until open succeeds.
+.TP
+.B --check_timeout=<check_timeout>
+if SEC has not observed new data in an input file, the file will not be polled
+(both for status and data) during the next <check_timeout> seconds.
+.TP
+.B --poll_timeout=<poll_timeout>
+a real number that specifies how many seconds SEC will sleep when no new data 
+were read from input files. Default is 0.1 seconds.
+.TP
+.B --blocksize=<io_block_size>
+the number of bytes SEC will attempt to read at once from an input file. 
+Default is 1024 (i.e., read from input files by 1KB blocks).
+.TP 
+.B --bufsize=<input_buffer_size>
+set input buffer to hold last <input_buffer_size> lines that have been read 
+from input files. The content of input buffer will be compared with patterns 
+that are part of rule definitions (i.e., no more than <input_buffer_size> 
+lines can be matched by a pattern at a time). Default buffer size is 10 lines.
+.TP
+.B --evstoresize=<event_store_size>
+set an upper limit to the number of events in context event stores. 
+.TP 
+.B --cleantime=<clean_time>
+time interval in seconds that specifies how often internal event correlation
+and context lists are processed, in order to accomplish time-related tasks
+and to remove obsolete elements. See TIMING section for more information.
+Default is 1 second.
+.TP 
+.B --log=<logfile>
+use <logfile> for logging SEC activities. Note that if the SEC standard error
+is connected to a terminal, messages will also be logged there, in order to
+facilitate debugging.
+.TP
+.B --syslog=<facility>
+use syslog for logging SEC activities. All messages will be logged with the 
+facility <facility>, e.g., 
+.I local0
+(see 
+.BR syslog (3)
+for possible facility values). Warning: be careful with using this option if 
+SEC is employed for monitoring syslog logfiles, because message loops might
+occur.
+.TP
+.B --debug=<debuglevel>
+set logging verbosity for SEC. Setting debuglevel to <debuglevel> 
+means that all messages of level <debuglevel> and lower are logged (e.g.,
+if <debuglevel> is 3, messages from levels 1-3 are logged). The
+following levels are recognized by SEC:
+.br
+1 - critical messages (severe faults that cause SEC to terminate, e.g., 
+a failed system call)
+.br
+2 - error messages (faults that need attention, e.g., an incorrect rule 
+definition in a configuration file)
+.br
+3 - warning messages (possible faults, e.g., a command forked from SEC 
+terminated with a non-zero exit code)
+.br
+4 - notification messages (normal system level events and interrupts, e.g., 
+the reception of a signal)
+.br
+5 - informative messages (information about external programs forked 
+from SEC)
+.br
+6 - debug messages (detailed information about all SEC activities)
+.br
+Default <debuglevel> is 6 (i.e., log everything). See SIGNALS section
+for information on how to change <debuglevel> at runtime.
+.TP 
+.B --pid=<pidfile>
+SEC will store its process ID to <pidfile> at startup.
+.TP
+.B --dump=<dumpfile>
+SEC will use <dumpfile> as its dumpfile. See SIGNALS section for more 
+information. Default is /tmp/sec.dump.
+.TP
+.BR --quoting ", " --noquoting 
+if the
+.B --quoting
+option is specified, operation description strings that are supplied to 
+command lines of
+.I shellcmd
+and
+.I spawn
+actions will be put inside apostrophes. All apostrophes ' that strings 
+originally contain will be masked. This option prevents the shell from 
+interpreting special symbols that operation description strings might contain. 
+Default is
+.BR --noquoting .
+.TP 
+.BR --tail ", " --notail
+if the
+.B --notail
+option is specified, SEC will process all data that are currently available 
+in input files and exit after reaching all EOFs. Default is
+.B --tail
+-- SEC will jump to the end of input files and wait for new lines to arrive.
+With the
+.B --tail
+option, SEC follows an input file both by its name and i-node, and thus
+handles input file rotations seamlessly.
+If the input file is recreated or truncated, SEC will reopen it and process 
+its content from the beginning. If the input file is removed (i.e., there is
+just an i-node left without a name), SEC will keep the i-node open and wait 
+for the input file recreation. 
+.TP 
+.BR --fromstart ", " --nofromstart
+these flags have no meaning when the
+.B --notail
+option is also specified. When used in combination with
+.B --tail
+(or alone, since
+.B --tail
+is enabled by default),
+.B --fromstart
+will force SEC to read and process input files from the beginning to 
+the end, before the 'tail' mode is entered. Default is 
+.BR --nofromstart .
+.TP 
+.BR --detach ", " --nodetach
+if the
+.B --detach
+option is specified, SEC will disassociate itself from the controlling
+terminal and become a daemon at startup (note that SEC will close its standard 
+input, standard output, and standard error, and change its working directory
+to the root directory). Default is 
+.BR --nodetach .
+.TP
+.BR --intevents ", " --nointevents
+SEC will generate internal events when it starts up, when it receives
+certain signals, and when it terminates gracefully. Specific rules can be 
+written to match those internal events, in order to accomplish special
+tasks at SEC startup, restart, and shutdown. 
+See INTERNAL EVENTS AND CONTEXTS section for more information. Default is
+.BR --nointevents .
+.TP
+.BR --intcontexts ", " --nointcontexts
+SEC will create an internal context when it reads a line from an input file.
+This will help the user to write rules that match data from particular input 
+source only. See INTERNAL EVENTS AND CONTEXTS section for more information. 
+Default is
+.BR --nointcontexts .
+.TP
+.BR --testonly ", " --notestonly
+if the
+.B --testonly
+option is specified, SEC will exit immediately after parsing the configuration 
+file(s). If the configuration file(s) contained no faulty rules, SEC will exit 
+with 0, otherwise with 1. Default is
+.BR --notestonly .
+.TP
+.BR --help ", " -?
+SEC will output usage information and exit.
+.TP
+.B --version
+SEC will output version information and exit.
+.PP
+Note that options can be introduced both with the single dash (-) and double
+dash (--), and both the equal sign (=) and whitespace can be used for 
+separating the option name from the option value. For example,
+.B -conf=<file pattern>
+and
+.B --conf <file pattern>
+options are equivalent.
+.SH CONFIGURATION FILE
+The SEC configuration file consists of rule definitions which are separated 
+by empty and comment lines.
+Each rule definition consists of keyword=value fields, one keyword and value 
+per line. Values are case sensitive only where character case is important 
+(like the values specifying regular expressions).
+The backslash character (\\) may be used at the end of a line to continue 
+the current rule field in the next line. 
+Lines which begin with the number sign (#) are treated as comments and 
+ignored (whitespace characters may precede #). Any comment line, 
+empty line, or end of file will terminate the preceding rule definition.
+For inserting comments into rule definitions, the
+.I rem
+keyword can be used.
+.PP
+Apart from keywords that are part of rule definitions, 
+.I label
+keywords may appear anywhere in the configuration file. The value of each
+.I label
+keyword will be treated as a label that can be referred to in rule definitions
+as a point-of-continue.
+This allows for continuing event processing at a rule that follows the label,
+after the current rule has matched and processed the event.
+.PP
+The points-of-continue are defined with
+.I continue*
+fields. Accepted values for these fields are:
+.TP
+.I TakeNext 
+after an event has matched the rule, search for matching rules
+in the configuration file will continue from the next rule.
+.TP
+.I GoTo <label>
+after an event has matched the rule, search for matching rules will continue
+from the location of <label> in the configuration file (<label> must
+be defined with the 
+.I label
+keyword anywhere in the configuration file *after* the current rule 
+definition).
+.TP
+.IR DontCont " (default value)"
+after an event has matched the rule, search for matching rules ends 
+in the configuration file.
+.PP
+Before describing each rule type in detail, the following sections discuss
+patterns, pattern types and match variables, context expressions, and action 
+lists.
+.SS "PATTERNS, PATTERN TYPES AND MATCH VARIABLES"
+Patterns and pattern types are defined with 
+.I pattern*
+and
+.I ptype*
+fields.
+SEC supports the following pattern types (if 
+.I N 
+is omitted, 1 is assumed):
+.TP
+.I SubStr[N]
+pattern is a string that is searched in the last N input lines 
+L1, L2, ..., LN. If N is greater than 1, the input lines are joined into 
+a string "L1<NEWLINE>L2<NEWLINE>...<NEWLINE>LN", and the pattern
+string will be searched from it. 
+If the pattern string is found in input line(s), the pattern matches.
+Backslash sequences \\t, \\n, \\r, \\s, and \\0 can be used in the
+pattern for denoting tabulation, newline, carriage return, space character, 
+and empty string, respectively, while \\\\ denotes backslash itself. 
+For example, consider the following pattern definition:
+.sp
+ptype=substr
+.br
+pattern=Backup done:\\tsuccess
+.sp
+The pattern matches lines containing "Backup done:<TAB>success".
+.TP
+.I RegExp[N]
+pattern is a Perl regular expression (see 
+.BR perlre (1)
+for more information) for matching the last N input lines 
+L1, L2, ..., LN. If N is greater than 1, the input lines are joined into 
+a string "L1<NEWLINE>L2<NEWLINE>...<NEWLINE>LN", and the regular expression 
+is matched with this string.
+If the regular expression matches, match variables will be set, and these
+match variables can be used in other parts of the rule definition. 
+.sp
+In addition to numbered match variables ($1, $2, etc.), SEC supports named
+match variables $+{name} and the $0 variable. The $0 variable holds the entire 
+string that the regular expression has matched. Named match variables can
+be created in newer versions of Perl regular expression language, e.g., 
+(?'myvar'AB|CD) sets $+{myvar} to AB or CD. 
+.sp
+Also, SEC allows for match caching and for the creation of additional named 
+match variables through variable maps which are defined with the
+.I varmap*
+fields. Variable map is a list of 
+.I name=number 
+mappings separated by semicolons, where
+.I name
+is the name for the named variable and 
+.I number 
+identifies a numbered match
+variable that is set by the regular expression. 
+Each name must begin with
+a letter and consist of letters, digits and underscores. After the regular 
+expression has matched, named variables specified by the map are created from 
+corresponding numbered variables. If the same named variable is set up both 
+from the regular expression and variable map, the map takes precedence. 
+.sp
+If 
+.I name
+is not followed by the equal sign and number in the
+.I varmap*
+field, it is regarded as a common name for all match variables and their 
+values from a successful match.
+This name is used for caching a successful match by the pattern -- 
+match variables and their values are stored in the memory-based 
+pattern match cache under 
+.IR name . 
+Cached match results can be reused by
+.I Cached
+and 
+.I NCached
+patterns. Note that before processing each new input line, previous
+content of the pattern match cache is cleared. 
+.sp
+For example, consider the following pattern definition:
+.sp
+ptype=regexp
+.br
+pattern=(?i)(\\S+\\.mydomain).*printer: toner\\/ink low
+.br
+varmap=printer_toner_or_ink_low; message=0; hostname=1
+.sp
+The pattern matches "printer: toner/ink low" messages in a case insensitive
+manner from printers belonging to .mydomain. Note that the printer hostname
+is assigned to $1 and $+{hostname}, while the whole message line is assigned 
+to $0 and $+{message}. Also, these variables and their values are stored to 
+the pattern match cache under the name "printer_toner_or_ink_low".
+.sp
+The following pattern definition produces a match if the last two input lines
+are AAA and BBB, sets $0 to "AAA<NEWLINE>BBB", and caches it under the name
+"aaa_bbb":
+.sp
+ptype=regexp2
+.br
+pattern=^AAA\\nBBB$
+.br
+varmap=aaa_bbb
+.TP
+.I PerlFunc[N]
+pattern is a Perl function for matching the last N input lines
+L1, L2, ..., LN. The Perl function is compiled at SEC startup with
+the Perl
+.BR eval ()
+function, and 
+.BR eval ()
+must return a code reference for the pattern to be valid 
+(see also PERL INTEGRATION section). 
+In order to check whether the pattern matches input line(s), SEC will call 
+the function in list context and pass lines L1, L2, ..., LN and the names of
+corresponding input files F1, F2, ..., FN to the function as 
+parameters: 
+.sp
+function(L1, L2, ..., LN, F1, F2, ..., FN) 
+.sp
+Note that if the input line is a synthetic event, the input file name equals 
+to 'undef'.
+If the function returns several values or a single value that is TRUE in 
+boolean context, the pattern matches. If the pattern matches, return values 
+will be assigned to numbered match variables ($1, $2, etc.). 
+Like with RegExp patterns, the $0 variable is set to matching input line(s)
+and named match variables can be created from variable maps.
+For example, consider the following pattern definition:
+.sp
+ptype=perlfunc2
+.br
+pattern=sub { return ($_[0] cmp $_[1]); }
+.sp
+The pattern compares last two input lines in a stringwise manner ($_[1] 
+holds the last line and $_[0] the preceding one), and matches if the lines
+are different. Note that the result of the comparison is assigned to $1,
+while two matching lines are concatenated (with the newline character
+between them) and assigned to $0. 
+.sp
+The following pattern definition produces a match if the input line contains
+either the string "abc" or "def", and sets $0 to the matching line. Both 
+$1 and $+{file} are set to the name of the input file; if the input line
+was a synthetic event, $1 and $+{file} are set to "SEC".
+.sp
+ptype=perlfunc
+.br
+pattern=sub { if ($_[0] =~ /(?:abc|def)/) { \\
+.br
+return defined($_[1]) ? $_[1] : "SEC"; } return 0; }
+.br
+varmap= file=1
+.TP
+.I Cached
+pattern is a name that is searched in the pattern match cache (entries are
+stored into the cache with the
+.I varmap*
+fields). If an entry with the given name is found in the cache, the pattern
+matches, and match variables and values are retrieved from the cache.
+For example, if the input line matches the following pattern
+.sp
+ptype=perlfunc
+.br
+pattern=sub { if ($_[0] =~ /(?:abc|def)/) { \\
+.br
+return defined($_[1]) ? $_[1] : "SEC"; } return 0; }
+.br
+varmap=abc_or_def_found; file=1
+.sp
+then the entry "abc_or_def_found" is created in the pattern match cache.
+Therefore, the pattern 
+.sp
+ptype=cached
+.br
+pattern=abc_or_def_found
+.sp
+will also produce a match for this input line, and set the $0, $1 
+and $+{file} variables to values from the previous match.
+.TP
+.I NSubStr[N]
+like
+.IR SubStr[N] ,
+except that the result of the match is negated.
+.TP
+.I NRegExp[N]
+like
+.IR RegExp[N] ,
+except that the result of the match is negated and variable maps are not 
+supported. Note that the only match variable set by the pattern is $0.
+.TP
+.I NPerlFunc[N]
+like
+.IR PerlFunc[N] ,
+except that the result of the match is negated and variable maps are not
+supported. Note that the only match variable set by the pattern is $0.
+.TP
+.I NCached
+like
+.IR Cached ,
+except that the result of the match is negated.
+.TP
+.I TValue
+pattern is a truth value, with TRUE and FALSE being legitimate values. 
+TRUE always matches an input line, while FALSE never matches anything.
+.PP
+When match variables are substituted, each "$$" sequence is interpreted as
+a literal dollar sign ($) which allows for masking match variables. 
+For example, the string "Received $$1" becomes "Received $1" after 
+substitution, while "Received $$$1" becomes "Received $<value_of_1st_var>". 
+In order to disambiguate numbered match variables from the following text, 
+variable number must be enclosed in braces. For example, the string 
+"Received ${1}0" becomes "Received <value_of_1st_var>0" after substitution, 
+while the string "Received $10" would become "Received <value_of_10th_var>".
+.PP
+If the match variable was not set by the pattern or was set to 'undef',
+it is substituted with an empty string (i.e., a zero-width string). 
+Thus the string "Received $10!" becomes "Received !" after substitution if
+the pattern did not set $10.
+(Note that prior to SEC-2.6, unset or undefined variables 
+were *not* substituted.)
+.PP
+Note that since Pair and PairWithWindow rules have two patterns, match
+variables of the first pattern are shadowed for some rule fields when the 
+second pattern matches and sets variables. In order to refer to shadowed 
+variables, their names
+must begin with % instead of $ (e.g., %1 refers to match variable $1 set by
+the first pattern). However, the use of the %-prefix is only valid under the 
+following circumstances -- *both* pattern types support match variables *and* 
+in the given rule field match variables from *both* patterns can be used.
+.PP
+The %-prefixed match variables are masked with the "%%" sequence (like 
+regular match variables with "$$"). Similarly, the braces can be
+used for disambiguating the %-prefixed variables from the following text.
+.PP
+Finally, note that the second pattern of Pair and PairWithWindow rules may 
+contain match variables if the second pattern is of type SubStr, NSubStr, 
+Regexp, or NRegExp. The variables are substituted at runtime with the values 
+set by the first pattern. If the pattern is a regular expression, all 
+special characters inside substituted values are masked with the Perl
+.BR quotemeta ()
+function and the final expression is checked for correctness.
+.SS "CONTEXT EXPRESSIONS"
+Context expressions are boolean expressions that are defined with the
+.I context*
+fields. Context expressions can be used for restricting the matches
+produced by patterns, since if the expression evaluates FALSE, the rule will
+not match an input event.
+.PP
+The context expression accepts context names, Perl miniprograms, and Perl 
+functions as operands. These operands can be combined with the following
+operators:
+.br
+!  - logical NOT, 
+.br
+&&   - short-circuit logical AND, 
+.br
+||  - short-circuit logical OR. 
+.br
+In addition, parentheses can be used for grouping purposes.
+.PP
+If the operand contains the arrow operator (->), the text following the arrow 
+must be a valid Perl function definition that is compiled at SEC startup with 
+the Perl
+.BR eval () 
+function. The 
+.BR eval () 
+must return a code reference (see also PERL INTEGRATION section).
+information). If any text precedes the arrow, it is treated as a list of 
+parameters for the function. Parameters must separated by whitespace and may 
+contain match variables set by pattern(s).
+In order to evaluate the Perl function operand, the function is called in 
+the Perl scalar context. If the return value of the function is TRUE in the
+Perl boolean context, the operand evaluates TRUE, otherwise it evaluates FALSE.
+.PP
+If the operand begins with the equal sign (=), the following text must be
+a Perl miniprogram which is a valid parameter for the Perl 
+.BR eval ()
+function. The miniprogram may contain match variables set by the pattern(s).
+In order to evaluate the Perl miniprogram operand, it will be compiled and 
+executed by calling the Perl
+.BR eval ()
+function in the Perl scalar context (see also PERL INTEGRATION section).
+If the return value from 
+.BR eval ()
+is TRUE in the Perl boolean context, the operand evaluates TRUE, otherwise it
+evaluates FALSE.
+.PP
+Note that since Perl functions, miniprograms, and parameter lists may contain
+strings that clash with context expression operators (e.g., '!'), 
+it is strongly recommended to enclose them in parentheses, e.g.,
+.PP
+($1 $2) -> (sub { return ($_[0] != $_[1]); })
+.PP
+=({my($temp) = 0; return !$temp;})
+.PP
+If the operand is not a Perl function or miniprogram, it is treated as 
+a context name. As other operands, context names may contain match variables. 
+If the context name refers to an existing context, the operand evaluates
+TRUE, otherwise it evaluates FALSE.
+.PP
+If the whole context expression is enclosed in square brackets [], e.g.,
+.RB [ MYCONTEXT1 " && !" MYCONTEXT2 ], 
+SEC evaluates the expression *before* pattern matching (normally, the pattern 
+is matched with input line(s) first, so that match variables would be 
+initialized and ready for expression evaluation). 
+However, if the expression does not contain match variables and many input
+events are known to match the pattern but not the expression,
+the []-operator could save substantial amount of CPU time. 
+.PP
+In order to illustrate the discussion, consider the following context 
+expressions:
+.PP
+-> ( sub { my(@stat) = stat("/var/log/messages"); \\
+.br
+return (!scalar(@stat) || time() - $stat[9] > 3600); } )
+.PP
+($1 $2) -> (sub { return ($_[0] != $_[1]); }) && C1
+.PP
+!(C1 || C2) && =("$1" eq "myhost.mydomain")
+.PP
+The first expression evaluates TRUE if the /var/log/messages file does not 
+exist or was last modified more than 1 hour ago. The second expression 
+evaluates TRUE if the values of $1 and $2 match variables are numerically 
+unequal and the context 
+.B C1 
+exists.
+The third expression evaluates TRUE when neither the context 
+.B C1 
+nor the context 
+.B C2 
+exists and the value of $1 the variable equals to the string "myhost.mydomain". 
+Note that since && is a short-circuiting operator, the Perl code of the third 
+expression is not evaluated if 
+.B C1
+and/or
+.B C2
+exist. 
+.SS "ACTION LISTS"
+Action lists are defined with the
+.I action*
+fields. An action list consists of action definitions that are separated 
+by semicolons. 
+Each action definition begins with a keyword specifying the action type. 
+Depending on the action type, parameters may follow, and non-constant
+parameters may contain match variables.
+In order to use semicolons inside a non-constant parameter, 
+the parameter must be enclosed in parentheses (the outermost set of
+parentheses will be removed by SEC during configuration file parsing).
+.PP
+Apart from match variables, SEC supports 
+.I action list variables
+in action lists which facilitate data sharing between actions and Perl 
+integration. Each action list variable has a name which must begin with 
+a letter and consist of letters, digits and underscores. In order to refer 
+to an action list variable, its name must be prefixed by a percent sign (%). 
+Unlike match variables, action list variables can only be used in 
+action lists and they are substituted with their values immediately before 
+the action list execution. Also, action list variables continue to exist
+after the current action list has been executed and can be employed in
+action lists of other rules.
+.PP
+The following action list variables are predefined by SEC:
+.PP
+%s - operation description string (the value of the
+.I desc
+field after match variables have been substituted with their values).
+Note that for the
+.I action2
+field of Pair and PairWithWindow rules, the %s variable is set by evaluating
+the
+.I desc2
+field of the rule.
+.PP
+%t - current time in human-readable format (as returned by the
+.BR date (1)
+utility).
+.PP
+%u - current time in seconds since Epoch (as returned by the
+.BR time (2)
+system call).
+.PP
+Note that in order to disambiguate the variable from the following text,
+the variable name must be enclosed in braces (e.g., %{s}). Also, when action 
+list variables are substituted with their values, each sequence "%%" is 
+interpreted as a literal percent sign (%) which allows for masking the 
+variables. 
+For example, the string "s%%t" becomes "s%t" after substitution, not 
+"s%<timestamp>". 
+.PP
+However, note that if %-prefixed match variables are supported for the
+.I action2
+field of the Pair or PairWithWindow rule, the sequence "%%%" must be used in
+.I action2
+for masking a variable, since the string goes through *two* variable 
+substitution rounds (first for %-prefixed match variables and then for action 
+list variables, e.g., the string "s%%%t" first becomes "s%%t" and
+finally "s%t").
+.PP
+Whenever a rule field goes through several substitution rounds, the $
+or % characters are masked inside values substituted during earlier rounds,
+in order to avoid unwanted side effects during later rounds.
+.PP
+If the action list variable has not been set or its value is 'undef',
+it is substituted with an empty string (i.e., a zero-width string).
+Thus the string "Value of A is: %a" becomes "Value of A is: " after
+substitution if the variable %a is unset.
+(Note that prior to SEC-2.6, unset or undefined variables 
+were *not* substituted.)
+.PP
+Finally, the values are substituted as strings, therefore values of other 
+types (e.g., references) lose their original meaning, unless explicitly noted 
+otherwise (e.g., if a Perl function reference is stored to an action list 
+variable, the function can later be invoked through this variable with the
+.I call
+action).
+.PP
+The following actions are supported (optional parameters are enclosed
+in square brackets):
+.TP 
+.I none
+No action.
+.TP 
+.I logonly [<string>]
+Message <string> is logged to destinations given with the
+.B --log
+and
+.B --syslog
+options. The level of the log message is set to 4 (see the
+.B --debug
+option for more information on log message levels). Default value
+for <string> is %s.
+.TP 
+.I write <filename> [<string>]
+String <string> with a terminating newline is written to the file 
+<filename> (<filename> may not contain whitespace). File may be a regular 
+file, named pipe, or standard output (denoted by
+.BR - ).
+If the file is a regular file, <string> is appended to the end of the file. 
+If the file does not exist, it is created as a regular file before writing.
+Default value for <string> is %s.
+.TP 
+.I shellcmd <cmdline>
+Fork a process for executing command line <cmdline>. If the
+.B --quoting
+option was specified and <cmdline> contains %s variables, the value of %s
+is quoted with apostrophes before substituting it into <cmdline>;
+note if the value of %s contains apostrophes, they are masked with backslashes
+(e.g., abc is converted to 'abc' and aa'bb is converted to 'aa'\\''bb').
+For additional information, see INTERPROCESS COMMUNICATION section.
+.TP 
+.I spawn <cmdline>
+Similar to the
+.I shellcmd
+action, except that each line from the standard output of <cmdline> 
+becomes a synthetic event and will be treated like a line from input file 
+(see the
+.I event
+action for more information). 
+.TP 
+.I pipe '[<string>]' [<cmdline>]
+Fork a process for executing command line <cmdline>. The string <string> 
+with a terminating newline is written to the standard input of <cmdline> 
+(apostrophes are used for disambiguating <string> from <cmdline>).
+Default value for <string> is %s.
+If <cmdline> is omitted, <string> is written to standard output.
+For additional information, see INTERPROCESS COMMUNICATION section.
+.TP 
+.I create [<name> [<time> [<action list>] ] ]
+Create a context with the name <name>, lifetime of <time> seconds, and 
+empty event store. The <name> parameter may not contain whitespace and defaults
+to %s. The <time> parameter must evaluate to an unsigned integer at runtime.
+Specifying 0 for <time> or omitting the value means infinite lifetime.
+If <action list> is given, it will be executed when the context expires.
+If <action list> contains several actions, the list must be enclosed in
+parentheses. In <action list>, the internal context name _THIS may be used
+for referring to the current context (see INTERNAL EVENTS AND CONTEXTS
+section for a detailed discussion).
+If an already existing context is recreated with
+.IR create , 
+its remaining lifetime is set to <time> seconds, its action list is
+reinitialized, and its event store is emptied.
+.TP 
+.I delete [<name>]
+Delete the context <name>. The <name> parameter may not contain whitespace
+and defaults to %s.
+.TP 
+.I obsolete [<name>]
+Similar to the
+.I delete 
+action, except that the action list of the context <name> (if present)  
+is executed before deletion.
+.TP 
+.I set <name> <time> [<action list>]
+Change settings for the context <name> -- the remaining lifetime of the 
+context is set to <time> seconds, and if the <action list> parameter is 
+given, the context action list is set to <action list>. 
+The <name> parameter may not contain whitespace and defaults to %s.
+The <time> parameter must evaluate to an unsigned integer at runtime.
+Specifying 0 for <time> or omitting the value means infinite lifetime.
+If <action list> contains several actions, the list must be enclosed in
+parentheses. In <action list>, the internal context name _THIS may be used
+for referring to the current context (see INTERNAL EVENTS AND CONTEXTS
+section for a detailed discussion).
+.TP 
+.I alias <name> [<alias>]
+Create an alias name <alias> for the context <name>. After creation,
+both <alias> and <name> will point to the same context data structure,
+and can thus be used interchangeably for referring to the context.
+The <name> and <alias> parameters may not contain whitespace, and <alias>
+defaults to %s.
+If the context <name> does not exist, the alias name is not created.
+If the
+.I delete
+action is called for one of the context names, the context data structure is
+destroyed, and all context names (which are now pointers to unallocated
+memory) cease to exist. Also note that when the 
+context expires, its action list is executed only once, 
+no matter how many names the context has.
+.TP 
+.I unalias [<alias>]
+Drop an existing context name <alias>, so that it can no longer be used for
+referring to the given context. The <alias> parameter may not contain 
+whitespace and defaults to %s. 
+If the name <alias> is the last reference to the context, the 
+.I unalias
+action is identical to
+.IR delete .
+.TP 
+.I add <name> [<string>]
+String <string> is appended to the end of the event store of the context 
+<name>. 
+The <name> parameter may not contain whitespace, and the <string> parameter
+defaults to %s.
+If the context <name> does not exist, the context is created with
+an infinite lifetime, empty action list and empty event store (as with
+.IR "create <name>" )
+before adding the string to event store. 
+If <string> is a multi-line string (i.e., it contains newlines), it is
+split into lines, and each line is appended to the event store separately.
+.TP 
+.I fill <name> [<string>]
+Similar to the
+.I add 
+action, except that the event store of the context <name> is emptied 
+before <string> is added.
+.TP 
+.I report <name> [<cmdline>]
+Fork a process for executing command line <cmdline>, and write strings from
+the event store of the context <name> to the standard input of <cmdline>.
+Strings are written in the order they appear in the event store, with
+a terminating newline appended to each string.
+If the context <name> does not exist or its event store is empty, <cmdline>
+is not executed.
+The <name> parameter may not contain whitespace, and if <cmdline> is omitted,
+strings are written to standard output.
+For additional information, see INTERPROCESS COMMUNICATION section.
+.TP 
+.I copy <name> %<var>
+Strings s1,...,sn from the event store of the context <name> are joined
+into a multi-line string "s1<NEWLINE>...<NEWLINE>sn", and this string is
+assigned to the action list variable %<var>.
+If the context <name> does not exist, the value of %<var> does not change.
+.TP 
+.I empty <name> [%<var>]
+Similar to the
+.I copy
+action, except that the event store of the context <name> will be emptied 
+after the assignment. If %<var> is omitted, the content of the event store
+is dropped without an assignment.
+.TP 
+.I event [<time>] [<string>]
+After <time> seconds, create a synthetic event <string>. 
+If <string> is a multi-line string (i.e., it contains newlines), it is
+split into lines, and from each line a separate synthetic event is created.
+SEC will treat each synthetic event like a line from an input file -- 
+the event will be matched against rules and it might trigger further actions.
+The <time> parameter is an integer constant. Specifying 0 for <time> or
+omitting the value means "now". Default value for <string> is %s.
+.TP 
+.I tevent <time> [<string>]
+Similar to the
+.I event
+action, except that the <time> parameter may contain variables and must 
+evaluate to an unsigned integer at runtime.
+.TP 
+.I reset [<offset>] [<string>]
+Terminate event correlation operation(s) with the operation description string
+<string>. Note that the
+.I reset
+action works only for operations started from the same configuration file.
+The <offset> parameter is used to refer to a specific rule in the 
+configuration file. If <offset> is given, the operation started by the
+given rule is terminated (if it exists).
+If <offset> is an unsigned integer N, it refers to the N-th rule in the 
+configuration file. If <offset> is 0, it refers to the current rule. If
+<offset> begins with the plus (+) or minus (-) sign, it specifies an offset
+from the current rule (e.g., -1 denotes the previous and +1 the next rule).
+If <offset> is not given, SEC checks for each rule from the current
+configuration file if an operation with <string> has been started by this 
+rule, and the operation is terminated if it exists.
+Default value for <string> is %s.
+For additional information, see EVENT CORRELATION OPERATIONS section.
+.TP 
+.I getwpos %<var> <offset> [<string>]
+Find the beginning of the event correlation window for an event correlation 
+operation, and set the action list variable %<var> to this timestamp. 
+The value assigned to %<var> is measured in seconds since Epoch 
+(as reported by the
+.BR time (2)
+system call). As with the
+.I reset
+action, the event correlation operation is identified by the operation 
+description string <string> and the rule offset <offset>. 
+If the operation does not exist, the value of %<var> does not change.
+Default value for <string> is %s.
+For additional information, see EVENT CORRELATION OPERATIONS section.
+.TP 
+.I setwpos <time> <offset> [<string>]
+Set the beginning of the event correlation window to <time> for an event
+correlation operation (if it exists). The <time> parameter must evaluate to 
+seconds since Epoch (as reported by the
+.BR time (2)
+system call), and must reflect a time moment between the previous window
+position and the current time (both endpoints included). As with the
+.I reset
+action, the event correlation operation is identified by the operation 
+description string <string> and the rule offset <offset>.
+Default value for <string> is %s.
+For additional information, see EVENT CORRELATION OPERATIONS section.
+.TP 
+.I assign %<var> [<string>]
+Assign string <string> to the action list variable %<var>. 
+Default value for <string> is %s.
+.TP 
+.I eval %<var> <code>
+The parameter <code> is a Perl miniprogram that is compiled and executed
+by calling the Perl 
+.BR eval ()
+function in the Perl list context. 
+If the miniprogram returns a single value, 
+it is assigned to the action list variable %<var>. If the miniprogram 
+returns several values s1,...,sn, they are joined into a multi-line string
+"s1<NEWLINE>...<NEWLINE>sn", and this string is assigned to %<var>.
+If no value is returned or
+.BR eval ()
+fails, the value of %<var> does not change.
+Since most Perl programs contain semicolons which are also employed by SEC
+as action separators, it is recommended to enclose the <code> parameter in 
+parentheses, in order to mask the semicolons in <code>.
+For additional information, see PERL INTEGRATION section.
+.TP 
+.I call %<var> %<ref> [<paramlist>]
+Call the precompiled Perl function referenced by the action list variable 
+%<ref>, and assign the result to the action list variable %<var>.
+The %<ref> parameter must be a code reference that has been previously
+created with the
+.I eval
+action. The <paramlist> parameter (if given) is a string which specifies 
+parameters for the function. The parameters must be separated by whitespace 
+in the <paramlist> string.
+If the function returns a single value, it is assigned to %<var>.
+If the function returns several values s1,...,sn, they are joined into 
+a multi-line string "s1<NEWLINE>...<NEWLINE>sn", and this string is assigned 
+to %<var>. If no value is returned, the function encounters a fatal runtime
+error, or %<ref> is not a code reference, the value of %<var> does not change.
+For additional information, see PERL INTEGRATION section.
+.TP 
+.I lcall %<var> [<paramlist>] -> <code>
+Call the precompiled Perl function <code> and assign the result to the action
+list variable %<var>.
+The <code> parameter must be a valid Perl function definition that is compiled
+at SEC startup with the Perl
+.BR eval ()
+function, and
+.BR eval ()
+must return a code reference.
+The <paramlist> parameter (if given) is a string which specifies 
+parameters for the function. The parameters must be separated by whitespace 
+in the <paramlist> string.
+If the function returns a single value, it is assigned to %<var>.
+If the function returns several values s1,...,sn, they are joined into 
+a multi-line string "s1<NEWLINE>...<NEWLINE>sn", and this string is assigned 
+to %<var>. If no value is returned or the function encounters a fatal runtime
+error, the value of %<var> does not change.
+Since most Perl functions contain semicolons which are also employed by SEC
+as action separators, it is recommended to enclose the <code> parameter in 
+parentheses, in order to mask the semicolons in <code>.
+For additional information, see PERL INTEGRATION section.
+.PP
+.B Examples:
+.PP
+spawn /bin/tail -f /var/log/trapd.log
+.PP
+Follow the /var/log/trapd.log file and feed to SEC input all lines that are 
+appended to the file.
+.PP
+pipe '%t: $0' /bin/mail -s "alert message" root@localhost
+.PP
+Mail the timestamp and the value of the $0 variable to the local root.
+.PP
+add ftp_$1 $0; set ftp_$1 1800 (report ftp_$1 /bin/mail root@localhost)
+.PP
+Add the value of the $0 variable to the event store of the context 
+.BR "ftp_<the value of $1>" . 
+Also extend the context's lifetime for 30 minutes, so that when the context
+expires, its event store will be mailed to the local root.
+.PP
+eval %funcptr ( sub { my(@buf) = split(/\\n/, $_[0]); \\
+.br
+my(@ret) = grep(!/^#/, @buf); return @ret; } ); \\
+.br
+copy C1 %in; call %out %funcptr %in; fill C1 %out
+.PP
+Create a subroutine for weeding out comment lines from the input list, and 
+use this subroutine for removing comment lines from the event store of the 
+context 
+.BR C1 .
+.SS "OTHER ISSUES"
+As already noted, SEC context expressions and action lists may contain
+parentheses which are used for grouping and masking purposes. When SEC parses
+its configuration, it checks whether parentheses in context expressions and
+action lists are balanced (i.e., whether each parenthesis has a counterpart),
+since unbalanced parentheses introduce ambiguity. This can cause SEC to reject
+some legitimate constructs, e.g., 
+.PP
+action=eval %o (print ")";)
+.PP
+is considered an invalid action list (however, note that 
+.br
+action=eval %o (print "()";)
+.br
+would be passed by SEC, since now parentheses are balanced). 
+In order to avoid such parsing errors, each parenthesis without
+a counterpart must be masked with a backslash (the backslash will be removed 
+by SEC during configuration file parsing). For example, the above action
+could be written as
+.PP
+action=eval %o (print "\\)";)
+.SS "SINGLE RULE"
+The
+.B Single
+rule immediately executes an action list when an event has matched the rule.
+An event matches the rule if the pattern matches the event and the context
+expression (if given) evaluates TRUE.
+.PP
+The Single rule supports the following fields:
+.TP 
+.I type
+fixed to Single (value is case insensitive, so single or sIngLe can be
+used instead).
+.TP 
+.IR continue " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, 
+values are case insensitive). 
+.TP 
+.I ptype
+pattern type (value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP 
+.IR varmap " (optional)"
+variable map.
+.TP 
+.IR context " (optional)"
+context expression.
+.TP 
+.I desc
+operation description string. 
+.TP 
+.I action
+action list.
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+and
+.I action
+fields.
+Also note that this rule does not start an event correlation operation, and the
+.I desc
+field is merely used for setting the %s action list variable.
+.PP
+.B Examples:
+.PP
+type=single
+.br
+continue=takenext
+.br
+ptype=regexp
+.br
+pattern=ftpd\\[(\\d+)\\]: \\S+ \\(ristov2.*FTP session opened
+.br
+desc=ftp session opened for ristov2 pid $1
+.br
+action=create ftp_$1
+.PP 
+type=single
+.br
+continue=takenext
+.br
+ptype=regexp
+.br
+pattern=ftpd\\[(\\d+)\\]:
+.br
+context=ftp_$1
+.br
+desc=ftp session event for ristov2 pid $1
+.br
+action=add ftp_$1 $0; set ftp_$1 1800 \\
+         (report ftp_$1 /bin/mail root@localhost)
+.PP 
+type=single
+.br
+ptype=regexp
+.br
+pattern=ftpd\\[(\\d+)\\]: \\S+ \\(ristov2.*FTP session closed
+.br
+desc=ftp session closed for ristov2 pid $1
+.br
+action=report ftp_$1 /bin/mail root@localhost; \\
+       delete ftp_$1
+.PP
+This ruleset is created for monitoring the ftpd log file.
+The first rule creates the context 
+.B ftp_<pid>
+when someone connects from host ristov2 over FTP and establishes a new ftp
+session (the session is identified by the PID of the process which has been
+created for handling this session). The second rule adds all further
+log file lines for the session <pid> to the event store of the context
+.B ftp_<pid> 
+(before adding a line, the rule checks if the context exists). After
+adding a line, the rule extends context's lifetime for 30 minutes and sets 
+the action list that will be executed when the context expires. The third rule 
+mails collected log file lines to root@localhost when the session <pid> is 
+closed. Collected lines will also be mailed when the session <pid> has been 
+inactive for 30 minutes (no log file lines observed for that session).
+.PP
+Note that the log file line that has matched the first rule is also
+matched against the second rule (since the first rule has the
+.I continue
+field set to TakeNext). 
+Since the second rule always matches this line, it will become the first
+line in the event store of
+.BR ftp_<pid> .
+The second rule has also its
+.I continue
+field set to TakeNext, since otherwise no log file lines would reach the 
+third rule.
+.SS "SINGLEWITHSCRIPT RULE"
+The
+.B SingleWithScript
+rule forks a process for executing an external program when an event has 
+matched the rule. 
+The names of all currently existing contexts are written to the standard
+input of the program.
+After the program has been forked, the rule matching continues immediately, 
+and the program status will be checked periodically until the program exits.
+If the program returns 0 exit status, the action list defined by the
+.I action
+field is executed; otherwise the action list defined by the
+.I action2
+field is executed (if given).
+.PP
+The SingleWithScript rule supports the following fields:
+.TP 
+.I type
+fixed to SingleWithScript (value is case insensitive).
+.TP 
+.IR continue " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive).
+.TP 
+.I ptype
+pattern type (value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP
+.IR varmap " (optional)"
+variable map.
+.TP 
+.IR context " (optional)"
+context expression.
+.TP 
+.I script
+an external program.
+.TP 
+.I desc
+operation description string.
+.TP 
+.I action
+action list. 
+.TP
+.IR action2 " (optional)"
+action list.
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that match variables may be used in
+.IR context ,
+.IR script ,
+.IR desc ,
+.IR action ,
+and
+.I action2
+fields. 
+Also note that this rule does not start an event correlation operation, and the
+.I desc
+field is merely used for setting the %s action list variable.
+.PP
+.B Examples:
+.PP
+type=SingleWithScript
+.br
+ptype=RegExp
+.br
+pattern=interface ([\\d.]+) down
+.br
+script=/bin/ping -c 3 -q $1
+.br
+desc=Check if $1 responds to ping
+.br
+action=logonly Interface $1 reported down, but is pingable
+.br
+action2=pipe '%t: Interface $1 is down' /bin/mail root@localhost
+.PP
+When "interface <ipaddress> down" line appears in input, the rule checks
+if <ipaddress> responds to ping. If <ipaddress> is pingable, the message
+"Interface <ipaddress> reported down, but is pingable" is logged; otherwise
+an e-mail warning containing a human-readable timestamp is sent to 
+root@localhost.
+.SS "SINGLEWITHSUPPRESS RULE"
+The
+.B SingleWithSuppress
+rule runs event correlation operations for filtering repeated instances of
+the same event during T seconds. The value of T is defined by the
+.I window
+field.
+.PP
+When an event has matched the rule, SEC evaluates the operation description 
+string given with the
+.I desc
+field. If the operation for the given string does not exist, SEC will create
+it with the lifetime of T seconds, and the operation immediately executes an 
+action list. If the operation exists, it consumes the matching event without 
+any action. 
+.PP
+The SingleWithSuppress rule supports the following fields:
+.TP 
+.I type
+fixed to SingleWithSuppress (value is case insensitive).
+.TP 
+.IR continue " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive).
+.TP 
+.I ptype
+pattern type (value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP 
+.IR varmap " (optional)"
+variable map.
+.TP 
+.IR context " (optional)"
+context expression.
+.TP 
+.I desc
+operation description string.
+.TP 
+.I action
+action list.
+.TP 
+.I window
+event correlation window size (value is an integer constant).
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+and
+.I action
+fields.
+.PP
+.B Examples:
+.PP
+type=SingleWithSuppress
+.br
+ptype=RegExp
+.br
+pattern=(\\S+): [fF]ile system full
+.br
+desc=File system $1 full
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=900
+.PP
+This rule runs event correlation operations for processing "file system full"
+syslog messages, e.g., 
+.PP
+Dec 16 14:26:09 test ufs: [ID 845546 kern.notice] NOTICE: alloc: /var: 
+file system full
+.PP
+When the first message for a file system is observed, an operation is created 
+which sends an e-mail warning about this file system to root@localhost. 
+The operation will then run for 900 seconds and silently consume further 
+messages for the *same* file system.
+However, if a message for a different file system is observed, another 
+operation will be started which sends a warning to root@localhost again
+(since the
+.I desc
+field contains the $1 match variable which evaluates to the file system name).
+.SS "PAIR RULE"
+The
+.B Pair
+rule runs event correlation operations for processing event pairs 
+during T seconds. The value of T is defined by the
+.I window
+field. Default value is 0 which means infinity.
+.PP
+When an event has matched the conditions defined by the
+.I pattern
+and
+.I context
+field, SEC evaluates the operation description string given with the
+.I desc
+field. 
+If the operation for the given string exists, it consumes the matching event 
+without any action. If the operation does not exist, SEC will create
+it with the lifetime of T seconds, and the operation immediately executes an 
+action list defined by the
+.I action
+field. SEC will also copy the match conditions given with the 
+.I pattern2
+and
+.I context2
+field into the operation, and substitute match variables with their values 
+in copied conditions. 
+.PP
+If the event does not match conditions defined by the
+.I pattern
+and
+.I context
+field, SEC will check the match conditions of all operations started by 
+the given rule. Each matching operation executes the action list given with the
+.I action2
+field and finishes. 
+.PP
+The Pair rule supports the following fields:
+.TP 
+.I type
+fixed to Pair (value is case insensitive).
+.TP 
+.IR continue " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive). Specifies the point-of-continue after a match by
+.I pattern
+and
+.IR context .
+.TP 
+.I ptype
+pattern type for
+.I pattern
+(value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP 
+.IR varmap " (optional)"
+variable map for 
+.IR pattern .
+.TP 
+.IR context " (optional)"
+context expression.
+.TP 
+.I desc
+operation description string.
+.TP 
+.I action
+action list.
+.TP
+.IR continue2 " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive). Specifies the point-of-continue after a match by
+.I pattern2
+and
+.IR context2 .
+.TP
+.I ptype2
+pattern type for
+.I pattern2
+(value is case insensitive).
+.TP 
+.I pattern2
+pattern.
+.TP 
+.IR varmap2 " (optional)"
+variable map for
+.IR pattern2 .
+.TP 
+.IR context2 " (optional)"
+context expression.
+.TP 
+.I desc2
+format string that sets the %s variable for
+.IR action2 .
+.TP 
+.I action2
+action list.
+.TP 
+.IR window " (optional)"
+event correlation window size (value is an integer constant).
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+.IR action ,
+.IR pattern2 ,
+.IR context2 ,
+.IR desc2 ,
+and
+.I action2
+fields. 
+.PP
+.B Examples:
+.PP
+type=Pair
+.br
+ptype=RegExp
+.br
+pattern=kernel: nfs: server (\\S+) not responding, still trying
+.br
+desc=Server $1 is not responding
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+ptype2=SubStr
+.br
+pattern2=kernel: nfs: server $1 OK
+.br
+desc2=Server $1 is responding again
+.br
+action2=logonly
+.br
+window=3600
+.PP
+This rule runs event correlation operations for processing NFS "server not
+responding" and "server OK" syslog messages, e.g.,
+.PP
+Dec 18 22:39:48 test kernel: nfs: server box1 not responding, still trying
+.br
+Dec 18 22:42:27 test kernel: nfs: server box1 OK
+.PP
+When the "server not responding" message for an NFS server is observed, 
+an operation is created for this server which sends an e-mail warning about 
+the server to root@localhost.
+The operation will then run for 3600 seconds and silently consume further 
+"server not responding" messages for the same server. If this operation
+observes "server OK" message for the *same* server, it will log the message
+"Server <servername> is responding again" and finish (because the
+.I pattern2
+field contains the  $1 match variable which evaluates to the server name).
+.SS "PAIRWITHWINDOW RULE"
+The
+.B PairWithWindow
+rule runs event correlation operations for processing event pairs
+during T seconds. The value of T is defined by the
+.I window
+field.
+.PP
+When an event has matched the conditions defined by the
+.I pattern
+and
+.I context
+field, SEC evaluates the operation description string given with the
+.I desc
+field. 
+If the operation for the given string exists, it consumes the matching event 
+without any action. If the operation does not exist, SEC will create
+it with the lifetime of T seconds. 
+SEC will also copy the match conditions given with the 
+.I pattern2
+and
+.I context2
+field into the operation, and substitute match variables with their values 
+in copied conditions. 
+.PP
+If the event does not match conditions defined by the
+.I pattern
+and
+.I context
+field, SEC will check the match conditions of all operations started by 
+the given rule. Each matching operation executes the action list given with the
+.I action2
+field and finishes. 
+If the operation has not observed a matching event by the end of its lifetime,
+it executes the action list given with the 
+.I action
+field before finishing.
+.PP
+The PairWithWindow rule supports the following fields:
+.TP 
+.I type
+fixed to PairWithWindow (value is case insensitive).
+.TP 
+.IR continue " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive). Specifies the point-of-continue after a match by
+.I pattern
+and
+.IR context .
+.TP 
+.I ptype
+pattern type for
+.I pattern
+(value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP 
+.IR varmap " (optional)"
+variable map for 
+.IR pattern .
+.TP 
+.IR context " (optional)"
+context expression.
+.TP 
+.I desc
+operation description string.
+.TP 
+.I action
+action list.
+.TP
+.IR continue2 " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive). Specifies the point-of-continue after a match by
+.I pattern2
+and
+.IR context2 .
+.TP
+.I ptype2
+pattern type for
+.I pattern2
+(value is case insensitive).
+.TP 
+.I pattern2
+pattern.
+.TP 
+.IR varmap2 " (optional)"
+variable map for
+.IR pattern2 .
+.TP 
+.IR context2 " (optional)"
+context expression.
+.TP 
+.I desc2
+format string that sets the %s variable for
+.IR action2 .
+.TP 
+.I action2
+action list.
+.TP 
+.I window
+event correlation window size (value is an integer constant).
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+.IR action ,
+.IR pattern2 ,
+.IR context2 ,
+.IR desc2 ,
+and
+.I action2
+fields. 
+.PP
+.B Examples:
+.PP
+type=PairWithWindow
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from ([\\d.]+) port \\d+ ssh2
+.br
+desc=User $1 has been unable to log in from $2 over SSH during 1 minute 
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+ptype2=RegExp
+.br
+pattern2=sshd\\[\\d+\\]: Accepted .+ for $1 from $2 port \\d+ ssh2
+.br
+desc2=SSH login successful for %1 from %2 after initial failure
+.br
+action2=logonly
+.br
+window=60
+.PP
+This rule runs event correlation operations for processing SSH login events,
+e.g.,
+.PP
+Dec 27 19:00:24 test sshd[10526]: Failed password for risto from 10.1.2.7 port 52622 ssh2
+.br
+Dec 27 19:00:27 test sshd[10526]: Accepted password for risto from 10.1.2.7 port 52622 ssh2
+.PP
+When an SSH login failure is observed for a user name and a source IP address, 
+an operation is created for this user name and IP address combination which 
+expects a successful login for the *same* user name *and* IP address during 60 
+seconds.
+For example, when the rule matches the event
+.PP
+Dec 27 19:00:24 test sshd[10526]: Failed password for risto from 10.1.2.7 port 52622 ssh2
+.PP
+an operation is started which expects an event matching the regular
+expression
+.PP
+sshd\\[\\d+\\]: Accepted .+ for risto from 10\\.1\\.2\\.7 port \\d+ ssh2
+.PP
+If the user fails to log in from the same IP address during 60 seconds, 
+the operation sends an e-mail warning to root@localhost before finishing, 
+otherwise it will log the message 
+"SSH login successful for <username> from <ipaddress> after initial failure" 
+and finish.
+.SS SINGLEWITHTHRESHOLD RULE
+The
+.B SingleWithThreshold
+rule runs event correlation operations for counting repeated instances of the
+same event during T seconds, and taking an action if N events are observed. 
+The values of T and N are defined by the
+.I window
+and
+.I thresh
+field, respectively.
+.PP
+When an event has matched the rule, SEC evaluates the operation description 
+string given with the 
+.I desc 
+field. If the operation for the given string does not exist, SEC will create 
+it with the lifetime of T seconds. The operation will memorize the occurrence 
+time of the event (current time as returned by the
+.BR time (2)
+system call), and compare the number of memorized occurrence times with 
+the threshold N. If the operation has observed N events, it executes the
+action list defined by the
+.I action
+field, and consumes all further matching events without any action. If the
+rule has an optional action list defined with the
+.I action2
+field, the operation will execute it before finishing. Note that  a sliding 
+window is employed for event counting -- if the operation has observed 
+less than N events by the end of its lifetime, it drops occurrence times which
+are older than T seconds, and extends its lifetime for T seconds from the
+earliest remaining occurrence time. If there are no remaining occurrence
+times, the operation finishes without executing an action list. 
+.PP
+The SingleWithThreshold rule supports the following fields:
+.TP 
+.I type
+fixed to SingleWithThreshold (value is case insensitive).
+.TP 
+.IR continue " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive).
+.TP 
+.I ptype
+pattern type (value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP 
+.IR varmap " (optional)"
+variable map.
+.TP 
+.IR context " (optional)"
+context expression.
+.TP 
+.I desc
+operation description string.
+.TP 
+.I action
+action list.
+.TP 
+.IR action2 " (optional)"
+action list.
+.TP 
+.I window
+event correlation window size (value is an integer constant).
+.TP 
+.I thresh
+counting threshold (value is an integer constant).
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+.IR action ,
+and
+.I action2
+fields.
+.PP
+.B Examples:
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from [\\d.]+ port \\d+ ssh2
+.br
+desc=Three SSH login failures within 1m for user $1
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=60
+.br
+thresh=3
+.PP
+This rule runs event correlation operations for counting the number of SSH
+login failure events. Each operation counts events for one user name, and
+if the operation has observed three login failures within 60 seconds,
+it sends an e-mail warning to root@localhost. 
+.PP
+If the rule matches five login failure events for different users at
+the following times:
+.PP
+Dec 28 01:42:21 PM UTC - login failure for risto
+.br
+Dec 28 01:43:10 PM UTC - login failure for risto
+.br
+Dec 28 01:43:29 PM UTC - login failure for risto
+.br
+Dec 28 01:44:00 PM UTC - login failure for risto2
+.br
+Dec 28 01:44:03 PM UTC - login failure for risto
+.br
+Dec 28 01:44:07 PM UTC - login failure for risto
+.PP
+then a counting operation is started for the user risto at 
+Dec 28 01:42:21 PM UTC.
+At Dec 28 01:43:22 PM UTC, the beginning of the event correlation 
+window is moved to Dec 28 01:43:10 PM UTC for this operation. 
+At Dec 28 01:44:00 PM UTC, a second counting operation is started
+for the user risto2.
+The threshold condition for the first operation will be satisfied at 
+Dec 28 01:44:03 PM UTC (since the operation 
+has seen three events within 53 seconds) and thus an e-mail
+warning will be issued. Finally, the event occurring at 
+Dec 28 01:44:07 PM UTC will be consumed silently by the first 
+operation (the operation will run until Dec 28 01:44:10 PM UTC).
+If there will be no further login failure events for the user risto2,
+the second operation will exist until Dec 28 01:45:00 PM UTC without
+taking any action.
+.SS "SINGLEWITH2THRESHOLDS RULE"
+The
+.B SingleWith2Thresholds
+rule runs event correlation operations which take action if N1 events have 
+been observed in the window of T1 seconds, and then at most N2 events will
+be observed in the window of T2 seconds. 
+The values of T1, N1, T2, and N2 are defined by the
+.IR window ,
+.IR thresh ,
+.IR window2 ,
+and
+.I thresh2
+field, respectively.
+.PP
+When an event has matched the rule, SEC evaluates the operation description 
+string given with the 
+.I desc 
+field. If the operation for the given string does not exist, SEC will create 
+it with the lifetime of T1 seconds. The operation will memorize the occurrence 
+time of the event (current time as returned by the
+.BR time (2)
+system call), and compare the number of memorized occurrence times with 
+the threshold N1. If the operation has observed N1 events, it executes the
+action list defined by the
+.I action
+field, and starts another counting round for T2 seconds.
+If no more than N2 events have been observed by the end of the window, 
+the operation executes the action list defined by the
+.I action2
+field and finishes. Note that both windows are sliding -- the first window
+slides like the window of the SingleWithThreshold operation, while the 
+beginning of the second window is moved to the second earliest memorized
+event occurrence time when the threshold N2 is violated.
+.PP
+The SingleWith2Thresholds rule supports the following fields:
+.TP 
+.I type
+fixed to SingleWith2Thresholds (value is case insensitive).
+.TP 
+.IR continue " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive).
+.TP 
+.I ptype
+pattern type (value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP 
+.IR varmap " (optional)"
+variable map.
+.TP 
+.IR context " (optional)"
+context expression.
+.TP 
+.I desc
+operation description string.
+.TP 
+.I action
+action list.
+.TP 
+.I window
+event correlation window size (value is an integer constant).
+.TP 
+.I thresh
+counting threshold.
+.TP 
+.I desc2
+format string that sets the %s variable for
+.IR action2 .
+.TP 
+.I action2
+action list. 
+.TP 
+.I window2
+event correlation window size (value is an integer constant).
+.TP 
+.I thresh2
+counting threshold.
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+.IR action ,
+.IR desc2 ,
+and
+.I action2
+fields.
+.PP
+.B Examples:
+.PP
+type=SingleWith2Thresholds
+.br
+ptype=RegExp 
+.br
+pattern=(\\S+): %SYS-3-CPUHOG
+.br
+desc=Router $1 CPU overload
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=300
+.br
+thresh=2
+.br
+desc2=Router $1 CPU load has been normal for 1h
+.br
+action2=logonly
+.br
+window2=3600
+.br
+thresh2=0
+.PP
+When a SYS-3-CPUHOG syslog message is received from a router, the rule starts 
+a counting operation for this router which sends an e-mail warning to
+root@localhost if another such message is received from the same router
+within 300 seconds. After sending the warning, the operation will continue to
+run until no SYS-3-CPUHOG syslog messages have been received from the router 
+for 3600 seconds. When this condition is satisfied, the operation will log 
+the message "Router <routername> CPU load has been normal for 1h" and finish.
+.SS EVENTGROUP RULE
+The
+.B EventGroup
+rule runs event correlation operations for counting repeated instances of
+N different events e1,...,eK during T seconds, and taking an action if 
+threshold conditions c1,...,cN for *all* events are satisfied (i.e., for 
+each event eK there are at least cK event instances in the window).
+The values for N and T are defined by the
+.I type
+and 
+.I window
+field, respectively, while values for c1,...,cN are given with the
+.I thresh*
+fields. Values for N and c1,...,cN default to 1. 
+Note that the event correlation window is sliding like the window of
+the SingleWithThreshold operation.
+.PP
+When an event has matched the rule, SEC evaluates the operation description 
+string given with the 
+.I desc 
+field. If the operation for the given string does not exist, SEC will create 
+it with the lifetime of T seconds. The operation will memorize the occurrence 
+time of the event (current time as returned by the
+.BR time (2)
+system call), and compare the number of memorized occurrence times for each
+eK with the threshold cK. 
+If all threshold confitions are satisfied, the operation executes the
+action list defined by the
+.I action
+field, and consumes all further matching events without re-executing
+the action list if the
+.I multact
+field is set to No (this is the default). 
+However, if
+.I multact
+is set to Yes, the operation will evaluate the threshold conditions on every
+further matching event, executing the action list given with the
+.I action
+field if all conditions are satisfied, and sliding the event correlation 
+window forward when the window is about to expire (if no events remain in
+the window, the operation will finish).
+.PP
+If the rule definition has an optional action list defined with the
+.I count*
+field for event eK, the operation executes it every time an instance of eK 
+is observed (even if
+.I multact
+is set to No and the operation has already executed the action list given
+with
+.IR action ).
+.PP
+If the rule definition has an optional action list defined with the
+.I init
+field, the operation executes it immediately after the operation has been
+created. 
+.PP
+If the rule definition has an optional action list defined with the
+.I end
+field, the operation executes it immediately before the operation finishes.
+.PP
+If the rule definition has an optional action list defined with the
+.I slide
+field, the operation executes it immediately after the event correlation 
+window has slidden forward.
+However, note that moving the window with the
+.I setwpos
+action will *not* trigger the execution.
+.PP
+The EventGroup rule supports the following fields:
+.TP 
+.I type 
+.IR "" "EventGroup[" N "]"
+(value is case insensitive, N defaults to 1).
+.TP 
+.IR continue " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive). Specifies the point-of-continue after a match by
+.I pattern
+and
+.IR context .
+.TP 
+.I ptype
+pattern type for
+.I pattern
+(value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP 
+.IR varmap " (optional)"
+variable map for
+.IR pattern .
+.TP 
+.IR context " (optional)"
+context expression.
+.TP 
+.IR count " (optional)"
+action list for execution after a match by
+.I pattern
+and
+.IR context .
+.TP
+.IR thresh " (optional)"
+counting threshold for events matched by
+.I pattern
+and
+.I context 
+(value is an integer constant, default is 1).
+.TP
+.B ...
+.TP 
+.IR continueN " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive). Specifies the point-of-continue after a match by
+.I patternN
+and
+.IR contextN .
+.TP 
+.I ptypeN
+pattern type for
+.I patternN
+(value is case insensitive).
+.TP 
+.I patternN
+pattern.
+.TP 
+.IR varmapN " (optional)"
+variable map for
+.IR patternN .
+.TP 
+.IR contextN " (optional)"
+context expression.
+.TP 
+.IR countN " (optional)"
+action list for execution after a match by
+.I patternN
+and
+.IR contextN .
+.TP
+.IR threshN " (optional)"
+counting threshold for events matched by
+.I patternN
+and
+.I contextN
+(value is an integer constant, default is 1).
+.TP 
+.I desc
+operation description string.
+.TP 
+.I action
+action list.
+.TP 
+.IR init " (optional)"
+action list.
+.TP 
+.IR end " (optional)"
+action list.
+.TP 
+.IR slide " (optional)"
+action list.
+.TP
+.I multact " (optional)"
+Yes or No (values are case insensitive, default is No).
+.TP 
+.I window
+event correlation window size (value is an integer constant).
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that match variables may be used in
+.IR context* ,
+.IR count* ,
+.IR desc ,
+.IR action ,
+.IR init ,
+.IR end ,
+and
+.I slide
+fields.
+.PP
+.B Examples:
+.PP
+type=EventGroup3
+.br
+ptype=regexp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from ([\\d.]+) port \\d+ ssh2
+.br
+varmap= user=1; ip=2
+.br
+count=alias OPER_$+{ip} LOGIN_FAILED_$+{user}_$+{ip}
+.br
+ptype2=regexp
+.br
+pattern2=sshd\\[\\d+\\]: Accepted .+ for (\\S+) from ([\\d.]+) port \\d+ ssh2
+.br
+varmap2= user=1; ip=2
+.br
+context2=LOGIN_FAILED_$+{user}_$+{ip}
+.br
+ptype3=regexp
+.br
+pattern3=kernel: iptables:.* SRC=([\\d.]+)
+.br
+varmap3= ip=1
+.br
+desc=Client $+{ip} accessed a firewalled port and had difficulties with logging in
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+init=create OPER_$+{ip}
+.br
+slide=delete OPER_$+{ip}; reset 0
+.br
+end=delete OPER_$+{ip}
+.br
+window=120
+.PP
+This rule runs event correlation operations for processing iptables and SSH
+login events, e.g.,
+.PP
+Dec 27 19:00:06 test kernel: iptables: IN=eth0 OUT= MAC=00:13:72:8a:83:d2:00:1b:25:07:e2:1b:08:00 SRC=10.1.2.7 DST=10.2.5.5 LEN=60 TOS=0x00 PREC=0x00 TTL=62 ID=1881 DF PROTO=TCP SPT=34342 DPT=23 WINDOW=5840 RES=0x00 SYN URGP=0
+.br
+Dec 27 19:00:24 test sshd[10526]: Failed password for risto from 10.1.2.7 port 5
+2622 ssh2
+.br
+Dec 27 19:00:27 test sshd[10526]: Accepted password for risto from 10.1.2.7 port 52622 ssh2
+.PP
+The rule starts an event correlation operation for an IP address if SSH login
+failure or iptables event was observed for that IP address. The operation 
+exists for 120 seconds (since when the event correlation window is about to 
+slide, the operation terminates itself with the
+.I reset 
+action as specified with the
+.I slide
+field).
+The operation sends an e-mail warning to root@localhost if within 120 seconds 
+two conditions hold for the IP address it tracks -- at least one iptables 
+event was observed for the IP *and* and least one login failure for a user 
+which was followed by a successful login for the same user.
+.PP
+.SS "SUPPRESS RULE"
+The
+.B Suppress
+rule takes no action when an event has matched the rule, and keeps
+matching events from being processed by later rules in the configuration file. 
+.PP
+The Suppress rule supports the following fields:
+.TP 
+.I type
+fixed to Suppress (value is case insensitive).
+.TP 
+.I ptype
+pattern type (value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP 
+.IR varmap " (optional)"
+variable map.
+.TP 
+.IR context " (optional)"
+context expression.
+.TP
+.IR desc " (optional)"
+string for describing the rule.
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that match variables may be used in the
+.I context
+field. 
+Also note that this rule does not start an event correlation operation,
+and the optional
+.I desc
+field is merely used for describing the rule.
+.PP
+.B Examples:
+.PP
+type=Suppress
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for \\S+ from ([\\d.]+) port \\d+ ssh2
+.br
+context=SUPPRESS_IP_$1
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from ([\\d.]+) port \\d+ ssh2
+.br
+desc=Three SSH login failures within 1m for user $1 from $2
+.br
+action=pipe '%t: %s' /bin/mail root@localhost; create SUPPRESS_IP_$2 3600
+.br
+window=60
+.br
+thresh=3
+.PP
+The first rule filters out SSH login failure events for an already reported
+source IP address, so that they will not be matched
+against the second rule during 3600 seconds after sending an e-mail warning.
+.SS "CALENDAR RULE"
+The
+.B Calendar
+rule was designed for executing actions at specific times. Unlike all
+other rules, this rule reacts only to the system clock, ignoring other
+input. 
+The Calendar rule executes the action list given with the
+.I action
+field if the current time matches all conditions of the time specification 
+given with the
+.I time 
+field. The action list is executed only once for any matching minute.
+.PP
+The rule employs a time specification which closely resembles the
+.BR crontab (1)
+style, but there are some subtle differences.
+The time specification consists of five or six conditions separated
+by whitespace. The first condition matches minutes 
+(allowed values are 0-59), the second condition matches hours (allowed values
+are 0-23), the third condition days (allowed values are 0-31, with 0 denoting
+the last day of the month), the fourth condition months (allowed values are
+1-12), and the fifth condition weekdays (allowed values are 0-7, with 0 and 7 
+denoting Sunday). The sixth condition is optional and matches years (allowed
+values are 0-99 which denote the last two digits of the year).
+.PP
+Asterisks (*), ranges of numbers (e.g., 8-11), and lists (e.g., 
+2,5,7-9) are allowed as conditions. Asterisks and ranges may be augmented
+with step values (e.g., 47-55/2 means 47,49,51,53,55). 
+.PP
+Note that unlike
+.BR crontab (1)
+time specification, the day and weekday conditions are *not* joined with 
+logical OR, but rather with logical AND.
+Therefore, 0 1 25-31 10 7 means 1AM on last Sunday in October. 
+On the other hand, with
+.BR crontab (1)
+the same specification means 1AM in every last seven days or every Sunday
+in October.
+Also, unlike some versions of
+.BR cron (8),
+SEC is not restricted to take action only during the first second of
+the current minute (for example, if SEC is started at the 22th second
+of a minute, the wildcard condition produces a match for this minute).
+.PP
+The Calendar rule supports the following fields:
+.TP 
+.I type
+fixed to Calendar (value is case insensitive).
+.TP 
+.I time
+time specification.
+.TP 
+.IR context " (optional)"
+context expression.
+.TP 
+.I desc
+operation description string.
+.TP 
+.I action
+action list.
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that this rule does not start event correlation operation, and the
+.I desc
+field is merely used for setting the %s action list variable.
+.PP
+.B Examples:
+.PP
+type=Calendar
+.br
+time=0 2 25-31 3,12 6
+.br
+desc=Check if backup is done on last Saturday of Q1 and Q4
+.br
+action=event WAITING_FOR_BACKUP
+.PP
+type=Calendar
+.br
+time=0 2 24-30 6,9 6
+.br
+desc=Check if backup is done on last Saturday of Q2 and Q3
+.br
+action=event WAITING_FOR_BACKUP
+.PP
+type=PairWithWindow
+.br
+ptype=SubStr
+.br
+pattern=WAITING_FOR_BACKUP
+.br
+desc=Quarterly backup not completed on time!
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+ptype2=SubStr
+.br
+pattern2=BACKUP READY
+.br
+desc2=Quarterly backup successfully completed
+.br
+action2=none
+.br
+window=1800
+.PP
+The first two rules create a synthetic event WAITING_FOR_BACKUP at 2AM
+on last Saturday of March, June, September and December.
+The third rule matches this event and starts an event correlation operation
+which waits for the BACKUP READY event for 1800 seconds. If this event
+has not arrived by 2:30AM, the operation sends an e-mail warning to
+root@localhost.
+.SS "JUMP RULE"
+The
+.B Jump
+rule submits matching events to specific ruleset(s) for 
+further processing. If the event matches the rule, 
+SEC continues the search for matching rules in configuration file 
+set(s) given with the 
+.I cfset
+field. Rules from every file are tried in the order of their
+appearance in the file.
+Configuration file sets can be created from Options rules with the
+.I joincfset
+field, with each set containing at least one configuration file.
+If more that one set name is given with
+.IR cfset , 
+sets are processed from left to right;
+a matching rule in one set doesn't prevent SEC from processing the following 
+sets. If the 
+.I constset
+field is set to Yes, set names are assumed to be constants and will not
+be searched for match variables at runtime.
+.PP
+The Jump rule supports the following fields:
+.TP 
+.I type
+fixed to Jump (value is case insensitive).
+.TP 
+.IR continue " (optional)"
+TakeNext, DontCont or GoTo <label> (apart from <label>, values are case 
+insensitive).
+.TP 
+.I ptype
+pattern type (value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP 
+.IR varmap " (optional)"
+variable map.
+.TP 
+.IR context " (optional)"
+context expression.
+.TP
+.IR cfset " (optional)"
+configuration file set names that are separated by whitespace.
+.TP
+.IR constset " (optional)"
+Yes or No (values are case insensitive, default is Yes). 
+.TP
+.IR desc " (optional)"
+string for describing the rule.
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+Note that match variables may be used in the
+.I context
+and
+.I cfset
+fields. Also note that this rule does not start event correlation operations,
+and the optional
+.I desc
+field is merely used for describing the rule.
+.PP
+Finally, if the
+.I cfset
+field is not present and the
+.I continue
+field is set to GoTo, the Jump rule can be used for skipping rules inside
+the current configuration file; if both
+.I cfset
+and
+.I continue
+are not present, Jump is identical to Suppress.
+.PP
+.B Examples:
+.PP
+type=Jump
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]:
+.br
+cfset=sshd-rules auth-rules
+.PP
+When an sshd syslog message appears in input, rules from configuration files
+of the set
+.B sshd-rules
+are first used for matching the message, and then rules from the configuration
+file set
+.B auth-rules
+are tried.
+.SS "OPTIONS RULE"
+The
+.B Options
+rule sets processing options for the ruleset in the current
+configuration file. If more than one Options rule is present in the 
+configuration file, the last instance overrides all previous ones. Note
+that the Options rule is only processed when SEC (re)starts and reads in the
+configuration file. 
+Since this rule is not applied at runtime, it can never match
+events, react to the system clock, or start event correlation operations.
+.PP
+The
+.I joincfset
+field lists the names of one or more configuration file sets, 
+and the current configuration file will be added to each set.
+If a set doesn't exist, it will be created and the current
+configuration file becomes its first member.
+If the 
+.I procallin
+field is set to No, the rules from the configuration file will be
+used for matching input from Jump rules only.
+.PP
+The Options rule supports the following fields:
+.TP 
+.I type
+fixed to Options (value is case insensitive).
+.TP 
+.IR joincfset " (optional)"
+configuration file set names that are separated by whitespace.
+.TP 
+.IR procallin " (optional)"
+Yes or No (values are case insensitive, default is Yes). 
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
+.B Examples:
+.PP
+The following rule adds the current configuration file to the set
+.B sshd-rules
+which is used for matching input from Jump rules only:
+.PP
+type=Options
+.br
+joincfset=sshd-rules
+.br
+procallin=no
+.PP
+The following rule adds the current configuration file to sets
+.B linux
+and
+.B solaris
+which are used for matching all input:
+.PP
+type=Options
+.br
+joincfset=linux solaris
+.SH EVENT CORRELATION OPERATIONS
+In order to identify event correlation operations,
+SEC assigns a key to every operation that is composed from the configuration 
+file name, the rule ID, and the operation description string
+(defined by the
+.I desc
+field of the rule).
+If there are N rules in the configuration file, the rule IDs belong to
+the range 0..N-1, and the ID of the k-th rule is k-1.
+Note that since the configuration file name and rule ID are part of the key,
+different rules can start operations with identical description strings
+without a danger of a clash.
+.PP
+For example, if the configuration file my.conf contains only one rule
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=user (\\S+) login failure on (\\S+)
+.br
+desc=Repeated login failures for user $1 on $2
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=60
+.br
+thresh=3
+.PP
+then the ID of this rule is 0.
+When this rule matches an input event "user admin login failure on tty1", 
+the 
+.I desc
+field yields an operation description string
+.IR "Repeated login failures for user admin on tty1" , 
+and the event will be processed by the operation with the following key:
+.PP
+my.conf | 0 | Repeated login failures for user admin on tty1
+.PP
+(If the operation for this key does not exist, SEC will start it.)
+By tuning the
+.I desc
+field of the rule, the scope of individual event correlation operations can 
+be changed.
+For instance, the above rule starts three event correlation operations
+for the following events:
+.PP
+user admin login failure on tty1
+.br
+user admin login failure on tty5
+.br
+user admin login failure on tty2
+.PP
+However, if the
+.I desc
+field is set to 
+.IR "Repeated login failures for user $1" , 
+these events are processed by the *same* event correlation operation.
+.PP
+Each operation has an event correlation window which defines its
+scope in time. The size of the
+window is defined by the
+.I window*
+field, and the beginning of the window can be obtained with the
+.I getwpos
+action. SingleWithThreshold, SingleWith2Thresholds and
+EventGroup operations can slide its window forward during event processing, 
+while for all operations the window can also be moved explicitly with the
+.I setwpos
+action. Also, with the
+.I reset
+action event correlation operations can be terminated. Note that
+.IR getwpos ,
+.IR setwpos ,
+and
+.I reset
+actions only work for operations started by the rules from the same 
+configuration file.
+.SH TIMING
+There are several kinds of events that SEC reacts to -- changes in input 
+files (e.g., appearance of new data), reception of a signal, status change
+of a child process, and time related events (e.g., context expiration).
+.PP
+When new data appear in SEC input files, only one line is read at a time 
+(even when more lines are available) and the input buffer is updated 
+with this line. Input buffer contains the last N lines from 
+the SEC input, in the order they were read (the value of N can be set with the
+.B --bufsize
+option). Updating the input buffer means that the new line becomes the first
+element of the buffer, while the last element (the oldest line) is removed 
+from the end of the buffer. Note that when both synthetic events and regular 
+input are available for reading, synthetic events are always read first by SEC.
+When all synthetic events have been consumed, 
+SEC will read new data from input files.
+.PP
+After the buffer has been updated (every update always adds one fresh line
+and drops one old line), the rules from configuration files are
+processed, matching the rules against the new content of the input buffer.
+Note that the presence of N lines in the buffer allows for the use of
+patterns that match multiple lines.
+However, since the input buffer is shared between all input sources,
+these patterns work reliably only if events are coming from one source.
+If during the match process an action list is executed which creates new
+input events (e.g., through the
+.I event
+action), the input buffer will *not* be updated until all the rules have
+been matched against the current content of the buffer. 
+.PP
+After each input buffer update, the pattern match cache is cleared. In other
+words, if a match is cached with the rule
+.I varmap*
+field, it is only available for matching rules against the *current* content 
+of the input buffer.
+.PP
+Rules from the same configuration file are matched against the input buffer 
+in the order they are given in that file.
+When multiple configuration files have been specified, rule sequences from 
+all files are matched against the input buffer (unless specified otherwise with
+Options rules).
+The matching order is determined by the order of configuration files 
+in SEC command line.
+For example, if the Perl
+.BR glob ()
+function returns filenames in ascending ASCII order, and configuration
+files /home/risto/A.conf, /home/risto/B.conf2, and /home/risto/C.conf
+are specified with
+.B --conf=/home/risto/*.conf --conf=/home/risto/*.conf2
+in SEC command line,
+then SEC first matches the input against the rule sequence from A.conf, then
+from C.conf, and finally from B.conf2.
+Also, note that even if A.conf contains a Suppress rule for 
+a particular event, the event is still processed by rulesets in C.conf and 
+B.conf2. However, note that 
+.BR glob ()
+might return file names in different order if locale settings change.
+If you want to enforce a fixed order for configuration file 
+application in a portable way, it is recommended to create a unique set
+for each file with the Options rule, and employ the Jump rule for defining
+the processing order for sets, e.g.:
+.PP
+# This rule appears in A.conf
+.br
+type=Options
+.br
+joincfset=FileA
+.br
+procallin=no
+.PP
+# This rule appears in B.conf2
+.br
+type=Options
+.br
+joincfset=FileB
+.br
+procallin=no
+.PP
+# This rule appears in C.conf
+.br
+type=Options
+.br
+joincfset=FileC
+.br
+procallin=no
+.PP
+# This rule appears in main.conf
+.br
+type=Jump
+.br
+ptype=TValue
+.br
+pattern=TRUE
+.br
+cfset=FileA FileC FileB
+.PP
+After the input buffer has been updated and its content has been matched
+by the rules, SEC handles caught signals 
+and checks the status of child processes.
+When the timeout specified with the
+.B --cleantime
+option has expired, SEC also checks the status of contexts and event 
+correlation operations. Therefore, relatively small values should be
+specified with the 
+.B --cleantime
+option, in order to retain the accuracy of the event correlation process.
+If the 
+.B --cleantime
+option is set to 0, SEC checks event correlation operations and contexts
+after processing every input line, but this consumes more CPU time.
+If the
+.B --poll_timeout
+option value exceeds the value given with
+.BR --cleantime ,
+the 
+.B --poll_timeout
+option value takes precedence (i.e., sleeps after unsuccessful polls will 
+not be shortened).
+.PP
+Finally, note that apart from the sleeps after unsuccessful polls, SEC 
+measures all time intervals and occurrence times in seconds, and always uses 
+the
+.BR time (2)
+system call for obtaining the current time. Also, for input event occurrence
+time SEC always uses the time it observed the event, *not* the timestamp 
+extracted from the event.
+.SH INTERNAL EVENTS AND CONTEXTS
+In the action list of a context, the context can also be referred
+with the internal context name _THIS. The name _THIS is created and 
+deleted dynamically by SEC and it points to the context only during its action 
+list execution. 
+This feature is useful when the context has had several names during its 
+lifetime (created with the
+.I alias
+action), and it is hard to determine which names exist when the context 
+expires. For example, if the context is created with 
+.I create A 60 (report A /bin/mail root) 
+which is immediately followed by 
+.I alias A B
+and
+.IR "unalias A" ,
+the 
+.I report
+action will fail since the name A no longer refers to the context. 
+However, replacing the first action with
+.I create A 60 (report _THIS /bin/mail root)
+will produce the correct result.
+.PP
+If the
+.B --intevents
+command line option is given, SEC will generate internal events when
+it is started up, when it receives certain signals, and when it terminates
+normally. Inside SEC, internal event is treated as if it was a line that 
+was read from a SEC input file.
+Specific rules can be written to match internal events, in order to take some 
+action (e.g., start an external event correlation module with 
+.I spawn
+when SEC starts up). The following internal events are
+supported:
+.PP
+SEC_STARTUP - generated when SEC is started (this event will always be 
+the first event that SEC sees)
+.PP
+SEC_RESTART - generated after SEC has received the
+.B SIGHUP
+signal and all internal data structures have been cleared (this event will
+be the first event that SEC sees after reloading its configuration)
+.PP
+SEC_SOFTRESTART - generated after SEC has received the
+.B SIGABRT
+signal (this event will be the first event that SEC sees after reloading
+its configuration)
+.PP
+SEC_SHUTDOWN - generated when SEC receives the
+.B SIGTERM
+signal, or when SEC reaches all EOFs of input files after being started with 
+the
+.B --notail
+option. After generating SEC_SHUTDOWN event, SEC sleeps for 3 seconds 
+before sending SIGTERM to its child processes (if a child process was created
+immediately before SEC_SHUTDOWN, this delay leaves the process enough 
+time for setting the signal handler for SIGTERM).
+.PP
+Before generating an internal event, SEC sets up a context named 
+SEC_INTERNAL_EVENT, in order to disambiguate internal events from
+regular input.
+The SEC_INTERNAL_EVENT context is deleted immediately after the
+internal event has been matched against all rules.
+.PP
+If the
+.B --intcontexts
+command line option is given, or there is an
+.B --input
+option with a context specified, SEC creates an internal context each time
+it reads a line from an input file or a synthetic event.
+The internal context is deleted immediately after the line has
+been matched against all rules. For all input files that have the context
+name explicitly set with
+.BR "--input=<file pattern>=<context>" ,
+the name of the internal context is <context>. If the line was read from 
+the input file <filename> for which there is no context name set, the name 
+of the internal context is _FILE_EVENT_<filename>. 
+For synthetic events, 
+the name of the internal context is _INTERNAL_EVENT. This allows for
+writing rules that match data from one particular input
+source only. E.g., the rule
+.PP
+type=Suppress
+.br
+ptype=TValue
+.br
+pattern=TRUE
+.br
+context=[!_FILE_EVENT_/dev/logpipe]
+.PP
+passes only the lines that were read from /dev/logpipe.
+.SH INTERPROCESS COMMUNICATION
+The SingleWithScript rule and
+.IR shellcmd ,
+.IR spawn ,
+.IR pipe ,
+and
+.I report
+actions fork a child process for executing an external program. 
+If the program command line contains shell metacharacters, the command
+line is first parsed by the shell which then starts the program.
+SEC communicates with its child processes through pipes (created with the 
+.BR pipe (2) 
+system call). 
+When the child process is at the read end of the pipe, data have to be written
+to the pipe in blocking mode which ensures reliable data transmission. 
+In order to avoid being blocked, SEC forks another child process for writing 
+data to the pipe reliably.
+.PP
+After forking an external program, SEC continues immediately, and checks
+the program status periodically until the program exits. The running time of 
+a child process is not limited in any way, and before finishing gracefully, 
+SEC sends the
+.B SIGTERM 
+signal to all child processes that are still running.
+If some special exit procedures need to be accomplished in the child process
+(or the child wishes to ignore 
+.BR SIGTERM ), 
+then the child must install a handler for the 
+.B SIGTERM 
+signal. 
+Note that if the program command line contains shell metacharacters,
+the parsing shell will run as a child process of SEC and the parent 
+process of the program. Therefore, the 
+.B SIGTERM
+signal will be sent to the shell, *not* the program. In order to avoid this,
+the shell's builtin
+.I exec
+command can be used (see
+.BR sh (1)
+for more information) which replaces the shell with the program
+without forking a new process, e.g., 
+.PP
+action=spawn exec /usr/local/bin/myscript.pl 2>/var/log/myscript.log
+.PP
+Finally, note that if an action list includes two actions which fork
+external programs, the execution order these programs is not determined
+by the order of actions in the list, since both programs are running
+asynchronously.
+In order to address this issue, the execution order must be specified
+explicitly (e.g., instead of writing
+.IR "action=shellcmd cmd1; shellcmd cmd2" ,
+use the shell && operator and write
+.IR "action=shellcmd cmd1 && cmd2" ).
+.SH PERL INTEGRATION
+SEC supports patterns, context expressions, and actions 
+which involve calls to the Perl
+.BR eval ()
+function. Apart from using action list variables for data sharing between
+rules, Perl variables created with
+.BR eval ()
+can be employed for the same purpose. 
+E.g., when SEC has executed the following action
+.PP
+action=eval %a ($b = 1)
+.PP
+the variable $b and its value become visible in the following context 
+expression 
+.PP
+context= =(++$b > 10)
+.PP
+(with that expression one can implement event counting implicitly).
+In order to avoid possible clashes with variables inside the SEC
+code itself, all calls for 
+.BR eval ()
+are made in the main::SEC namespace (i.e., inside the special package 
+main::SEC). By using the main:: prefix, SEC data structures can be accessed 
+and modified. For example, the following rules restore and save contexts on 
+SEC startup and shutdown (SEC keeps all contexts in %main::context_list
+hash):
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=SEC_STARTUP
+.br
+context=SEC_INTERNAL_EVENT
+.br
+continue=TakeNext
+.br
+desc=Load the Storable module and terminate if it is not found
+.br
+action=assign %ret 0; eval %ret (require Storable); \\
+.br
+       eval %ret (exit(1) unless %ret) 
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=SEC_STARTUP
+.br
+context=SEC_INTERNAL_EVENT
+.br
+desc=Restore all SEC contexts from /tmp/SEC_CONTEXTS on startup
+.br
+action=lcall %ret -> ( sub { %main::context_list = \\
+.br
+       %{Storable::retrieve("/tmp/SEC_CONTEXTS")}; } )
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=SEC_SHUTDOWN
+.br
+context=SEC_INTERNAL_EVENT
+.br
+desc=Save all SEC contexts into /tmp/SEC_CONTEXTS on shutdown
+.br
+action=lcall %ret -> ( sub { \\
+.br
+       Storable::store(\\%main::context_list, "/tmp/SEC_CONTEXTS"); } )
+.PP
+However, note that modifying data structures within SEC code is recommended 
+only for advanced users who have carefully studied relevant parts of the code. 
+.SH EXAMPLES
+This section presents an example rulebase for managing Cisco devices.
+It is assumed that the managed devices have syslog 
+logging enabled, and that all syslog messages are sent to a central host 
+and written to logfile(s) that are monitored by SEC.
+.PP
+# Set up contexts NIGHT and WEEKEND for nights 
+.br
+# and weekends. The context NIGHT has a lifetime
+.br
+# of 8 hours and the context WEEKEND 2 days
+.PP
+type=Calendar
+.br
+time=0 23 * * *
+.br
+desc=NIGHT
+.br
+action=create %s 28800
+.PP
+type=Calendar
+.br
+time=0 0 * * 6
+.br
+desc=WEEKEND
+.br
+action=create %s 172800
+.PP
+# If a router does not come up within 5 minutes 
+.br
+# after it was rebooted, generate event 
+.br
+# "<router> REBOOT FAILURE". The next rule matches 
+.br
+# this event, checks the router with ping and sends
+.br
+# a notification if there is no response.
+.PP
+type=PairWithWindow
+.br
+ptype=RegExp
+.br
+pattern=\\s([\\w.-]+) \\d+: %SYS-5-RELOAD
+.br
+desc=$1 REBOOT FAILURE
+.br
+action=event %s
+.br
+ptype2=RegExp
+.br
+pattern2=\\s$1 \\d+: %SYS-5-RESTART
+.br
+desc2=%1 successful reboot
+.br
+action2=logonly
+.br
+window=300
+.PP
+type=SingleWithScript
+.br
+ptype=RegExp
+.br
+pattern=^([\\w.-]+) REBOOT FAILURE
+.br
+script=/bin/ping -c 3 -q $1
+.br
+desc=$1 did not come up after reboot
+.br
+action=logonly $1 is pingable after reboot
+.br
+action2=pipe '%t: %s' /bin/mail root@localhost
+.PP
+# Send a notification if CPU load of a router is too 
+.br
+# high (two CPUHOG messages are received within 5 
+.br
+# minutes); send another notification if the load is 
+.br 
+# normal again (no CPUHOG messages within last 15 
+.br
+# minutes). Rule is not active at night or weekend.
+.PP
+type=SingleWith2Thresholds
+.br
+ptype=RegExp
+.br
+pattern=\\s([\\w.-]+) \\d+: %SYS-3-CPUHOG
+.br
+context=!(NIGHT || WEEKEND)
+.br
+desc=$1 CPU overload
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=300
+.br
+thresh=2
+.br
+desc2=$1 CPU load normal
+.br
+action2=pipe '%t: %s' /bin/mail root@localhost
+.br
+window2=900
+.br
+thresh2=0
+.PP
+# If a router interface is in down state for less 
+.br
+# than 15 seconds, generate event 
+.br
+# "<router> INTERFACE <interface> SHORT OUTAGE"; 
+.br
+# otherwise generate event 
+.br
+# "<router> INTERFACE <interface> DOWN".
+.PP
+type=PairWithWindow
+.br
+ptype=RegExp
+.br
+pattern=\\s([\\w.-]+) \\d+: %LINK-3-UPDOWN: Interface ([\\w.-]+), changed state to down
+.br
+desc=$1 INTERFACE $2 DOWN
+.br
+action=event %s
+.br
+ptype2=RegExp
+.br
+pattern2=\\s$1 \\d+: %LINK-3-UPDOWN: Interface $2, changed state to up
+.br
+desc2=%1 INTERFACE %2 SHORT OUTAGE
+.br
+action2=event %s
+.br
+window=15
+.PP
+# If "<router> INTERFACE <interface> DOWN" event is 
+.br
+# received, send a notification and wait for
+.br
+# "interface up" event from the same router interface
+.br
+# for the next 24 hours
+.PP
+type=Pair
+.br
+ptype=RegExp
+.br
+pattern=^([\\w.-]+) INTERFACE ([\\w.-]+) DOWN
+.br
+desc=$1 interface $2 is down
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+ptype2=RegExp
+.br
+pattern2=\\s$1 \\d+: %LINK-3-UPDOWN: Interface $2, changed state to up
+.br
+desc2=%1 interface %2 is up
+.br
+action2=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=86400
+.PP
+# If ten "short outage" events have been observed 
+.br
+# in the window of 6 hours, send a notification
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=^([\\w.-]+) INTERFACE ([\\w.-]+) SHORT OUTAGE
+.br
+desc=Interface $2 at node $1 is unstable
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=21600
+.br
+thresh=10
+.SH ENVIRONMENT
+If the 
+.B 
+SECRC 
+environment variable is set, SEC expects it to contain the name of its 
+resource file. Resource file lines which are empty or which begin with 
+the number sign (#) are ignored (whitespace may precede #).
+Each remaining line is added to the
+.B argv
+array of SEC as a *single* element.
+Also, the lines are added to
+.B argv
+in the order they appear in the resource file.
+Therefore, if the SEC command line option has a value, the option name
+and the value must either be separated by the equal sign (=) or a newline.
+Here is a simple resource file example:
+.PP
+# read events from standard input
+.br
+--input=-
+.PP
+# rules are stored in /etc/sec/test.conf
+.br
+--conf
+.br
+/etc/sec/test.conf
+.PP
+Note that although SEC re-reads its resource file at the
+reception of the
+.B SIGHUP
+or
+.B SIGABRT
+signal, adding an option that specifies a certain 
+startup procedure (e.g.,
+.B --pid
+or
+.BR --detach )
+will not produce the desired effect at runtime. Also note that the resource
+file content is *not* parsed by shell, therefore shell metacharacters are 
+passed to SEC as-is.
+.SH SIGNALS
+.TP 
+.B SIGHUP
+SEC will reopen its log and input files, reload its configuration, and 
+drop *all* event correlation state (all event correlation operations
+will be terminated, all contexts will be deleted, all action list variables 
+will be erased, etc.).
+SEC will also send the 
+.B SIGTERM 
+signal to its child processes.
+.TP
+.B SIGABRT
+SEC will reopen its log and input files, and load its configuration from
+rule files which have been modified (file modification time returned by
+.BR stat (2)
+has changed) or created after the previous configuration load.
+SEC will also terminate event correlation operations started from rule files
+that have been modified or removed after the previous configuration load.
+Other operations will remain intact.
+Note that on some systems
+.B SIGIOT
+is used in place of
+.BR SIGABRT .
+.TP 
+.B SIGUSR1
+detailed information about the current state of SEC (performance and 
+rule matching statistics, running event correlation operations, 
+created contexts, etc.) will be written 
+to the SEC dumpfile.
+.TP 
+.B SIGUSR2
+SEC will reopen its logfile (useful for logfile rotation). 
+.TP
+.B SIGINT
+SEC will increase its logging level by one; if the current level is 6,
+the level will be set back to 1. Please note this feature is available only 
+if SEC standard input is not connected to a terminal (e.g., in daemon mode).
+.TP
+.B SIGTERM
+SEC will terminate gracefully (all SEC child processes will receive 
+.BR SIGTERM ).
+.SH BUGS
+With some locale settings, apostrophes (') in this man page might
+be displayed incorrectly. As a workaround, set the LANG environment
+variable to C when reading this man page (e.g., env LANG=C man sec).
+.SH AUTHOR
+Risto Vaarandi (ristov at users d0t s0urcef0rge d0t net)
+.SH "SEE ALSO"
+.BR cron (8),
+.BR crontab (1),
+.BR date (1),
+.BR fork (2),
+.BR mail (1),
+.BR perl (1),
+.BR perlre (1),
+.BR pipe (2),
+.BR sh (1),
+.BR snmptrap (1),
+.BR stat (2),
+.BR syslog (3),
+.BR time (2)

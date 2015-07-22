@@ -1,0 +1,465 @@
+--- version 2.6.0
+
+* added support for the EventGroup rule.
+
+* starting from this version, the Calendar rule accepts a year condition 
+  in the time specification.
+
+* added support for the 'lcall', 'getwpos' and 'setwpos' actions.
+
+* added support for the named match variables and variable maps. 
+
+* added Cached and NCached pattern types, and support for pattern match 
+  caching. 
+
+* starting from this version, all unset or undefined variables are
+  substituted with empty strings.
+
+
+--- version 2.5.3
+
+* starting from this version, the 'set' action without the action list
+  parameter does not clear the action-list-on-expiration for a context.
+
+* starting from this version, a context can be referred by the context
+  name _THIS in its action-list-on-expiration.
+
+* implemented additional sanity check for context names in context 
+  expressions (context names may not contain spaces).
+
+
+--- version 2.5.2
+
+* starting from this version, step values can be used in 'time' field
+  of the Calendar rule.
+
+
+--- version 2.5.1
+
+* fixed a bug in the 'eval' action - code reference return values were
+  not handled correctly.
+
+
+--- version 2.5.0
+
+* added support for the Jump and Options rule.
+
+* starting from this version, the 'continue' parameter of rules accepts
+  'GoTo <label>' for its value.
+
+* added support for GoTo labels in configuration files 
+  (set with the 'label' keyword).
+
+* SIGINT can now be used for changing the logging level.
+
+
+--- version 2.4.2
+
+* starting from this version, 'create' and 'set' actions accept variable(s)
+  for the context lifetime.
+
+* added 'tevent' action.
+
+
+--- version 2.4.1
+
+* improved the daemonization code.
+
+* changed Sys::Syslog::openlog() options from 'cons,pid' to 'pid'.
+
+* starting from this version, 'logonly' action has an optional parameter.
+
+
+--- version 2.4.0
+
+* added support for the SEC resource file.
+
+* added support for the 'rem' parameter for all rule types.
+
+* added support for the 'action2' parameter for SingleWithThreshold rules.
+
+* added support for -help and -version command line options.
+
+* starting from this version, SIGABRT does not clear event correlation
+  operations for rule files that have not been modified.
+
+* starting from this version, the context expression &&- and ||-operator
+  are short-circuiting.
+
+* starting from this version, SEC does not overwrite its dumpfile.
+
+* starting from this version, the dumpfile contains environment information.
+
+* starting from this version, -reopen_timeout=N command line option forces
+  SEC to reopen only those files that have been closed for N seconds. 
+
+* starting from this version, undef values returned by 'eval' and 'call'
+  actions will be replaced with empty strings before assigning them to 
+  %-variables.
+
+
+--- version 2.3.3
+
+* fixed a bug in the open_input() function - when file pattern with wildcards 
+  was specified for the -input option and the -intcontexts option was given, 
+  single internal context was incorrectly set for input sources corresponding
+  to the file pattern.
+
+
+--- version 2.3.2
+
+* calls to Sys::Syslog functions are now enclosed in eval { }, in order
+  to trap die() calls from those functions.
+
+* modified pattern matching functions.
+
+* input source names are now also passed as parameters to PerlFunc and 
+  NPerlFunc pattern functions.
+
+
+--- version 2.3.1
+
+* fixed a bug in the closelog() function call which caused SEC to terminate
+  on the reception of SIGHUP, SIGABRT, and SIGUSR2 signals when SEC was started 
+  with the -syslog option. 
+
+
+--- version 2.3.0
+
+* added PerlFunc and NPerlFunc pattern types.
+
+* added 'call' action.
+
+* added support for Perl function operands in context expressions.
+
+* added support for user-defined variables of custom length.
+
+* changed the apostrophe masking algorithm for the -quoting option.
+
+* changed the context lifetime checking algorithm.
+
+* more efficient runtime handling of action lists and context expressions.
+
+* more efficient handling of Calendar rules (the context expression will
+  be checked after the time pattern).
+
+* the dump file now contains the time of the last configuration load.
+
+* if the -syslog option has not been specified, SEC can now work without
+  the Sys::Syslog module.
+
+
+--- version 2.2.5
+
+* added TValue pattern type.
+
+* added 'obsolete' action.
+
+* added -check_timeout flag.
+
+* added performance improvements.
+
+* %-signs in syslog messages are now converted to %% before calling
+  syslog(), in order to avoid warnings printed from Sys::Syslog module.
+
+
+--- version 2.2.4
+
+* fixed a bug in calling syslog openlog() that caused SEC to terminate 
+  with older versions of Perl.
+
+
+--- version 2.2.3
+
+* added support for the syslog-style logging and the -syslog option
+  (with the help of the Sys::Syslog module).
+
+* added support for the \0-construct in substring patterns.
+
+* fixed a bug that caused SEC to skip empty lines (lines made up of 
+  just the newline character).
+
+
+--- version 2.2.2
+
+* revised some regular expressions that are used for analyzing action 
+  definitions in configuration file(s).
+
+* SEC now generates SEC_SOFTRESTART internal event when it receives SIGABRT.
+
+
+--- version 2.2.1
+
+* fixed a bug that caused SEC to reset explicit internal context names
+  to implicit default names, e.g., due to the bug the explicit name LOG
+  that was given with -input=logfile=LOG became _FILE_EVENT_logfile after 
+  SIGHUP or SIGABRT.
+
+
+--- version 2.2.0
+
+* added support for multiple input files
+
+* added support for internal contexts (activated with -intcontexts or
+  -input=<pattern>=<context> option)
+
+* added support for context aliasing (with 'alias' and 'unalias' actions)
+
+* added support for negative pattern matching (with NRegExp and NSubStr 
+  pattern types)
+
+* added support for the []-operator in context expressions
+
+* included a workaround for the Perl regexp bug that prevented SEC for
+  reading its configuration files (this bug appeared when the LANG environment 
+  variable was set to utf8, causing SEC to log error messages about lines not 
+  conforming to keyword=value format).
+
+
+--- version 2.1.11
+
+* added 'fill', 'copy', and 'empty' actions.
+
+
+--- version 2.1.10
+
+* 'pipe' and 'report' actions are now able to write to standard output.
+
+* SEC internal event is now also generated when SEC reaches the end of 
+  file, and it was started with -notail and -intevents options.
+
+* 'write' action now checks whether write(2) to a pipe transferred all bytes.
+
+
+--- version 2.1.9
+
+* $- and %-variables can now be used in Perl miniprograms (in context
+  expressions and 'eval' actions).
+
+* 'write' action now supports standard output as its output file.
+
+* improved the $- and %-variable masking algorithm - in addition to the
+  masking facilities (e.g., %%t) one can use $$ or %% to get the $ or %
+  sign before the variable values (e.g., $$$1 now evaluates to
+  $<1st backref value>, while with the previous version it yielded $$1).
+
+* Parentheses in context and action definitions can now be masked with 
+  backslashes.
+
+
+--- version 2.1.8
+
+* SEC now reports incorrect values for 'continue' and 'continue2'
+  keywords in rule definitions.
+
+* Most action parameters (those that are free-form strings by their nature) 
+  can now be enclosed in parantheses, in order to mask possible ; symbols,
+  and prevent SEC from splitting the action list in wrong places.
+
+* Prior to this version, it was possible to use only special variables 
+  $0,...,$9 and %0,...,%9 in SEC rule definitions (e.g., $10 was considered 
+  to be $1 followed by the '0' symbol); this has been fixed.
+
+* Special variables $0, $1, ..., and %0, %1, ... can now be masked by 
+  adding the $- or %-prefix to them, e.g., $$1 becomes $1 when $-variables
+  are evaluated.
+
+* User-defined %<letter> variables can now be masked by adding the %-prefix
+  to the variable, e.g., %%t does not evaluate to the %-sign followed by
+  the current timestamp, but rather becomes %t.
+
+* The SEC dumpfile now contains the current date, time, and version number.
+
+* Added -evstoresize, -testonly, and -notestonly flags.
+
+
+--- version 2.1.7
+
+* Added 'assign' and 'eval' actions, and added support for user-defined 
+  variables.
+
+* SEC context expressions can now contain Perl miniprograms as operands
+  that will be evaluated with Perl eval() function.
+
+* If the parameter for 'event' action contains newlines, the parameter 
+  will be split into lines (i.e., split into parts by using newline as a 
+  delimiter), and 'event' action will be executed for each line separately.
+
+* Prior to this version, if the last line in the SEC input file was not 
+  terminated with a newline, SEC still processed it immediately.
+  This caused problems with lines that were appended to the input file with 
+  more than one write. SEC will now consider the line complete and ready 
+  for processing only after the terminating newline has been written.
+
+* Prior to this version, if the backreference values inserted to SEC actions 
+  contained strings %s, %t and %u, they were erroneously considered to be 
+  special variables and replaced with their values. This has now been fixed 
+  by temporarily masking all %-characters in backreference values, in order
+  to avoid clashes with %s, %t, %u, and user-defined %<letter> variables.
+
+* %-variables can now be used in <filename> parameter of the 'write' action.
+
+
+--- version 2.1.6
+
+* Added -intevents and -nointevents flags. The -intevents flag will force 
+  SEC to generate internal events when SEC is started and when SEC receives
+  certain signals.
+
+* Prior to this version, SEC used the following scheme for starting external
+  commands: a separate intermediate process was created that handled the
+  communication with the running command (e.g., data piping to the standard
+  input of the command).  Since shellcmd and spawn actions do not require
+  this sort of synchronous communication, SEC does not create intermediate
+  processes for these actions anymore.
+
+
+--- version 2.1.5
+
+* SEC now uses perl strict module
+
+
+--- version 2.1.4
+
+* fixed the perl close() bug in pipe_cmd() function by using 
+  IO::Handle->flush(). This bug caused the SingleWithScript rule to 
+  produce incorrect results with some perl versions and OS platforms.
+
+* moved a code fragment from shell_cmd() function to execute_actionlist()
+
+
+--- version 2.1.3
+
+* fixed a minor bug in analyze_action() function for 'delete' action (it 
+  is now verified that the parameter for 'delete' contains no whitespaces)
+
+* improved the code for daemonization
+
+
+--- version 2.1.2
+
+* added 'write' action
+
+* introduced -debug flag to customize SEC logging
+
+* introduced %t and %u variables that can be used in the
+  action field of the rule definition (like %s variable).
+
+* -pid and -log flags are now optional
+
+
+--- version 2.1.1
+
+* fixed a bug in shell_cmd(): if 'shellcmd' action wrote something to its 
+  stdout in version 2.1, the action terminated with 'broken pipe' condition 
+  (exit code 141) because no-one was reading the written data.
+
+
+--- version 2.1
+
+* added 'spawn' action
+
+* IO and IPC handling functions have been completely rewritten - input 
+  data are read by blocks, interrupted system calls are handled in a better 
+  way, child processes are sent SIGTERM when SEC terminates, etc.
+
+* SIGTERM can now be used to terminate SEC gracefully
+
+* changed default value for -cleantime flag to 1 second
+
+* added -poll_timeout and -blocksize flags
+
+* changed PairWithWindow rule handling in process_rules2
+
+
+--- version 2.0.2-1, 2.0.2-2
+
+* minor fix of timed_tasks()
+* minor fix of analyze_action()
+
+--- version 2.0.1, 2.0.2
+
+* Windows fixes
+
+* Added -fromstart and -nofromstart flags
+
+* Improved SingleWithScript rule: added optional action2 parameter;
+  an external program given with 'script' parameter is now supplied
+  with the names of all existing contexts (through stdin of the program)
+
+* added check whether dumpfile is a symbolic link
+
+* changed input_shuffled(): fixed file decrease check; SEC will now
+  exit when some major errors occur (failed stat() and failed sysseek() 
+  on the input filehandle)
+
+
+--- version 2.0
+
+* configuration file format changed from old field&separator-style format
+  to new keyword&value-style format
+
+* added support for multiple configuration files
+
+* added support for parantheses in context definitions
+
+* SIGABRT can now be used for invoking "soft" configuration reloads
+
+* changed the parameters for 'create' action
+
+* added 'pipe', set', 'add' and 'report' actions.
+
+* added support for 'context2' parameter in Pair* rules
+
+* added support for $0 and %0 special variables in regexp matches
+
+
+--- version 1.1.2
+ 
+* Improved error logging
+
+
+--- version 1.1.1
+
+* SEC now follows input files by the name and not by i-node (i.e., if
+  input file is recreated or truncated, SEC transparently reopens the file
+  and starts to process it from the beginning). 
+  
+* SIGUSR2 is now used for logfile rotation only.
+
+
+--- version 1.1
+
+* improved logging (log messages will also be written to STDERR, if STDERR
+  is connected to terminal - this facilitates interactive debugging)
+
+* changed input handling from buffered to non-buffered
+  (sysopen, sysread and sysseek are now used instead of open, <> and seek)
+
+* removed behaviour-after-match field from Suppress rule definition
+
+* added Calendar and SingleWithScript rules
+
+* added support for && and || operators in context definitions
+
+* added support for action lists
+
+* improved create, delete, event and reset actions
+
+* added %1, %2, ... special variables to Pair and PairWithWindow rules
+
+* replaced itosvstream.c with more advanced itostream.c
+
+
+--- version 1.02
+
+* fixed read_line(), open_input() and match_regexp() subroutines
+
+
+--- version 1.01
+
+* improved the handling of SIGHUP and SIGUSR2: on the reception of those
+  signals input file will also be reopened (in addition to other procedures)
+
+* read_line(): changed input error handling (program does not try to
+  reopen the input stream, but calls exit(1) instead)

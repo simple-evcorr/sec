@@ -1,0 +1,141 @@
+Sample SEC startup files for Solaris (contributed by Jason Chambers)
+
+
+-------------------- /etc/rc3.d/S98sec -------------------- 
+#!/bin/bash
+#
+# Modified start up script for Solaris
+# Added the different SIGs to script
+
+STARTCFG=/usr/local/etc/sec/sec.start
+SEC=/usr/local/bin/sec
+SECPID=/var/run/sec.pid
+
+RETVAL=0
+
+start() {
+        echo -n "Starting up Syslog Event Correlator: "
+        while read command
+        do
+                command=`echo $command | sed -e "s/\#.*//" -e "s/^  *//" -e 's/  *$//' -e '/^$/d'`
+                if [ ! -z "$command" ] ; then
+                        $SEC $command
+                        RETVAL=$(( $? + RETVAL ))
+                fi
+        done < $STARTCFG
+
+        if [ $RETVAL -eq 0 ] ; then
+                echo
+        else
+                echo "Failure starting SEC"
+                echo
+        fi
+}
+
+stop() {
+        echo -n "Shutting down sec: "
+    # SIGTERM
+        /bin/kill -15 `/bin/cat $SECPID`
+        RETVAL=$?
+
+        if [ $RETVAL -eq 0 ] ; then
+                echo
+        else
+                echo "Failed to shutdown SEC"
+                echo
+        fi
+}
+
+killme() {
+    echo -n "restart SEC completely, all variables and contexts will be 
+deleted"
+    # SIGHUP
+    /bin/kill -1 `/bin/cat $SECPID`
+    RETVAL=$?
+
+        if [ $RETVAL -eq 0 ] ; then
+                echo
+        else
+                echo "Failed to reloading SEC"
+                echo
+        fi
+}
+
+
+reload() {
+    echo -n "Re-reading config file, all variables and contexts will not 
+be deleted"
+    # SIGABRT
+    /bin/kill -6 `/bin/cat $SECPID`
+    RETVAL=$?
+
+        if [ $RETVAL -eq 0 ] ; then
+                echo
+        else
+                echo "Failed to reloading SEC"
+                echo
+        fi
+}
+
+dump() {
+    echo -n "Dumping stats to $DUMPFILE"
+    # SIGUSR1
+    /bin/kill -16 `/bin/cat $SECPID`
+    RETVAL=$?
+
+        if [ $RETVAL -eq 0 ] ; then
+                echo
+        else
+                echo "Failed dumping stats"
+                echo
+        fi
+}
+
+logrotate() {
+    echo -n "re-opening my logfile"
+    # SIGUSR2   
+    /bin/kill -17 `/bin/cat $SECPID`
+    RETVAL=$?
+
+        if [ $RETVAL -eq 0 ] ; then
+                echo
+        else
+                echo "Failed re-opening log file"
+                echo
+        fi
+}
+
+# See how we were called.
+case "$1" in
+  start)
+        start
+        ;;
+  stop)
+        stop
+        ;;
+  killme)
+        killme
+        ;;
+  reload)
+        reload
+        ;;
+  dump)
+        dump
+        ;;
+  logrotate)
+    logrotate
+    ;;
+  *)
+        echo "Usage: sec {start|stop|reload|dump|logrotate}"
+        exit 1
+esac
+
+exit $RETVAL
+----------------------------------------------------------------------
+
+
+-------------------- /usr/local/etc/sec/sec.start --------------------
+# config file for SEC
+-detach -debug=5 -conf=/usr/local/etc/sec/sec.rules 
+-input=/var/log/syslog.log -log=/var/log/sec.log -pid=/var/run/sec.pid
+----------------------------------------------------------------------
