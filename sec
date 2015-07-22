@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.6 - sec
-# Copyright (C) 2000-2014 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.7.7 - sec
+# Copyright (C) 2000-2015 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -31,8 +31,7 @@ package main::SEC;
 
 sub call_eval {
 
-  my($code) = $_[0];
-  my($listcontext) = $_[1];
+  my($code, $listcontext) = @_;
   my($ok, @result);
 
   $ok = 1;
@@ -170,8 +169,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.6";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2014 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.7";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2015 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -259,47 +258,53 @@ use constant ENDMATCH		=> 3;
 use constant NONE		=> 0;
 use constant LOGONLY		=> 1;
 use constant WRITE		=> 2;
-use constant OWRITECL		=> 3;
-use constant UDGRAM		=> 4;
-use constant USTREAM		=> 5;
-use constant UDPSOCK		=> 6;
-use constant TCPSOCK		=> 7;
-use constant SHELLCOMMAND	=> 8;
-use constant SPAWN		=> 9;
-use constant CSPAWN		=> 10;
-use constant PIPE		=> 11;
-use constant CREATECONTEXT	=> 12;
-use constant DELETECONTEXT	=> 13;
-use constant OBSOLETECONTEXT	=> 14;
-use constant SETCONTEXT		=> 15;
-use constant ALIAS		=> 16;
-use constant UNALIAS		=> 17;
-use constant ADD		=> 18;
-use constant PREPEND		=> 19;
-use constant FILL		=> 20;
-use constant REPORT		=> 21;
-use constant COPYCONTEXT	=> 22;
-use constant EMPTYCONTEXT	=> 23;
-use constant POP		=> 24;
-use constant SHIFT		=> 25;
-use constant EXISTS		=> 26;
-use constant GETSIZE		=> 27;
-use constant GETALIASES		=> 28;
-use constant GETLIFETIME	=> 29;
-use constant GETCTIME		=> 30;
-use constant SETCTIME		=> 31;
-use constant EVENT		=> 32;
-use constant TEVENT		=> 33;
-use constant CEVENT		=> 34;
-use constant RESET		=> 35;
-use constant GETWINPOS		=> 36;
-use constant SETWINPOS		=> 37;
-use constant ASSIGN		=> 38;
-use constant FREE		=> 39;
-use constant EVAL		=> 40;
-use constant CALL		=> 41;
-use constant LCALL		=> 42;
-use constant REWRITE		=> 43;
+use constant WRITEN		=> 3;
+use constant CLOSEF		=> 4;
+use constant OWRITECL		=> 5;
+use constant UDGRAM		=> 6;
+use constant CLOSEUDGR		=> 7;
+use constant USTREAM		=> 8;
+use constant CLOSEUSTR		=> 9;
+use constant UDPSOCK		=> 10;
+use constant CLOSEUDP		=> 11;
+use constant TCPSOCK		=> 12;
+use constant CLOSETCP		=> 13;
+use constant SHELLCOMMAND	=> 14;
+use constant SPAWN		=> 15;
+use constant CSPAWN		=> 16;
+use constant PIPE		=> 17;
+use constant CREATECONTEXT	=> 18;
+use constant DELETECONTEXT	=> 19;
+use constant OBSOLETECONTEXT	=> 20;
+use constant SETCONTEXT		=> 21;
+use constant ALIAS		=> 22;
+use constant UNALIAS		=> 23;
+use constant ADD		=> 24;
+use constant PREPEND		=> 25;
+use constant FILL		=> 26;
+use constant REPORT		=> 27;
+use constant COPYCONTEXT	=> 28;
+use constant EMPTYCONTEXT	=> 29;
+use constant POP		=> 30;
+use constant SHIFT		=> 31;
+use constant EXISTS		=> 32;
+use constant GETSIZE		=> 33;
+use constant GETALIASES		=> 34;
+use constant GETLIFETIME	=> 35;
+use constant GETCTIME		=> 36;
+use constant SETCTIME		=> 37;
+use constant EVENT		=> 38;
+use constant TEVENT		=> 39;
+use constant CEVENT		=> 40;
+use constant RESET		=> 41;
+use constant GETWINPOS		=> 42;
+use constant SETWINPOS		=> 43;
+use constant ASSIGN		=> 44;
+use constant FREE		=> 45;
+use constant EVAL		=> 46;
+use constant CALL		=> 47;
+use constant LCALL		=> 48;
+use constant REWRITE		=> 49;
 use constant IF			=> 100;
 use constant WHILE		=> 101;
 use constant BREAK		=> 102;
@@ -548,8 +553,7 @@ sub volatile_context {
 
 sub replace_subexpr {
 
-  my($expression) = $_[0];
-  my($expr_ref) = $_[1];
+  my($expression, $expr_ref) = @_;
   my($i, $j, $l, $pos);
   my($char, $prev);
 
@@ -629,9 +633,7 @@ sub replace_subexpr {
 
 sub analyze_continue {
 
-  my($continue) = $_[0];
-  my($conffile) = $_[1];
-  my($lineno) = $_[2];
+  my($continue, $conffile, $lineno) = @_;
 
   if (uc($continue) eq "TAKENEXT")  { return (TAKENEXT, undef); }
   elsif (uc($continue) eq "DONTCONT")  { return (DONTCONT, undef); }
@@ -662,26 +664,24 @@ sub analyze_continue {
 
 sub analyze_pattern {
 
-  my($pattype) = $_[0];
-  my($pat) = $_[1];
-  my($conffile) = $_[2];
-  my($lineno) = $_[3];
+  my($pattype, $pat, $conffile, $lineno, $fptype) = @_;
   my($negate, $lines, $pat2, $ncomp);
   my($evalok, $retval);
 
-  if ($pattype =~ /^(n?)regexp(\d*)$/i) {
+  if ($pattype =~ /^(n?)regexp(?:0*([^\D0]\d*))?$/i) {
 
     if (length($1))  { $negate = 1; }  else { $negate = 0; }
-    if (length($2))  { $lines = $2; }  else { $lines = 1; }
+    if (defined($2))  { $lines = $2; }  else { $lines = 1; }
 
-    if ($lines > $bufsize  ||  $lines < 1) {
+    if ($bufsize && $lines > $bufsize) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Invalid linecount $lines in '$pattype'");
+              "Pattern type '$pattype' is designed to match $lines lines,",
+              "please set --bufsize command line option to at least $lines");
       return (INVALIDVALUE, INVALIDVALUE, INVALIDVALUE);
     }
 
-    if (!defined($_[4]) || $_[4] == TVALUE || $_[4] == SUBSTR || 
-        $_[4] == NSUBSTR || !contains_matchvars($pat, '$')) { 
+    if (!defined($fptype) || $fptype == TVALUE || $fptype == SUBSTR || 
+        $fptype == NSUBSTR || !contains_matchvars($pat, '$')) { 
 
       $pat2 = eval { qr/$pat/ };
 
@@ -699,14 +699,15 @@ sub analyze_pattern {
     if ($negate) { return (NREGEXP, $lines, $pat2, $ncomp); } 
       else { return (REGEXP, $lines, $pat2, $ncomp); }
 
-  } elsif ($pattype =~ /^(n?)substr(\d*)$/i) {
+  } elsif ($pattype =~ /^(n?)substr(?:0*([^\D0]\d*))?$/i) {
 
     if (length($1))  { $negate = 1; }  else { $negate = 0; }
-    if (length($2))  { $lines = $2; }  else { $lines = 1; }
+    if (defined($2))  { $lines = $2; }  else { $lines = 1; }
 
-    if ($lines > $bufsize  ||  $lines < 1) {
-      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:",
-              "Invalid linecount $lines in '$pattype'");
+    if ($bufsize && $lines > $bufsize) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Pattern type '$pattype' is designed to match $lines lines,",
+              "please set --bufsize command line option to at least $lines");
       return (INVALIDVALUE, INVALIDVALUE, INVALIDVALUE);
     }
 
@@ -715,14 +716,15 @@ sub analyze_pattern {
     if ($negate) { return (NSUBSTR, $lines, $pat); }
       else { return (SUBSTR, $lines, $pat); }
 
-  } elsif ($pattype =~ /^(n?)perlfunc(\d*)$/i) {
+  } elsif ($pattype =~ /^(n?)perlfunc(?:0*([^\D0]\d*))?$/i) {
 
     if (length($1))  { $negate = 1; }  else { $negate = 0; }
-    if (length($2))  { $lines = $2; }  else { $lines = 1; }
+    if (defined($2))  { $lines = $2; }  else { $lines = 1; }
 
-    if ($lines > $bufsize  ||  $lines < 1) {
+    if ($bufsize && $lines > $bufsize) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Invalid linecount $lines in '$pattype'");
+              "Pattern type '$pattype' is designed to match $lines lines,",
+              "please set --bufsize command line option to at least $lines");
       return (INVALIDVALUE, INVALIDVALUE, INVALIDVALUE);
     }
 
@@ -786,11 +788,7 @@ sub analyze_pattern {
 
 sub analyze_varmap {
 
-  my($pattype) = $_[0];
-  my($varmap) = $_[1];
-  my($maphash_ref) = $_[2];
-  my($conffile) = $_[3];
-  my($lineno) = $_[4];
+  my($pattype, $varmap, $maphash_ref, $conffile, $lineno) = @_;
   my(@varmap, $mapping);
 
   %{$maphash_ref} = ();
@@ -849,12 +847,7 @@ sub process_action_parens {
 
 sub analyze_action {
 
-  my($action) = $_[0];
-  my($conffile) = $_[1];
-  my($lineno) = $_[2];
-  my($ruleid) = $_[3];
-  my($action2) = $_[4];
-  my($list) = $_[5];
+  my($action, $conffile, $lineno, $ruleid, $action2, $list) = @_;
   my($keyword, $file, $peer, $cmdline);
   my($sign, $rule, $count);
   my($actionlist, @action);
@@ -874,13 +867,13 @@ sub analyze_action {
     return (LOGONLY, $event); 
   }
 
-  elsif ($action =~ /^(write|owritecl|udgram|ustream)\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^(write|writen|owritecl|udgram|ustream)\s+(\S+)\s*(.*)/i) {
 
     $keyword = lc($1);
     $file = $2;
     $event = $3;
 
-    if ($WIN32 && $keyword ne "write" && $keyword ne "owritecl") {
+    if ($WIN32 && ($keyword eq "udgram" || $keyword eq "ustream")) {
       log_msg(LOG_ERR, "$keyword action is not supported on Win32");
       return INVALIDVALUE;
     }
@@ -896,9 +889,33 @@ sub analyze_action {
     if (!length($event))  { $event = "%s"; }
 
     if ($keyword eq "write") { return (WRITE, $file, $event); }
+    elsif ($keyword eq "writen") { return (WRITEN, $file, $event); }
     elsif ($keyword eq "owritecl") { return (OWRITECL, $file, $event); }
     elsif ($keyword eq "udgram") { return (UDGRAM, $file, $event); }
     else { return (USTREAM, $file, $event); }
+  }
+
+  elsif ($action =~ /^(closef|closeudgr|closeustr)\s+(\S+)$/i) {
+
+    $keyword = lc($1);
+    $file = $2;
+
+    if ($WIN32 && ($keyword eq "closeudgr" || $keyword eq "closeustr")) {
+      log_msg(LOG_ERR, "$keyword action is not supported on Win32");
+      return INVALIDVALUE;
+    }
+
+    process_action_parens($file);
+
+    if (!length($file)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty filename given for $keyword action");
+      return INVALIDVALUE;
+    }
+
+    if ($keyword eq "closef") { return (CLOSEF, $file); }
+    elsif ($keyword eq "closeudgr") { return (CLOSEUDGR, $file); }
+    else { return (CLOSEUSTR, $file); }
   }
 
   elsif ($action =~ /^(udpsock|tcpsock)\s+(\S+)\s*(.*)/i) {
@@ -919,6 +936,23 @@ sub analyze_action {
 
     if ($keyword eq "udpsock") { return (UDPSOCK, $peer, $event); }
     else { return (TCPSOCK, $peer, $event); }
+  }
+
+  elsif ($action =~ /^(closeudp|closetcp)\s+(\S+)$/i) {
+
+    $keyword = lc($1);
+    $peer = $2;
+
+    process_action_parens($peer);
+
+    if (!length($peer)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty peername given for $keyword action");
+      return INVALIDVALUE;
+    }
+
+    if ($keyword eq "closeudp") { return (CLOSEUDP, $peer); }
+    else { return (CLOSETCP, $peer); }
   }
 
   elsif ($action =~ /^shellcmd\s+(.*\S)/i) { 
@@ -1546,11 +1580,7 @@ sub analyze_action {
 
 sub analyze_actionlist {
 
-  my($actionlist) = $_[0];
-  my($arrayref) = $_[1];
-  my($conffile) = $_[2];
-  my($lineno) = $_[3];
-  my($ruleid) = $_[4];
+  my($actionlist, $arrayref, $conffile, $lineno, $ruleid) = @_;
   my(@parts, $part, $part2);
   my($actiontype, @action);
   my($newactionlist, @list, @list2, $expr);
@@ -1623,8 +1653,7 @@ sub analyze_actionlist {
 
 sub analyze_context_expr {
 
-  my($context) = $_[0];
-  my($result) = $_[1];
+  my($context, $result) = @_;
   my($pos, $oper, $op1, $op2);
   my(@side1, @side2);
   my($evalok, $retval);
@@ -1755,8 +1784,7 @@ sub analyze_context_expr {
 
 sub analyze_context {
 
-  my($context) = $_[0];
-  my($result) = $_[1];
+  my($context, $result) = @_;
   my($newcontext, $i, $j);
   my($params, $code, $evalok, $retval);
   my($subexpr, @expr);
@@ -1892,11 +1920,7 @@ sub check_context_preeval {
 
 sub eval_timelist {
 
-  my($spec) = $_[0];
-  my($min) = $_[1];
-  my($max) = $_[2];
-  my($offset) = $_[3];
-  my($ref) = $_[4];
+  my($spec, $min, $max, $offset, $ref) = @_;
   my(@parts, $part, $step);
   my($pos, $range1, $range2);
   my($i, $j);
@@ -2014,10 +2038,10 @@ sub eval_timelist {
 
 
 # Parameters: par1 - time specification
-#             par2..par6 - references to the hashes of minutes, hours, 
-#                          days, months and weekdays
-#             par7 - the name of the configuration file
-#             par8 - line number in configuration file
+#             par2..par7 - references to the hashes of minutes, hours, 
+#                          days, months, weekdays and years
+#             par8 - the name of the configuration file
+#             par9 - line number in configuration file
 # Action: par1 will be split to parts, every part is analyzed and 
 #         results are saved into hashes par2..par6. 
 #         Previous content of the hashes is erased. If errors
@@ -2026,15 +2050,8 @@ sub eval_timelist {
 
 sub analyze_timespec {
 
-  my($timespec) = $_[0];
-  my($minref) = $_[1];
-  my($hourref) = $_[2];
-  my($dayref) = $_[3];
-  my($monthref) = $_[4];
-  my($wdayref) = $_[5];
-  my($yearref) = $_[6];
-  my($conffile) = $_[7];
-  my($lineno) = $_[8];
+  my($timespec, $minref, $hourref, $dayref, 
+     $monthref, $wdayref, $yearref, $conffile, $lineno) = @_;
   my(@parts, $size);
 
   # split time specification into parts by whitespace (like with 
@@ -2122,11 +2139,7 @@ sub analyze_timespec {
 
 sub missing_keywords {
 
-  my($ref) = $_[0];
-  my($keyhash) = $_[1];
-  my($type) = $_[2];
-  my($conffile) = $_[3];
-  my($lineno) = $_[4];
+  my($ref, $keyhash, $type, $conffile, $lineno) = @_;
   my($key, $error);
  
   $error = 0;
@@ -2169,10 +2182,7 @@ sub missing_keywords {
 
 sub check_rule {
 
-  my($ref) = $_[0];
-  my($conffile) = $_[1];
-  my($lineno) = $_[2];
-  my($number) = $_[3];
+  my($ref, $conffile, $lineno, $number) = @_;
   my($type, $rule, %keywords);
   my($ncomp, $cfset, $evtnum, $i, $j);
 
@@ -3300,9 +3310,9 @@ sub check_rule {
 
 sub resolve_labels {
 
-  my($conffile) = $_[0];
-  my($label2rule) = $_[1];
-  my($i, $j, $k, $n, $ref, $label, $id, $lineno);
+  my($conffile, $label2rule) = @_;
+  my($i, $j, $k, $n);
+  my($ref, $label, $id, $lineno);
 
   $n = scalar(@{$configuration{$conffile}});
 
@@ -3801,9 +3811,7 @@ sub substitute_var {
 
 sub shell_cmd {
 
-  my($cmd) = $_[0];
-  my($collect_output) = $_[1];
-  my($context) = $_[2];
+  my($cmd, $collect_output, $context) = @_;
   my($pid, $read, $write);
 
   # set up a pipe before calling fork()
@@ -3893,8 +3901,7 @@ sub shell_cmd {
 
 sub pipe_cmd {
 
-  my($cmd) = $_[0];
-  my($ref) = $_[1];
+  my($cmd, $ref) = @_;
   my($pid, $elem);
 
   # try to create a child process and return undef, if fork failed;
@@ -3987,9 +3994,7 @@ sub execute_none_action { return 1; }
 
 sub execute_logonly_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($event);
 
   $event = $actionlist->[$i+1];
@@ -4001,10 +4006,13 @@ sub execute_logonly_action {
 
 sub execute_write_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
-  my($file, $event, $handle, $nbytes);
+  my($actionlist, $text, $i) = @_;
+  my($action, $file, $event);
+  my($handle, $nbytes, $len);
+
+  # since this function is used for both 'write' and 'writen' actions,
+  # set $action to the action type
+  $action = $actionlist->[$i];
 
   $file = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -4016,7 +4024,7 @@ sub execute_write_action {
   # logged at the debug level, in order to prevent message floods with 
   # higher severity when larger amounts of data are transfered
 
-  log_msg(LOG_DEBUG, "Writing event '$event' to file $file");
+  log_msg(LOG_DEBUG, "Writing event '$event' to file '$file'");
 
   if (!exists($output_files{$file})) {
 
@@ -4031,7 +4039,7 @@ sub execute_write_action {
 
     } elsif (-e $file  &&  ! -f $file  &&  ! -p $file) {
 
-      log_msg(LOG_DEBUG, "Can't write event '$event' to file $file", 
+      log_msg(LOG_DEBUG, "Can't write event '$event' to file '$file'", 
               "(not a regular file or pipe)");
       return 3;
 
@@ -4039,7 +4047,7 @@ sub execute_write_action {
 
       while (!sysopen($handle, $file, O_WRONLY | O_NONBLOCK)) {
         if ($! == EINTR)  { next; }
-        log_msg(LOG_DEBUG, "Can't open $file for writing event '$event' ($!)");
+        log_msg(LOG_DEBUG, "Can't open '$file' for writing event '$event' ($!)");
         return 3;
       }
       $output_files{$file} = $handle;
@@ -4048,7 +4056,7 @@ sub execute_write_action {
 
       while (!sysopen($handle, $file, O_WRONLY | O_CREAT | O_APPEND)) {
         if ($! == EINTR)  { next; }
-        log_msg(LOG_DEBUG, "Can't open $file for writing event '$event' ($!)");
+        log_msg(LOG_DEBUG, "Can't open '$file' for writing event '$event' ($!)");
         return 3;
       }
       $output_files{$file} = $handle;
@@ -4058,25 +4066,49 @@ sub execute_write_action {
 
   for (;;) {
 
-    $nbytes = syswrite($output_files{$file}, "$event\n");
-    
+    if ($action == WRITE) {
+      $nbytes = syswrite($output_files{$file}, "$event\n");
+      $len = length($event) + 1;
+    } else {
+      $nbytes = syswrite($output_files{$file}, "$event");
+      $len = length($event);
+    }
+   
     if (!defined($nbytes)) {
       if ($! == EINTR)  { next; }
-      log_msg(LOG_DEBUG, "Error when writing event '$event' to $file ($!)");
+      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($!)");
       delete $output_files{$file};
-    } elsif ($nbytes != length($event) + 1) {
-      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to $file");
+    } elsif ($nbytes != $len) {
+      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to '$file'");
     }
 
     return 3;
   }
 }
 
+sub execute_closef_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($file);
+
+  $file = $actionlist->[$i+1];
+  substitute_var($file, $text);
+
+  log_msg(LOG_DEBUG, "Closing file '$file'");
+
+  if (exists($output_files{$file})) {
+    close($output_files{$file});
+    delete $output_files{$file};
+  } else {
+    log_msg(LOG_DEBUG, "File '$file' is not open, can't close");
+  }
+
+  return 2;
+}
+
 sub execute_owritecl_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($file, $event, $handle, $nbytes);
 
   $file = $actionlist->[$i+1];
@@ -4089,7 +4121,7 @@ sub execute_owritecl_action {
   # logged at the debug level, in order to prevent message floods with 
   # higher severity when larger amounts of data are transfered
 
-  log_msg(LOG_DEBUG, "Writing event '$event' to file $file");
+  log_msg(LOG_DEBUG, "Writing event '$event' to file '$file'");
 
   if ($file eq "-") {
 
@@ -4100,7 +4132,7 @@ sub execute_owritecl_action {
 
   } elsif (-e $file  &&  ! -f $file  &&  ! -p $file) {
 
-    log_msg(LOG_DEBUG, "Can't write event '$event' to file $file", 
+    log_msg(LOG_DEBUG, "Can't write event '$event' to file '$file'", 
             "(not a regular file or pipe)");
     return 3;
 
@@ -4108,7 +4140,7 @@ sub execute_owritecl_action {
 
     while (!sysopen($handle, $file, O_WRONLY | O_NONBLOCK)) {
       if ($! == EINTR)  { next; }
-      log_msg(LOG_DEBUG, "Can't open $file for writing event '$event' ($!)");
+      log_msg(LOG_DEBUG, "Can't open '$file' for writing event '$event' ($!)");
       return 3;
     }
 
@@ -4116,7 +4148,7 @@ sub execute_owritecl_action {
 
     while (!sysopen($handle, $file, O_WRONLY | O_CREAT | O_APPEND)) {
       if ($! == EINTR)  { next; }
-      log_msg(LOG_DEBUG, "Can't open $file for writing event '$event' ($!)");
+      log_msg(LOG_DEBUG, "Can't open '$file' for writing event '$event' ($!)");
       return 3;
     }
   }
@@ -4127,9 +4159,9 @@ sub execute_owritecl_action {
     
     if (!defined($nbytes)) {
       if ($! == EINTR)  { next; }
-      log_msg(LOG_DEBUG, "Error when writing event '$event' to $file ($!)");
+      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($!)");
     } elsif ($nbytes != length($event)) {
-      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to $file");
+      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to '$file'");
     }
 
     close($handle);
@@ -4140,9 +4172,7 @@ sub execute_owritecl_action {
 sub execute_udgram_action {
 
   local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($file, $event, $handle, $nbytes);
 
   $file = $actionlist->[$i+1];
@@ -4155,7 +4185,7 @@ sub execute_udgram_action {
   # remote peers are logged at the debug level, in order to prevent message 
   # floods with higher severity when large amounts of data are transfered
 
-  log_msg(LOG_DEBUG, "Writing event '$event' to unix datagram socket $file");
+  log_msg(LOG_DEBUG, "Writing event '$event' to unix datagram socket '$file'");
 
   # if the socket already exists, use it for transmitting data; if the
   # transmission fails (e.g., the server has been restarted and the socket
@@ -4170,11 +4200,11 @@ sub execute_udgram_action {
       if (!defined($nbytes)) {
         if ($! == EINTR)  { next; }
         log_msg(LOG_DEBUG, 
-                "Could not write event '$event' to $file ($!), retrying");
+                "Could not write event '$event' to '$file' ($!), retrying");
         delete $output_udgram{$file};
         last;
       } elsif ($nbytes != length($event)) {
-        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to $file");
+        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to '$file'");
         return 3;
       } else {
         return 3;
@@ -4184,7 +4214,7 @@ sub execute_udgram_action {
   }
 
   if (! -S $file) {
-    log_msg(LOG_DEBUG, "Can't write event '$event' to socket $file", 
+    log_msg(LOG_DEBUG, "Can't write event '$event' to socket '$file'", 
             "(socket does not exist)");
     return 3;
   }
@@ -4197,7 +4227,7 @@ sub execute_udgram_action {
   while (!connect($handle, sockaddr_un($file))) {
     if ($! == EINTR)  { next; }
     log_msg(LOG_DEBUG,
-            "Can't connect to socket $file for writing event '$event' ($!)");
+            "Can't connect to socket '$file' for writing event '$event' ($!)");
     return 3;
   }
 
@@ -4210,22 +4240,40 @@ sub execute_udgram_action {
 
     if (!defined($nbytes)) {
       if ($! == EINTR)  { next; }
-      log_msg(LOG_DEBUG, "Error when writing event '$event' to $file ($!)");
+      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($!)");
       delete $output_udgram{$file};
     } elsif ($nbytes != length($event)) {
-      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to $file");
+      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to '$file'");
     }
 
     return 3;
   }
 }
 
+sub execute_closeudgr_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($file);
+
+  $file = $actionlist->[$i+1];
+  substitute_var($file, $text);
+
+  log_msg(LOG_DEBUG, "Closing unix datagram socket '$file'");
+
+  if (exists($output_udgram{$file})) {
+    close($output_udgram{$file});
+    delete $output_udgram{$file};
+  } else {
+    log_msg(LOG_DEBUG, "Socket '$file' is not open, can't close");
+  }
+
+  return 2;
+}
+
 sub execute_ustream_action {
 
   local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($file, $event, $handle, $nbytes);
 
   $file = $actionlist->[$i+1];
@@ -4238,7 +4286,7 @@ sub execute_ustream_action {
   # remote peers are logged at the debug level, in order to prevent message 
   # floods with higher severity when large amounts of data are transfered
 
-  log_msg(LOG_DEBUG, "Writing event '$event' to unix stream socket $file");
+  log_msg(LOG_DEBUG, "Writing event '$event' to unix stream socket '$file'");
 
   # if the socket already exists, use it for transmitting data; if the
   # transmission fails (e.g., the server has been restarted and the socket
@@ -4253,11 +4301,11 @@ sub execute_ustream_action {
       if (!defined($nbytes)) {
         if ($! == EINTR)  { next; }
         log_msg(LOG_DEBUG, 
-                "Could not write event '$event' to $file ($!), retrying");
+                "Could not write event '$event' to '$file' ($!), retrying");
         delete $output_ustream{$file};
         last;
       } elsif ($nbytes != length($event)) {
-        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to $file");
+        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to '$file'");
         return 3;
       } else {
         return 3;
@@ -4267,7 +4315,7 @@ sub execute_ustream_action {
   }
 
   if (! -S $file) {
-    log_msg(LOG_DEBUG, "Can't write event '$event' to socket $file", 
+    log_msg(LOG_DEBUG, "Can't write event '$event' to socket '$file'", 
             "(socket does not exist)");
     return 3;
   }
@@ -4280,7 +4328,7 @@ sub execute_ustream_action {
   while (!connect($handle, sockaddr_un($file))) {
     if ($! == EINTR)  { next; }
     log_msg(LOG_DEBUG,
-            "Can't connect to socket $file for writing event '$event' ($!)");
+            "Can't connect to socket '$file' for writing event '$event' ($!)");
     return 3;
   }
 
@@ -4293,22 +4341,40 @@ sub execute_ustream_action {
 
     if (!defined($nbytes)) {
       if ($! == EINTR)  { next; }
-      log_msg(LOG_DEBUG, "Error when writing event '$event' to $file ($!)");
+      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($!)");
       delete $output_ustream{$file};
     } elsif ($nbytes != length($event)) {
-      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to $file");
+      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to '$file'");
     }
 
     return 3;
   }
 }
 
+sub execute_closeustr_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($file);
+
+  $file = $actionlist->[$i+1];
+  substitute_var($file, $text);
+
+  log_msg(LOG_DEBUG, "Closing unix stream socket '$file'");
+
+  if (exists($output_ustream{$file})) {
+    close($output_ustream{$file});
+    delete $output_ustream{$file};
+  } else {
+    log_msg(LOG_DEBUG, "Socket '$file' is not open, can't close");
+  }
+
+  return 2;
+}
+
 sub execute_udpsock_action {
 
   local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($peer, $handle, $event, $nbytes);
   my($host, $port, $iaddr, $paddr);
 
@@ -4322,7 +4388,7 @@ sub execute_udpsock_action {
   # remote peers are logged at the debug level, in order to prevent message 
   # floods with higher severity when large amounts of data are transfered
 
-  log_msg(LOG_DEBUG, "Sending event '$event' to UDP peer $peer");
+  log_msg(LOG_DEBUG, "Sending event '$event' to UDP peer '$peer'");
 
   # if the socket already exists, use it for transmitting data; if the
   # transmission fails (e.g., server responded with ICMP port unreachable
@@ -4338,11 +4404,11 @@ sub execute_udpsock_action {
       if (!defined($nbytes)) {
         if ($! == EINTR)  { next; }
         log_msg(LOG_DEBUG, 
-        "Could not send event '$event' to UDP peer $peer ($!), retrying");
+        "Could not send event '$event' to UDP peer '$peer' ($!), retrying");
         delete $output_udpsock{$peer};
         last;
       } elsif ($nbytes != length($event)) {
-        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to UDP peer $peer");
+        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to UDP peer '$peer'");
         return 3;
       } else {
         return 3;
@@ -4353,7 +4419,7 @@ sub execute_udpsock_action {
 
   if ($peer !~ /^(.+):(\d+)$/) {
     log_msg(LOG_WARN,
-    "Can't connect to UDP peer $peer for sending event '$event'",
+    "Can't connect to UDP peer '$peer' for sending event '$event'",
     "(peer not in host:portnumber format)");
     return 3;
   }
@@ -4364,7 +4430,7 @@ sub execute_udpsock_action {
 
   if (!defined($iaddr)) {
     log_msg(LOG_WARN,
-    "Can't connect to UDP peer $peer for sending event '$event'",
+    "Can't connect to UDP peer '$peer' for sending event '$event'",
     "(unable to convert $host to Internet address)");
     return 3;
   }
@@ -4379,7 +4445,7 @@ sub execute_udpsock_action {
   while (!connect($handle, $paddr)) {
     if ($! == EINTR)  { next; }
     log_msg(LOG_DEBUG,
-    "Can't connect to UDP peer $peer for sending event '$event' ($!)");
+    "Can't connect to UDP peer '$peer' for sending event '$event' ($!)");
     return 3;
   }
 
@@ -4393,24 +4459,43 @@ sub execute_udpsock_action {
     if (!defined($nbytes)) {
       if ($! == EINTR)  { next; }
       log_msg(LOG_DEBUG, 
-              "Error when sending event '$event' to UDP peer $peer ($!)");
+              "Error when sending event '$event' to UDP peer '$peer' ($!)");
       delete $output_udpsock{$peer};
     } elsif ($nbytes != length($event)) {
-      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to UDP peer $peer");
+      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to UDP peer '$peer'");
     }
 
     return 3;
   }
 }
 
+sub execute_closeudp_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($peer);
+
+  $peer = $actionlist->[$i+1];
+  substitute_var($peer, $text);
+
+  log_msg(LOG_DEBUG, "Closing socket for UDP peer '$peer'");
+
+  if (exists($output_udpsock{$peer})) {
+    close($output_udpsock{$peer});
+    delete $output_udpsock{$peer};
+  } else {
+    log_msg(LOG_DEBUG, "No socket for UDP peer '$peer', can't close");
+  }
+
+  return 2;
+}
+
 sub execute_tcpsock_action {
 
   local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($peer, $handle, $event, $nbytes);
-  my($host, $port, $iaddr, $paddr, $win, $ret, $elem);
+  my($host, $port, $iaddr, $paddr);
+  my($win, $ret, $elem);
 
   $peer = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -4422,7 +4507,7 @@ sub execute_tcpsock_action {
   # remote peers are logged at the debug level, in order to prevent message 
   # floods with higher severity when large amounts of data are transfered
 
-  log_msg(LOG_DEBUG, "Sending event '$event' to TCP peer $peer");
+  log_msg(LOG_DEBUG, "Sending event '$event' to TCP peer '$peer'");
 
   # If the socket exists and there is an established connection to remote
   # peer, send data to the peer. In the case of fully or partially successful 
@@ -4438,11 +4523,11 @@ sub execute_tcpsock_action {
       if (!defined($nbytes)) {
         if ($! == EINTR)  { next; }
         log_msg(LOG_DEBUG, 
-        "Could not send event '$event' to TCP peer $peer ($!), retrying");
+        "Could not send event '$event' to TCP peer '$peer' ($!), retrying");
         delete $output_tcpsock{$peer};
         last;
       } elsif ($nbytes != length($event)) {
-        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to TCP peer $peer");
+        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to TCP peer '$peer'");
         return 3;
       } else {
         return 3;
@@ -4474,7 +4559,7 @@ sub execute_tcpsock_action {
     if (!defined($ret) || $ret <= 0) {
       if (time() - $output_tcpconn{$peer}->{"time"} > $socket_timeout) {
         log_msg(LOG_DEBUG,
-        "Can't connect to TCP peer $peer (connection establishment timeout)");
+        "Can't connect to TCP peer '$peer' (connection establishment timeout)");
         delete $output_tcpconn{$peer};
       } else {
         push @{$output_tcpconn{$peer}->{"buffer"}}, $event;
@@ -4489,11 +4574,11 @@ sub execute_tcpsock_action {
       if (!defined($nbytes)) {
         if ($! == EINTR)  { redo; }
         log_msg(LOG_DEBUG, 
-                "Error when sending event '$elem' to TCP peer $peer ($!)");
+                "Error when sending event '$elem' to TCP peer '$peer' ($!)");
         delete $output_tcpconn{$peer};
         return 3;
       } elsif ($nbytes != length($elem)) {
-        log_msg(LOG_DEBUG, "$nbytes bytes of '$elem' sent to TCP peer $peer");
+        log_msg(LOG_DEBUG, "$nbytes bytes of '$elem' sent to TCP peer '$peer'");
       }
     }
 
@@ -4509,7 +4594,7 @@ sub execute_tcpsock_action {
 
   if ($peer !~ /^(.+):(\d+)$/) {
      log_msg(LOG_WARN,
-     "Can't connect to TCP peer $peer for sending event '$event'",
+     "Can't connect to TCP peer '$peer' for sending event '$event'",
      "(peer not in host:portnumber format)");
      return 3;
   }
@@ -4520,7 +4605,7 @@ sub execute_tcpsock_action {
 
   if (!defined($iaddr)) {
     log_msg(LOG_WARN,
-    "Can't connect to TCP peer $peer for sending event '$event'",
+    "Can't connect to TCP peer '$peer' for sending event '$event'",
     "(unable to convert $host to Internet address)");
     return 3;
   }
@@ -4542,7 +4627,7 @@ sub execute_tcpsock_action {
                                  "time" => time() };
     } else {
       log_msg(LOG_DEBUG,
-      "Can't connect to TCP peer $peer for sending event '$event' ($!)");
+      "Can't connect to TCP peer '$peer' for sending event '$event' ($!)");
     }
     return 3;
   }
@@ -4556,21 +4641,42 @@ sub execute_tcpsock_action {
     if (!defined($nbytes)) {
       if ($! == EINTR) { next; }
       log_msg(LOG_DEBUG, 
-              "Error when sending event '$event' to TCP peer $peer ($!)");
+              "Error when sending event '$event' to TCP peer '$peer' ($!)");
       delete $output_tcpsock{$peer};
     } elsif ($nbytes != length($event)) {
-      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to TCP peer $peer");
+      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to TCP peer '$peer'");
     }
 
     return 3;
   }
 }
 
+sub execute_closetcp_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($peer);
+
+  $peer = $actionlist->[$i+1];
+  substitute_var($peer, $text);
+
+  log_msg(LOG_DEBUG, "Closing socket for TCP peer '$peer'");
+
+  if (exists($output_tcpsock{$peer})) {
+    close($output_tcpsock{$peer});
+    delete $output_tcpsock{$peer};
+  } elsif (exists($output_tcpconn{$peer})) {
+    close($output_tcpconn{$peer}->{"socket"});
+    delete $output_tcpconn{$peer};
+  } else {
+    log_msg(LOG_DEBUG, "No socket for TCP peer '$peer', can't close");
+  }
+
+  return 2;
+}
+
 sub execute_shellcmd_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($cmdline, $text2);
 
   $cmdline = $actionlist->[$i+1];
@@ -4595,9 +4701,7 @@ sub execute_shellcmd_action {
 
 sub execute_spawn_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($cmdline, $text2);
 
   $cmdline = $actionlist->[$i+1];
@@ -4622,9 +4726,7 @@ sub execute_spawn_action {
 
 sub execute_cspawn_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $cmdline, $text2);
 
   $context = $actionlist->[$i+1];
@@ -4652,9 +4754,7 @@ sub execute_cspawn_action {
 
 sub execute_pipe_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($event, $cmdline);
 
   $event = $actionlist->[$i+1];
@@ -4678,9 +4778,7 @@ sub execute_pipe_action {
 
 sub execute_create_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $lifetime, $list);
 
   $context = $actionlist->[$i+1];
@@ -4732,9 +4830,7 @@ sub execute_create_action {
 
 sub execute_delete_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $alias);
 
   $context = $actionlist->[$i+1];
@@ -4767,9 +4863,7 @@ sub execute_delete_action {
 
 sub execute_obsolete_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context);
 
   $context = $actionlist->[$i+1];
@@ -4798,9 +4892,7 @@ sub execute_obsolete_action {
 
 sub execute_set_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $lifetime, $list);
 
   $context = $actionlist->[$i+1];
@@ -4850,9 +4942,7 @@ sub execute_set_action {
 
 sub execute_alias_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $alias);
 
   $context = $actionlist->[$i+1];
@@ -4881,9 +4971,7 @@ sub execute_alias_action {
 
 sub execute_unalias_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($alias);
 
   $alias = $actionlist->[$i+1];
@@ -4919,9 +5007,7 @@ sub execute_unalias_action {
 
 sub execute_add_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $event, @event);
 
   $context = $actionlist->[$i+1];
@@ -4964,9 +5050,7 @@ sub execute_add_action {
 
 sub execute_prepend_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $event, @event);
 
   $context = $actionlist->[$i+1];
@@ -5009,9 +5093,7 @@ sub execute_prepend_action {
 
 sub execute_fill_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $event, @event);
 
   $context = $actionlist->[$i+1];
@@ -5053,9 +5135,7 @@ sub execute_fill_action {
 
 sub execute_report_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $cmdline, $event);
 
   $context = $actionlist->[$i+1];
@@ -5090,9 +5170,7 @@ sub execute_report_action {
 
 sub execute_copy_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $variable, $value);
 
   $context = $actionlist->[$i+1];
@@ -5118,9 +5196,7 @@ sub execute_copy_action {
 
 sub execute_empty_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $variable, $value);
 
   $context = $actionlist->[$i+1];
@@ -5149,9 +5225,7 @@ sub execute_empty_action {
 
 sub execute_pop_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $variable, $value);
 
   $context = $actionlist->[$i+1];
@@ -5177,9 +5251,7 @@ sub execute_pop_action {
 
 sub execute_shift_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $variable, $value);
 
   $context = $actionlist->[$i+1];
@@ -5205,9 +5277,7 @@ sub execute_shift_action {
 
 sub execute_exists_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $variable, $value);
 
   $variable = $actionlist->[$i+1];
@@ -5227,9 +5297,7 @@ sub execute_exists_action {
 
 sub execute_getsize_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $variable, $value);
 
   $variable = $actionlist->[$i+1];
@@ -5254,9 +5322,7 @@ sub execute_getsize_action {
 
 sub execute_getaliases_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $variable, $value);
 
   $variable = $actionlist->[$i+1];
@@ -5280,9 +5346,7 @@ sub execute_getaliases_action {
 
 sub execute_getltime_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $variable, $value);
 
   $variable = $actionlist->[$i+1];
@@ -5306,9 +5370,7 @@ sub execute_getltime_action {
 
 sub execute_getctime_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $variable, $value);
 
   $variable = $actionlist->[$i+1];
@@ -5333,9 +5395,7 @@ sub execute_getctime_action {
 
 sub execute_setctime_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $timestamp);
   my($ltime, $time, $time2);
 
@@ -5392,9 +5452,7 @@ sub execute_setctime_action {
 
 sub execute_event_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($createafter, $event, @event);
 
   $createafter = $actionlist->[$i+1];
@@ -5422,9 +5480,7 @@ sub execute_event_action {
 
 sub execute_tevent_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($createafter, $event, @event);
 
   $createafter = $actionlist->[$i+1];
@@ -5462,9 +5518,7 @@ sub execute_tevent_action {
 
 sub execute_cevent_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($context, $createafter, $event, @event);
 
   $context = $actionlist->[$i+1];
@@ -5503,9 +5557,7 @@ sub execute_cevent_action {
 
 sub execute_reset_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($conffile, $ruleid, $event);
   my($key, $rule);
 
@@ -5551,9 +5603,7 @@ sub execute_reset_action {
 
 sub execute_getwpos_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($variable, $conffile, $ruleid, $event);
   my($key, $time);
 
@@ -5582,9 +5632,7 @@ sub execute_getwpos_action {
 
 sub execute_setwpos_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($timestamp, $conffile, $ruleid, $event);
   my($key, $oper, $ltime, $time, $time2);
 
@@ -5676,9 +5724,7 @@ sub execute_setwpos_action {
 
 sub execute_assign_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($variable, $value);
 
   $variable = $actionlist->[$i+1];
@@ -5695,8 +5741,7 @@ sub execute_assign_action {
 
 sub execute_free_action {
 
-  my($actionlist) = $_[0];
-  my($i) = $_[2];
+  my($actionlist, undef, $i) = @_;
   my($variable);
 
   $variable = $actionlist->[$i+1];
@@ -5710,9 +5755,7 @@ sub execute_free_action {
 
 sub execute_eval_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($variable, $code);
   my(@retval, $evalok, $value);
 
@@ -5755,9 +5798,7 @@ sub execute_eval_action {
 
 sub execute_call_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($variable, $code, @params);
   my($value, @retval);
 
@@ -5799,9 +5840,7 @@ sub execute_call_action {
 
 sub execute_lcall_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($variable, $codeptr, @params);
   my($value, @retval);
 
@@ -5837,9 +5876,7 @@ sub execute_lcall_action {
 
 sub execute_rewrite_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($count, $event, @event, $j, $buffer, $bufptr);
 
   $count = $actionlist->[$i+1];
@@ -5914,9 +5951,7 @@ sub execute_rewrite_action {
 
 sub execute_if_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($variable, $ret);
 
   $variable = $actionlist->[$i+1];
@@ -5939,9 +5974,7 @@ sub execute_if_action {
 
 sub execute_while_action {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
-  my($i) = $_[2];
+  my($actionlist, $text, $i) = @_;
   my($variable);
 
   $variable = $actionlist->[$i+1];
@@ -5967,8 +6000,7 @@ sub execute_continue_action { return 0; }
 
 sub execute_actionlist {
 
-  my($actionlist) = $_[0];
-  my($text) = $_[1];
+  my($actionlist, $text) = @_;
   my($i, $j, $k);
 
   $i = 0;
@@ -6284,8 +6316,7 @@ sub tval_context_expr {
 
 sub match_tvalue {
 
-  my($tvalue) = $_[1];
-  my($subst_ref) = $_[2];
+  my(undef, $tvalue, $subst_ref) = @_;
 
   if ($tvalue)  { %{$subst_ref} = (); return 1; } 
   return 0;
@@ -6300,8 +6331,7 @@ sub match_tvalue {
 
 sub match_cached {
 
-  my($match) = $_[1];
-  my($subst_ref) = $_[2];
+  my(undef, $match, $subst_ref) = @_;
 
   if (exists($pmatch_cache{$match})) { 
     %{$subst_ref} = %{$pmatch_cache{$match}}; 
@@ -6320,8 +6350,7 @@ sub match_cached {
 
 sub match_ncached {
 
-  my($match) = $_[1];
-  my($subst_ref) = $_[2];
+  my(undef, $match, $subst_ref) = @_;
 
   if (!exists($pmatch_cache{$match}))  { %{$subst_ref} = (); return 1; } 
   return 0;
@@ -6338,12 +6367,12 @@ sub match_ncached {
 
 sub match_substr {
 
-  my($linecount) = $_[0];
-  my($substr) = $_[1];
-  my($subst_ref) = $_[2];
+  my($linecount, $substr, $subst_ref) = @_;
   my($line, $buffer, $bufptr);
 
-  if ($jointbuf) {
+  if ($bufsize == 1) {
+    $line = $input_buffer[0];
+  } elsif ($jointbuf) {
     $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
   } elsif (defined($input_sources[$bufpos])) {
     $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
@@ -6373,12 +6402,12 @@ sub match_substr {
 
 sub match_nsubstr {
 
-  my($linecount) = $_[0];
-  my($substr) = $_[1];
-  my($subst_ref) = $_[2];
+  my($linecount, $substr, $subst_ref) = @_;
   my($line, $buffer, $bufptr);
 
-  if ($jointbuf) {
+  if ($bufsize == 1) {
+    $line = $input_buffer[0];
+  } elsif ($jointbuf) {
     $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
   } elsif (defined($input_sources[$bufpos])) {
     $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
@@ -6412,13 +6441,12 @@ sub match_nsubstr {
 
 sub match_regexp {
 
-  my($linecount) = $_[0];
-  my($regexp) = $_[1];
-  my($subst_ref) = $_[2];
-  my($varmap_ref) = $_[3];
-  my($line, $buffer, $bufptr, @matches, $match, $var, $i, $j, @celem);
+  my($linecount, $regexp, $subst_ref, $varmap_ref) = @_;
+  my($line, $buffer, $bufptr, @matches);
 
-  if ($jointbuf) {
+  if ($bufsize == 1) {
+    $line = $input_buffer[0];
+  } elsif ($jointbuf) {
     $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
   } elsif (defined($input_sources[$bufpos])) {
     $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
@@ -6432,6 +6460,10 @@ sub match_regexp {
 
   if (@matches = ($line =~ /$regexp/)) { 
 
+    # since a number of variables are only needed when there is a match,
+    # declare them in relevant code block only for performance reasons
+    my($match, $var, $i, $j, @celem);
+
     # overwrite the previous content of the match variable hash with named
     # substring matches from the regular expression
     %{$subst_ref} = %+;
@@ -6444,7 +6476,10 @@ sub match_regexp {
     $subst_ref->{"0"} = $line;
 
     # create the $+{_inputsrc} variable
-    if ($jointbuf) {
+    if ($bufsize == 1) {
+      $subst_ref->{"_inputsrc"} = 
+        defined($input_sources[0])?$input_sources[0]:"synthetic";
+    } elsif ($jointbuf) {
       $subst_ref->{"_inputsrc"} = join(" ", map(defined($_)?$_:"synthetic", 
         @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
     } else {
@@ -6481,12 +6516,12 @@ sub match_regexp {
 
 sub match_nregexp {
 
-  my($linecount) = $_[0];
-  my($regexp) = $_[1];
-  my($subst_ref) = $_[2];
+  my($linecount, $regexp, $subst_ref) = @_;
   my($line, $buffer, $bufptr, $source);
 
-  if ($jointbuf) {
+  if ($bufsize == 1) {
+    $line = $input_buffer[0];
+  } elsif ($jointbuf) {
     $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
   } elsif (defined($input_sources[$bufpos])) {
     $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
@@ -6501,7 +6536,9 @@ sub match_nregexp {
   if ($line !~ /$regexp/) { 
     # erase the previous content of the match variable hash, and
     # create the $0 and $+{_inputsrc} variables
-    if ($jointbuf) {
+    if ($bufsize == 1) {
+      $source = defined($input_sources[0])?$input_sources[0]:"synthetic";
+    } elsif ($jointbuf) {
       $source = join(" ", map(defined($_)?$_:"synthetic",
         @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
     } else {
@@ -6528,14 +6565,14 @@ sub match_nregexp {
 
 sub match_perlfunc {
 
-  my($linecount) = $_[0];
-  my($codeptr) = $_[1];
-  my($subst_ref) = $_[2];
-  my($varmap_ref) = $_[3];
-  my(@lines, @sources, $line, $source, $buffer, $bufptr);
-  my(@matches, $match, $size, $var, $i, $j, @celem);
+  my($linecount, $codeptr, $subst_ref, $varmap_ref) = @_;
+  my(@lines, @sources, $buffer, $bufptr);
+  my(@matches, $size);
 
-  if ($jointbuf) {
+  if ($bufsize == 1) {
+    $lines[0] = $input_buffer[0];
+    $sources[0] = $input_sources[0];
+  } elsif ($jointbuf) {
     @lines = @input_buffer[$bufpos - $linecount + 1 .. $bufpos];
     @sources = @input_sources[$bufpos - $linecount + 1 .. $bufpos];
   } elsif (defined($input_sources[$bufpos])) {
@@ -6561,56 +6598,70 @@ sub match_perlfunc {
                                
   # if the function returned no values or a single value which evaluates
   # FALSE in boolean context, there is no match, and return 0 immediately
+
   $size = scalar(@matches);
+
   if ($size == 0 || ($size == 1 && !$matches[0]))  { return 0; }
 
-  # initialize the match variable hash
-  %{$subst_ref} = ();
+  # if the function produced a match, set match variables
 
-  # if the function returned a hash reference, create named match
-  # variables from key=value pairs in the hash; otherwise add
-  # function return values to the variable hash as numeric variables
-  if ($size == 1 && ref($matches[0]) eq "HASH") {
-    while ($var = each %{$matches[0]}) { 
-      $subst_ref->{$var} = $matches[0]->{$var}; 
+  else {
+
+    # since a number of variables are only needed when there is a match,
+    # declare them in relevant code block only for performance reasons
+    my($line, $source, $match, $var, $i, $j, @celem);
+
+    # initialize the match variable hash
+    %{$subst_ref} = ();
+
+    # if the function returned a hash reference, create named match
+    # variables from key=value pairs in the hash; otherwise add
+    # function return values to the variable hash as numeric variables
+    if ($size == 1 && ref($matches[0]) eq "HASH") {
+      while ($var = each %{$matches[0]}) { 
+        $subst_ref->{$var} = $matches[0]->{$var}; 
+      }
+    } else {
+      $i = 1;
+      foreach $match (@matches)  { $subst_ref->{$i++} = $match; }
     }
-  } else {
-    $i = 1;
-    foreach $match (@matches)  { $subst_ref->{$i++} = $match; }
-  }
 
-  # create the $0 and $+{_inputsrc} variables
-  if ($jointbuf) {
-    $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
-    $source = join(" ", map(defined($_)?$_:"synthetic",
-      @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
-  } elsif (defined($input_sources[$bufpos])) {
-    $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
-    $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
-    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
-    $source = $input_sources[$bufpos];
-  } else {
-    $buffer = $event_buffer{"Events"};
-    $bufptr = $event_buffer{"BufPos"};
-    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
-    $source = "synthetic";
-  }
-  $subst_ref->{"0"} = $line;
-  $subst_ref->{"_inputsrc"} = $source;
-
-  # add the $<name> match variables to the variable hash,
-  # and add match variable values to pattern match cache
-  if (scalar(%{$varmap_ref})) {
-    $j = scalar(@matches);
-    @celem = ();
-    while (($var, $i) = each %{$varmap_ref}) {
-      if (!defined($i))  { push @celem, $var; next; }
-      $subst_ref->{$var} = ($i <= $j)?$subst_ref->{$i}:undef;
+    # create the $0 and $+{_inputsrc} variables
+    if ($bufsize == 1) {
+      $line = $input_buffer[0];
+      $source = defined($input_sources[0])?$input_sources[0]:"synthetic";
+    } elsif ($jointbuf) {
+      $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+      $source = join(" ", map(defined($_)?$_:"synthetic",
+        @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+    } elsif (defined($input_sources[$bufpos])) {
+      $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
+      $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
+      $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+      $source = $input_sources[$bufpos];
+    } else {
+      $buffer = $event_buffer{"Events"};
+      $bufptr = $event_buffer{"BufPos"};
+      $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+      $source = "synthetic";
     }
-    foreach $var (@celem)  { $pmatch_cache{$var} = { %{$subst_ref} }; } 
-  }
+    $subst_ref->{"0"} = $line;
+    $subst_ref->{"_inputsrc"} = $source;
+
+    # add the $<name> match variables to the variable hash,
+    # and add match variable values to pattern match cache
+    if (scalar(%{$varmap_ref})) {
+      $j = scalar(@matches);
+      @celem = ();
+      while (($var, $i) = each %{$varmap_ref}) {
+        if (!defined($i))  { push @celem, $var; next; }
+        $subst_ref->{$var} = ($i <= $j)?$subst_ref->{$i}:undef;
+      }
+      foreach $var (@celem)  { $pmatch_cache{$var} = { %{$subst_ref} }; } 
+    }
     
-  return 1; 
+    return 1; 
+  }
 }
 
 
@@ -6624,13 +6675,14 @@ sub match_perlfunc {
 
 sub match_nperlfunc {
 
-  my($linecount) = $_[0];
-  my($codeptr) = $_[1];
-  my($subst_ref) = $_[2];
-  my(@lines, @sources, $line, $source, $buffer, $bufptr);
-  my(@matches, $size);
+  my($linecount, $codeptr, $subst_ref) = @_;
+  my(@lines, @sources, $buffer, $bufptr);
+  my(@matches, $size, $line, $source);
 
-  if ($jointbuf) {
+  if ($bufsize == 1) {
+    $lines[0] = $input_buffer[0];
+    $sources[0] = $input_sources[0];
+  } elsif ($jointbuf) {
     @lines = @input_buffer[$bufpos - $linecount + 1 .. $bufpos];
     @sources = @input_sources[$bufpos - $linecount + 1 .. $bufpos];
   } elsif (defined($input_sources[$bufpos])) {
@@ -6656,12 +6708,16 @@ sub match_nperlfunc {
                                
   # if the function returned several values or a single value which evaluates
   # TRUE in boolean context, there is no match, and return 0 immediately
+
   $size = scalar(@matches);
   if ($size > 1 || ($size == 1 && $matches[0]))  { return 0; }
 
   # erase the previous content of the match variable hash, and
   # create the $0 and $+{_inputsrc} variables
-  if ($jointbuf) {
+  if ($bufsize == 1) {
+    $line = $input_buffer[0];
+    $source = defined($input_sources[0])?$input_sources[0]:"synthetic";
+  } elsif ($jointbuf) {
     $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
     $source = join(" ", map(defined($_)?$_:"synthetic",
       @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
@@ -6690,9 +6746,7 @@ sub match_nperlfunc {
 
 sub copy_one_elem_action {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
-  my($i) = $_[2];
+  my($src_ref, $dest_ref, $i) = @_;
 
   push @{$dest_ref}, $src_ref->[$i];
   return 1; 
@@ -6700,9 +6754,7 @@ sub copy_one_elem_action {
 
 sub copy_two_elem_action {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
-  my($i) = $_[2];
+  my($src_ref, $dest_ref, $i) = @_;
 
   push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i];
   return 2; 
@@ -6710,9 +6762,7 @@ sub copy_two_elem_action {
 
 sub copy_three_elem_action {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
-  my($i) = $_[2];
+  my($src_ref, $dest_ref, $i) = @_;
 
   push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], $src_ref->[$i];
   return 3; 
@@ -6720,9 +6770,7 @@ sub copy_three_elem_action {
 
 sub copy_four_elem_action {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
-  my($i) = $_[2];
+  my($src_ref, $dest_ref, $i) = @_;
 
   push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], 
                      $src_ref->[$i++], $src_ref->[$i];
@@ -6731,9 +6779,7 @@ sub copy_four_elem_action {
 
 sub copy_five_elem_action {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
-  my($i) = $_[2];
+  my($src_ref, $dest_ref, $i) = @_;
 
   push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], 
                      $src_ref->[$i++], $src_ref->[$i++], $src_ref->[$i];
@@ -6742,9 +6788,7 @@ sub copy_five_elem_action {
 
 sub copy_create_set_action {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
-  my($i) = $_[2];
+  my($src_ref, $dest_ref, $i) = @_;
 
   push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], $src_ref->[$i++], [];
   copy_actionlist($src_ref->[$i], $dest_ref->[$i]);
@@ -6753,9 +6797,7 @@ sub copy_create_set_action {
 
 sub copy_call_lcall_action {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
-  my($i) = $_[2];
+  my($src_ref, $dest_ref, $i) = @_;
 
   push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], 
                      $src_ref->[$i++], [ @{$src_ref->[$i]} ];
@@ -6764,9 +6806,7 @@ sub copy_call_lcall_action {
 
 sub copy_if_action {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
-  my($i) = $_[2];
+  my($src_ref, $dest_ref, $i) = @_;
 
   push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], [], [];
   copy_actionlist($src_ref->[$i], $dest_ref->[$i]);
@@ -6777,9 +6817,7 @@ sub copy_if_action {
 
 sub copy_while_action {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
-  my($i) = $_[2];
+  my($src_ref, $dest_ref, $i) = @_;
 
   push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], [];
   copy_actionlist($src_ref->[$i], $dest_ref->[$i]);
@@ -6793,8 +6831,7 @@ sub copy_while_action {
 
 sub copy_actionlist {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
+  my($src_ref, $dest_ref) = @_;
   my($i, $j);
 
   @{$dest_ref} = ();
@@ -6814,8 +6851,7 @@ sub copy_actionlist {
 
 sub copy_context {
 
-  my($src_ref) = $_[0];
-  my($dest_ref) = $_[1];
+  my($src_ref, $dest_ref) = @_;
   my($i, $j);
 
   @{$dest_ref} = ();
@@ -6947,9 +6983,7 @@ sub subst_regexp {
 
 sub subst_context {
 
-  my($subst_ref) = $_[0];
-  my($ref) = $_[1];
-  my($token) = $_[2];
+  my($subst_ref, $ref, $token) = @_;
   my($i, $j);
 
   $i = 0;
@@ -6996,10 +7030,7 @@ sub subst_free { return 2; }
 
 sub subst_two_elem_action {
 
-  my($subst_ref) = $_[0];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, $actionlist->[$i+1], $token);
   return 2;
@@ -7007,10 +7038,7 @@ sub subst_two_elem_action {
 
 sub subst_three_elem_action {
 
-  my($subst_ref) = $_[0];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, $actionlist->[$i+1], $token);
   subst_string($subst_ref, $actionlist->[$i+2], $token);
@@ -7019,10 +7047,7 @@ sub subst_three_elem_action {
 
 sub subst_four_elem_action {
 
-  my($subst_ref) = $_[0];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, $actionlist->[$i+1], $token);
   subst_string($subst_ref, $actionlist->[$i+2], $token);
@@ -7032,11 +7057,7 @@ sub subst_four_elem_action {
 
 sub subst_create_set_action {
 
-  my($subst_ref) = $_[0];
-  my($subst_orig_ref) = $_[1];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my($subst_ref, $subst_orig_ref, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, $actionlist->[$i+1], $token);
   subst_string($subst_ref, $actionlist->[$i+2], $token);
@@ -7046,10 +7067,7 @@ sub subst_create_set_action {
 
 sub subst_copy_empty_etc_action {
 
-  my($subst_ref) = $_[0];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, $actionlist->[$i+1], $token);
   return 3;
@@ -7057,10 +7075,7 @@ sub subst_copy_empty_etc_action {
 
 sub subst_event_assign_etc_action {
 
-  my($subst_ref) = $_[0];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, $actionlist->[$i+2], $token);
   return 3;
@@ -7068,10 +7083,7 @@ sub subst_event_assign_etc_action {
 
 sub subst_reset_action {
 
-  my($subst_ref) = $_[0];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, $actionlist->[$i+3], $token);
   return 4;
@@ -7079,10 +7091,7 @@ sub subst_reset_action {
 
 sub subst_getwpos_action {
 
-  my($subst_ref) = $_[0];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, $actionlist->[$i+4], $token);
   return 5;
@@ -7090,10 +7099,7 @@ sub subst_getwpos_action {
 
 sub subst_setwpos_action {
 
-  my($subst_ref) = $_[0];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, $actionlist->[$i+1], $token);
   subst_string($subst_ref, $actionlist->[$i+4], $token);
@@ -7102,10 +7108,7 @@ sub subst_setwpos_action {
 
 sub subst_call_lcall_action {
 
-  my($subst_ref) = $_[0];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, @{$actionlist->[$i+3]}, $token);
   return 4;
@@ -7113,10 +7116,7 @@ sub subst_call_lcall_action {
 
 sub subst_if_action {
 
-  my($subst_orig_ref) = $_[1];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my(undef, $subst_orig_ref, $actionlist, $token, $i) = @_;
 
   subst_actionlist($subst_orig_ref, $actionlist->[$i+2], $token);
   subst_actionlist($subst_orig_ref, $actionlist->[$i+3], $token);
@@ -7125,10 +7125,7 @@ sub subst_if_action {
 
 sub subst_while_action {
 
-  my($subst_orig_ref) = $_[1];
-  my($actionlist) = $_[2];
-  my($token) = $_[3];
-  my($i) = $_[4];
+  my(undef, $subst_orig_ref, $actionlist, $token, $i) = @_;
 
   subst_actionlist($subst_orig_ref, $actionlist->[$i+2], $token);
   return 3;
@@ -7144,9 +7141,7 @@ sub subst_while_action {
 
 sub subst_actionlist {
 
-  my($subst_ref) = $_[0];
-  my($actionlist) = $_[1];
-  my($token) = $_[2];
+  my($subst_ref, $actionlist, $token) = @_;
   my($subst, %subst_modified);
   my($i, $j);
 
@@ -7188,8 +7183,7 @@ sub subst_actionlist {
 
 sub update_times_swt {
 
-  my($oper) = $_[0];
-  my($time) = $_[1];
+  my($oper, $time, $flag) = @_;
   my($tlist);
 
   $tlist = $oper->{"Times"};
@@ -7199,7 +7193,7 @@ sub update_times_swt {
     shift @{$tlist};
   }
 
-  if (!defined($_[2]) && scalar(@{$tlist})) { 
+  if (!defined($flag) && scalar(@{$tlist})) { 
     $oper->{"Time"} = $tlist->[0]; 
   } else {
     $oper->{"Time"} = $time; 
@@ -7220,8 +7214,7 @@ sub update_times_swt {
 
 sub update_times_eg {
 
-  my($oper) = $_[0];
-  my($time) = $_[1];
+  my($oper, $time, $flag) = @_;
   my($tlist, $i);
 
   $tlist = $oper->{"AllTimes"};
@@ -7233,7 +7226,7 @@ sub update_times_eg {
     shift @{$tlist};
   }
 
-  if (!defined($_[2]) && scalar(@{$tlist})) { 
+  if (!defined($flag) && scalar(@{$tlist})) { 
     $oper->{"Time"} = $tlist->[0]->[0]; 
   } else {
     $oper->{"Time"} = $time; 
@@ -7257,8 +7250,7 @@ sub gen_key {
 
 sub process_single_rule {
 
-  my($rule) = $_[0];
-  my($subst) = $_[1];
+  my($rule, $subst) = @_;
   my($desc, $action);
 
   $desc = $rule->{"Desc"};
@@ -7286,8 +7278,7 @@ sub process_single_rule {
 
 sub process_singlewithscript_rule {
 
-  my($rule) = $_[0];
-  my($subst) = $_[1];
+  my($rule, $subst) = @_;
   my($desc, $script, $pid);
   my($action, $action2);
 
@@ -7333,9 +7324,7 @@ sub process_singlewithscript_rule {
 
 sub process_singlewithsuppress_rule {
 
-  my($rule) = $_[0];
-  my($subst) = $_[1];
-  my($conffile) = $_[2];
+  my($rule, $subst, $conffile) = @_;
   my($desc, $key, $time, $action);
 
   $desc = $rule->{"Desc"};
@@ -7378,9 +7367,7 @@ sub process_singlewithsuppress_rule {
 
 sub process_pair_rule {
 
-  my($rule) = $_[0];
-  my($subst) = $_[1];
-  my($conffile) = $_[2];
+  my($rule, $subst, $conffile) = @_;
   my($desc, $key, $time, $temppat, $pattern2, $desc2);
   my($action, $action2, $context2, $sub, $act2copied);
 
@@ -7531,9 +7518,7 @@ sub process_pair_rule {
 
 sub process_pairwithwindow_rule {
 
-  my($rule) = $_[0];
-  my($subst) = $_[1];
-  my($conffile) = $_[2];
+  my($rule, $subst, $conffile) = @_;
   my($desc, $key, $time, $temppat, $pattern2, $desc2);
   my($action, $action2, $context2, $sub, $act2copied);
 
@@ -7692,9 +7677,7 @@ sub process_pairwithwindow_rule {
 
 sub process_singlewiththreshold_rule {
 
-  my($rule) = $_[0];
-  my($subst) = $_[1];
-  my($conffile) = $_[2];
+  my($rule, $subst, $conffile) = @_;
   my($desc, $key, $time, $oper, $action, $action2);
 
   $desc = $rule->{"Desc"};
@@ -7792,9 +7775,7 @@ sub process_singlewiththreshold_rule {
 
 sub process_singlewith2thresholds_rule {
 
-  my($rule) = $_[0];
-  my($subst) = $_[1];
-  my($conffile) = $_[2];
+  my($rule, $subst, $conffile) = @_;
   my($desc, $key, $time, $oper, $desc2, $action, $action2);
 
   $desc = $rule->{"Desc"};
@@ -7921,10 +7902,7 @@ sub process_singlewith2thresholds_rule {
 
 sub process_eventgroup_rule {
 
-  my($rule) = $_[0];
-  my($subst) = $_[1];
-  my($conffile) = $_[2];
-  my($index) = $_[3];
+  my($rule, $subst, $conffile, $index) = @_;
   my($desc, $key, $time, $oper, $i);
   my($initaction, $slideaction, $endaction, $countaction, $action);
 
@@ -8072,10 +8050,7 @@ sub process_eventgroup_rule {
 
 sub process_jump_rule {
 
-  my($rule) = $_[0];
-  my($subst) = $_[1];
-  my($conffile) = $_[2];
-  my($trace) = $_[3];
+  my($rule, $subst, $conffile, $trace) = @_;
   my($cfsetlist, $cfset, $cf);
 
   if (!exists($rule->{"CFSet"})) { return 0; }
@@ -8253,9 +8228,7 @@ sub match_pair_operations {
 
 sub match_1pattern_rule {
 
-  my($conffile) = $_[0];
-  my($index) = $_[1];
-  my($trace) = $_[2];
+  my($conffile, $index, $trace) = @_;
   my($rule, %subst, @context);
 
   $rule = $configuration{$conffile}->[$index];
@@ -8338,8 +8311,7 @@ sub match_1pattern_rule {
 
 sub match_2pattern_rule {
 
-  my($conffile) = $_[0];
-  my($index) = $_[1];
+  my($conffile, $index) = @_;
   my($rule, %subst, @context);
 
   $rule = $configuration{$conffile}->[$index];
@@ -8416,8 +8388,7 @@ sub match_2pattern_rule {
 
 sub match_eventgroup_rule {
 
-  my($conffile) = $_[0];
-  my($index) = $_[1];
+  my($conffile, $index) = @_;
   my($rule, $i, %subst, @context);
 
   $rule = $configuration{$conffile}->[$index];
@@ -8487,8 +8458,7 @@ sub match_eventgroup_rule {
 
 sub process_rules {
 
-  my($conffile) = $_[0];
-  my($trace) = $_[1];
+  my($conffile, $trace) = @_;
   my($i, $n, $rule);
 
   $i = 0;
@@ -8782,6 +8752,16 @@ sub actionlist2str {
       $i += 3;
     }
 
+    elsif ($actionlist->[$i] == WRITEN) {
+      $result .= "writen " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == CLOSEF) { 
+      $result .= "closef " . $actionlist->[$i+1];
+      $i += 2;
+    } 
+
     elsif ($actionlist->[$i] == OWRITECL) {
       $result .= "owritecl " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
       $i += 3;
@@ -8792,20 +8772,40 @@ sub actionlist2str {
       $i += 3;
     }
 
+    elsif ($actionlist->[$i] == CLOSEUDGR) { 
+      $result .= "closeudgr " . $actionlist->[$i+1];
+      $i += 2;
+    } 
+
     elsif ($actionlist->[$i] == USTREAM) {
       $result .= "ustream " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
       $i += 3;
     }
+
+    elsif ($actionlist->[$i] == CLOSEUSTR) { 
+      $result .= "closeustr " . $actionlist->[$i+1];
+      $i += 2;
+    } 
 
     elsif ($actionlist->[$i] == UDPSOCK) {
       $result .= "udpsock " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
       $i += 3;
     }
 
+    elsif ($actionlist->[$i] == CLOSEUDP) { 
+      $result .= "closeudp " . $actionlist->[$i+1];
+      $i += 2;
+    } 
+
     elsif ($actionlist->[$i] == TCPSOCK) {
       $result .= "tcpsock " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
       $i += 3;
     }
+
+    elsif ($actionlist->[$i] == CLOSETCP) { 
+      $result .= "closetcp " . $actionlist->[$i+1];
+      $i += 2;
+    } 
 
     elsif ($actionlist->[$i] == SHELLCOMMAND) { 
       $result .= "shellcmd " . $actionlist->[$i+1]; 
@@ -9053,9 +9053,7 @@ sub actionlist2str {
 
 sub pattern2str {
 
-  my($type) = $_[0];
-  my($lines) = $_[1];
-  my($pattern) = $_[2];
+  my($type, $lines, $pattern) = @_;
 
   if ($type == SUBSTR) { 
     return "substring for $lines line(s): $pattern"; 
@@ -9104,8 +9102,7 @@ sub pattern2str {
 
 sub continue2str {
 
-  my($whatnext) = $_[0];
-  my($gotorule) = $_[1];
+  my($whatnext, $gotorule) = @_;
 
   if ($whatnext == DONTCONT) { return "don't continue"; }
   elsif ($whatnext == TAKENEXT) { return "take next"; }
@@ -9209,9 +9206,7 @@ sub context2str {
 
 sub print_element {
 
-  my($handle) = $_[0];
-  my($key) = $_[1];
-  my($oper) = $_[2];
+  my($handle, $key, $oper) = @_;
   my($rule, $conffile, $id, $time, $elem, $i, $j);
 
   print $handle "Key: ", $key, "\n";
@@ -9692,7 +9687,12 @@ sub dump_data {
 
   if ($jointbuf) {
 
-    print DUMPFILE "Content of input buffer (last $bufsize input lines):\n";
+    print DUMPFILE "Input buffering mode: ";
+    print DUMPFILE "joint buffer for all input sources\n";
+    print DUMPFILE "Size of input buffer: $bufsize\n";
+    print DUMPFILE "\n";
+
+    print DUMPFILE "Content of input buffer (last $bufsize input line(s)):\n";
     print DUMPFILE '-' x 60, "\n";
 
     for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
@@ -9702,7 +9702,7 @@ sub dump_data {
     print DUMPFILE '-' x 60, "\n";
     print DUMPFILE "\n";
 
-    print DUMPFILE "Last $bufsize input sources:\n";
+    print DUMPFILE "Last $bufsize input source(s):\n";
     print DUMPFILE '-' x 60, "\n";
 
     for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
@@ -9717,6 +9717,11 @@ sub dump_data {
     print DUMPFILE "\n";
 
   } else {
+
+    print DUMPFILE "Input buffering mode: ";
+    print DUMPFILE "separate buffer for each input source\n";
+    print DUMPFILE "Size of each input buffer: $bufsize\n";
+    print DUMPFILE "\n";
 
     foreach $file (sort keys %input_buffers) {
 
@@ -9895,8 +9900,7 @@ sub dump_data {
 
 sub arrange_input_buffer {
 
-  my($buffer) = $_[0];
-  my($bufptr) = $_[1];
+  my($buffer, $bufptr) = @_;
   my($cursize, $i, $diff);
 
   $cursize = scalar(@{$buffer});
@@ -9947,8 +9951,8 @@ sub arrange_input_buffers {
   arrange_input_buffer(\@input_buffer, $bufpos);
   $bufpos = arrange_input_buffer(\@input_sources, $bufpos);
 
-  # with --jointbuf command line option (the default), run SEC with joint
-  # input buffer for all input sources, otherwise set up separate buffers
+  # with --jointbuf command line option, run SEC with joint input buffer 
+  # for all input sources, otherwise set up separate buffers
 
   if ($jointbuf) {
 
@@ -10043,8 +10047,7 @@ sub internal_event {
 
 sub consume_pipe {
 
-  my($pid) = $_[0];
-  my($read_all) = $_[1];
+  my($pid, $read_all) = @_;
   my($rin, $ret, $pos, $nbytes, $total, $event);
 
   $total = 0;
@@ -10257,11 +10260,11 @@ sub check_tcp_conn {
         if (!defined($nbytes)) {
           if ($! == EINTR)  { redo; }
           log_msg(LOG_DEBUG, 
-                  "Error when sending event '$event' to TCP peer $peer ($!)");
+                  "Error when sending event '$event' to TCP peer '$peer' ($!)");
           $sockok = 0;
           last;
         } elsif ($nbytes != length($event)) {
-          log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to TCP peer $peer");
+          log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to TCP peer '$peer'");
         }
       }
 
@@ -10274,7 +10277,7 @@ sub check_tcp_conn {
     } else {
       if ($time - $output_tcpconn{$peer}->{"time"} > $socket_timeout) {
         log_msg(LOG_DEBUG,
-        "Can't connect to TCP peer $peer (connection establishment timeout)");
+        "Can't connect to TCP peer '$peer' (connection establishment timeout)");
         delete $output_tcpconn{$peer};
       } 
     }
@@ -10313,12 +10316,12 @@ sub read_tcp_sock {
 
       if (!defined($ret)) {
         if ($! == EINTR)  { next; }
-        log_msg(LOG_DEBUG, "IO error, closing connection to TCP peer $peer ($!)");
+        log_msg(LOG_DEBUG, "IO error, closing connection to TCP peer '$peer' ($!)");
         delete $output_tcpsock{$peer};
         last;
       } 
       elsif ($nbytes == 0) {
-        log_msg(LOG_DEBUG, "TCP peer $peer has closed the connection");
+        log_msg(LOG_DEBUG, "TCP peer '$peer' has closed the connection");
         delete $output_tcpsock{$peer};
         last;
       }
@@ -10340,8 +10343,7 @@ sub read_tcp_sock {
 
 sub open_input_file {
 
-  my($file) = $_[0];
-  my($fpos) = $_[1];
+  my($file, $fpos) = @_;
   my($input, $flags, $regfile, @stat);
 
   # if input is stdin, duplicate it
@@ -10474,19 +10476,19 @@ sub open_input_file {
 #         position par1 (-1 means "seek EOF" and 0 means "don't seek at all").
 #         If -intcontexts option is active, also set up internal contexts.
 #         If flag par2 is set, input files which are already open will not
-#         be closed and reopened, and their status data will be retained.
+#         be closed and reopened, and their status data will be retained
+#         (par2 reflects the value of the -keepopen command line option)
 
 sub open_input {
 
-  my($fpos) = $_[0];
-  my($softopen, $filepat, $pattern, $cmdline_context);
-  my(%fcont, $inputfile, $time, $fh, $dev, $inode, $regfile, $i, $j, @buf);
+  my($fpos, $softopen) = @_;
+  my($filepat, $pattern, $cmdline_context);
+  my(%fcont, $inputfile, $time);
+  my($fh, $dev, $inode, $regfile, $i, $j, @buf);
 
-  # Check if status data of already open input files must be retained
-  # and files must be kept open (default is "no")
-
-  $softopen = defined($_[1])?$_[1]:0;
-
+  # If $softopen is set, status data of already open input files must be 
+  # retained and files must be kept open (note that $softopen reflects 
+  # the value of the -keepopen command line option)
   # In the case of full open, clean global arrays %inputsrc and @readbuffer 
   # (the keys for %inputsrc are members of global array @inputfiles). 
   # Note that dropping all data in %inputsrc will implicitly close all input 
@@ -11091,6 +11093,11 @@ sub check_signals {
 
     read_config();
 
+    # if --bufsize command line option has not been provided or --bufsize=0,
+    # set --bufsize by analyzing loaded rules
+
+    if (!$bufsize)  { set_bufsize_option(); }
+
     # (re)open all input sources and arrange input buffers
 
     open_input(-1);
@@ -11135,6 +11142,11 @@ sub check_signals {
     # of files that have been modified or removed
 
     soft_read_config(\@file_list);
+
+    # if --bufsize command line option has not been provided or --bufsize=0,
+    # set --bufsize by analyzing loaded rules
+
+    if (!$bufsize)  { set_bufsize_option(); }
 
     # clear event correlation operations related to the modified and 
     # removed configuration files
@@ -11487,6 +11499,71 @@ sub daemonize {
 }
 
 
+# Parameters: - 
+# Action: scan all rules loaded from configuration files, and set the
+#         --bufsize command line option to the largest number of lines 
+#         configured with the ptype* field (e.g., if loaded rules have
+#         fields ptype=RegExp2, ptype2=PerlFunc5, ptype=RegExp3, and
+#         ptype=NSubStr4, assume --bufsize=5).
+
+sub set_bufsize_option {
+
+  my($conffile, $rule);
+  my($type, $max, $i);
+
+  # the function will always set --bufsize to at least 1, even if
+  # no valid rules have been defined in configuration files
+
+  $max = 1;
+
+  # scan all loaded rules for finding the value for --bufsize
+
+  foreach $conffile (@conffiles) {
+
+    foreach $rule (@{$configuration{$conffile}}) {
+
+      $type = $rule->{"Type"};
+
+      if ($type == CALENDAR) { next; }
+
+      elsif ($type == SINGLE || $type == SINGLE_W_SUPPRESS ||
+             $type == SINGLE_W_SCRIPT || $type == SINGLE_W_THRESHOLD ||
+             $type == SINGLE_W_2_THRESHOLDS || $type == SUPPRESS ||
+             $type == JUMP) {
+
+        if ($max < $rule->{"PatLines"}) { $max = $rule->{"PatLines"}; }
+
+      }
+
+      elsif ($type == PAIR || $type == PAIR_W_WINDOW) {
+
+        if ($max < $rule->{"PatLines"}) { $max = $rule->{"PatLines"}; }
+        if ($max < $rule->{"PatLines2"}) { $max = $rule->{"PatLines2"}; }
+
+      }
+
+      elsif ($type == EVENT_GROUP) {
+
+        foreach $i (@{$rule->{"PatLinesList"}}) {
+          if ($max < $i) { $max = $i; }
+        }
+
+      }
+    }
+  }
+
+  log_msg(LOG_DEBUG, "No --bufsize command line option or --bufsize=0,",
+                     "setting --bufsize to $max");
+  $bufsize = $max;
+
+  # in the case of --bufsize=1, always enable the --jointbuf option,
+  # since there is no need to maintain multiple input buffers
+  
+  if ($bufsize == 1)  { $jointbuf = 1; }
+
+}
+
+
 # Parameters: -
 # Action: read and process options from command line and resource file
 
@@ -11540,7 +11617,7 @@ sub read_options {
   $poll_timeout = 0.1;
   $socket_timeout = 60;
   $blocksize = 1024;
-  $bufsize = 10;
+  $bufsize = 0;
   $evstoresize = 0;
   $cleantime = 1;
   $logfile = "";
@@ -11552,7 +11629,7 @@ sub read_options {
   $tail = 1;
   $fromstart = 0;
   $detach = 0;
-  $jointbuf = 1;
+  $jointbuf = 0;
   $keepopen = 0;
   $rwfifo = 1;
   $childterm = 1;
@@ -11604,10 +11681,15 @@ sub read_options {
   if ($poll_timeout < 0)  { $poll_timeout = 0.1; }
   if ($socket_timeout <= 0)  { $socket_timeout = 60; }
   if ($blocksize <= 0)  { $blocksize = 1024; }
-  if ($bufsize <= 0)  { $bufsize = 10; }
+  if ($bufsize < 0)  { $bufsize = 0; }
   if ($evstoresize < 0)  { $evstoresize = 0; }
   if ($cleantime < 0)  { $cleantime = 1; }
   if ($debuglevel < 1  ||  $debuglevel > 6)  { $debuglevel = 6; }
+
+  # in the case of --bufsize=1, always enable the --jointbuf option,
+  # since there is no need to maintain multiple input buffers
+
+  if ($bufsize == 1)  { $jointbuf = 1; }
 
   # restore the @ARGV array
 
@@ -11776,11 +11858,17 @@ $processrulefunc[JUMP] = \&process_jump_rule;
 $actioncopyfunc[NONE] = \&copy_one_elem_action;
 $actioncopyfunc[LOGONLY] = \&copy_two_elem_action;
 $actioncopyfunc[WRITE] = \&copy_three_elem_action;
+$actioncopyfunc[WRITEN] = \&copy_three_elem_action;
+$actioncopyfunc[CLOSEF] = \&copy_two_elem_action;
 $actioncopyfunc[OWRITECL] = \&copy_three_elem_action;
 $actioncopyfunc[UDGRAM] = \&copy_three_elem_action;
+$actioncopyfunc[CLOSEUDGR] = \&copy_two_elem_action;
 $actioncopyfunc[USTREAM] = \&copy_three_elem_action;
+$actioncopyfunc[CLOSEUSTR] = \&copy_two_elem_action;
 $actioncopyfunc[UDPSOCK] = \&copy_three_elem_action;
+$actioncopyfunc[CLOSEUDP] = \&copy_two_elem_action;
 $actioncopyfunc[TCPSOCK] = \&copy_three_elem_action;
+$actioncopyfunc[CLOSETCP] = \&copy_two_elem_action;
 $actioncopyfunc[SHELLCOMMAND] = \&copy_two_elem_action;
 $actioncopyfunc[SPAWN] = \&copy_two_elem_action;
 $actioncopyfunc[CSPAWN] = \&copy_three_elem_action;
@@ -11825,11 +11913,17 @@ $actioncopyfunc[CONTINUE] = \&copy_one_elem_action;
 $actionsubstfunc[NONE] = \&subst_none_break_continue;
 $actionsubstfunc[LOGONLY] = \&subst_two_elem_action;
 $actionsubstfunc[WRITE] = \&subst_three_elem_action;
+$actionsubstfunc[WRITEN] = \&subst_three_elem_action;
+$actionsubstfunc[CLOSEF] = \&subst_two_elem_action;
 $actionsubstfunc[OWRITECL] = \&subst_three_elem_action;
 $actionsubstfunc[UDGRAM] = \&subst_three_elem_action;
+$actionsubstfunc[CLOSEUDGR] = \&subst_two_elem_action;
 $actionsubstfunc[USTREAM] = \&subst_three_elem_action;
+$actionsubstfunc[CLOSEUSTR] = \&subst_two_elem_action;
 $actionsubstfunc[UDPSOCK] = \&subst_three_elem_action;
+$actionsubstfunc[CLOSEUDP] = \&subst_two_elem_action;
 $actionsubstfunc[TCPSOCK] = \&subst_three_elem_action;
+$actionsubstfunc[CLOSETCP] = \&subst_two_elem_action;
 $actionsubstfunc[SHELLCOMMAND] = \&subst_two_elem_action;
 $actionsubstfunc[SPAWN] = \&subst_two_elem_action;
 $actionsubstfunc[CSPAWN] = \&subst_three_elem_action;
@@ -11874,11 +11968,17 @@ $actionsubstfunc[CONTINUE] = \&subst_none_break_continue;
 $execactionfunc[NONE] = \&execute_none_action;
 $execactionfunc[LOGONLY] = \&execute_logonly_action;
 $execactionfunc[WRITE] = \&execute_write_action;
+$execactionfunc[WRITEN] = \&execute_write_action;
+$execactionfunc[CLOSEF] = \&execute_closef_action;
 $execactionfunc[OWRITECL] = \&execute_owritecl_action;
 $execactionfunc[UDGRAM] = \&execute_udgram_action;
+$execactionfunc[CLOSEUDGR] = \&execute_closeudgr_action;
 $execactionfunc[USTREAM] = \&execute_ustream_action;
+$execactionfunc[CLOSEUSTR] = \&execute_closeustr_action;
 $execactionfunc[UDPSOCK] = \&execute_udpsock_action;
+$execactionfunc[CLOSEUDP] = \&execute_closeudp_action;
 $execactionfunc[TCPSOCK] = \&execute_tcpsock_action;
+$execactionfunc[CLOSETCP] = \&execute_closetcp_action;
 $execactionfunc[SHELLCOMMAND] = \&execute_shellcmd_action;
 $execactionfunc[SPAWN] = \&execute_spawn_action;
 $execactionfunc[CSPAWN] = \&execute_cspawn_action;
@@ -11972,6 +12072,11 @@ my $config_ok = read_config();
 if ($testonly) {
   if ($config_ok)  { exit(0); }  else { exit(1); }
 }
+
+# if --bufsize command line option has not been provided or --bufsize=0,
+# set --bufsize by analyzing loaded rules
+
+if (!$bufsize)  { set_bufsize_option(); }
 
 ### Open input sources
 

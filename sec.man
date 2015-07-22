@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.7.6 - sec.man
-.\" Copyright (C) 2000-2014 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.7.7 - sec.man
+.\" Copyright (C) 2000-2015 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "July 2014" "SEC 2.7.6"
+.TH sec 1 "February 2015" "SEC 2.7.7"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -420,11 +420,13 @@ the number of bytes SEC will attempt to read at once from an input file.
 Default is 1024 (i.e., read from input files by 1KB blocks).
 .TP 
 .B \-\-bufsize=<input_buffer_size>
-set all input buffers to hold last <input_buffer_size> lines. 
+set all input buffers to hold <input_buffer_size> lines. 
 The content of input buffers will be compared with 
 patterns that are part of rule definitions (i.e., no more than 
 <input_buffer_size> lines can be matched by a pattern at a time). 
-Default buffer size is 10 lines.
+If <input_buffer_size> is set to 0, SEC will determine the proper value
+for <input_buffer_size> by checking event matching patterns of all SEC rules.
+Default is 0 (i.e., determine the size of input buffers automatically).
 .TP
 .B \-\-evstoresize=<event_store_size>
 set an upper limit to the number of events in context event stores. 
@@ -565,8 +567,12 @@ sources, while the
 .B \-\-nojointbuf 
 pattern restricts the matching to lines from one input source only.
 See INPUT PROCESSING AND TIMING section for more information.
-Default is
-.BR \-\-jointbuf .
+If the size of input buffer(s) is 1 (either explicitly set with
+.B \-\-bufsize=1
+or automatically determined from SEC rules),
+.B \-\-jointbuf
+option is enabled, otherwise the default is 
+.BR \-\-nojointbuf .
 .TP
 .BR \-\-keepopen ", " \-\-nokeepopen
 if the
@@ -905,6 +911,11 @@ ptype=substr
 pattern=Backup done:\\tsuccess
 .sp
 The pattern matches lines containing "Backup done:<TAB>success".
+.sp
+Note that since the
+.I SubStr[N]
+pattern type has been designed for fast matching, it does not support match 
+variables.
 .TP
 .I RegExp[N]
 pattern is a Perl regular expression (see 
@@ -1014,10 +1025,10 @@ function, and
 .BR eval ()
 must return a code reference for the pattern to be valid 
 (see also PERL INTEGRATION section). 
-In order to check whether the pattern matches input line(s), SEC will call 
-the function in list context and pass lines L1, L2, ..., LN and the names of
-corresponding input files F1, F2, ..., FN to the function as 
-parameters: 
+The function is called in Perl list context, and with the
+.B \-\-jointbuf
+option, lines L1, L2, ..., LN and the names of corresponding input files 
+F1, F2, ..., FN are passed to the function as parameters: 
 .sp
 function(L1, L2, ..., LN, F1, F2, ..., FN) 
 .sp
@@ -1118,29 +1129,32 @@ and $+{_inputsrc} variables to values from the previous match.
 like
 .IR SubStr[N] ,
 except that the result of the match is negated.
+Note that this pattern type does not support match variables.
 .TP
 .I NRegExp[N]
 like
 .IR RegExp[N] ,
 except that the result of the match is negated and variable maps are not 
-supported. Note that the only match variables set by the pattern are $0
-and $+{_inputsrc}.
+supported. Note that the only match variables supported by this pattern type 
+are $0 and $+{_inputsrc}.
 .TP
 .I NPerlFunc[N]
 like
 .IR PerlFunc[N] ,
 except that the result of the match is negated and variable maps are not
-supported. Note that the only match variables set by the pattern are $0
-and $+{_inputsrc}.
+supported. Note that the only match variables supported by this pattern type 
+are $0 and $+{_inputsrc}.
 .TP
 .I NCached
 like
 .IR Cached ,
-except that the result of the match is negated.
+except that the result of the match is negated. 
+Note that this pattern type does not support match variables.
 .TP
 .I TValue
 pattern is a truth value, with TRUE and FALSE being legitimate values. 
 TRUE always matches an input line, while FALSE never matches anything.
+Note that this pattern type does not support match variables.
 .PP
 When match variables are substituted, each "$$" sequence is interpreted as
 a literal dollar sign ($) which allows for masking match variables. 
@@ -1178,7 +1192,7 @@ For example, if the variable $+{ip} has been previously cached under
 the entry "SSH", it can be referred as $:{SSH:ip}.
 For the reasons of efficiency, the $:{entryname:varname} syntax is not 
 supported for fast pattern types which do not set match variables (i.e., 
-SubStr, NSubStr and TValue).
+SubStr, NSubStr, NCached and TValue).
 .PP
 Note that since Pair and PairWithWindow rules have two patterns, match
 variables of the first pattern are shadowed for some rule fields when the 
@@ -1274,9 +1288,9 @@ rule fields. Context expressions can be used for restricting the matches
 produced by patterns, since if the expression evaluates FALSE, the rule will
 not match an input event.
 .PP
-The context expression accepts context names, Perl miniprograms, and Perl 
-functions as operands. These operands can be combined with the following
-operators:
+The context expression accepts context names, Perl miniprograms, Perl 
+functions, and pattern match cache lookups as operands. These operands can 
+be combined with the following operators:
 .br
 !  - logical NOT, 
 .br
@@ -1286,34 +1300,243 @@ operators:
 .br
 In addition, parentheses can be used for grouping purposes.
 .PP
-If the operand contains the arrow operator (->), the text following the arrow 
-must be a valid Perl function definition that is compiled at SEC startup with 
-the Perl
+If the operand does not contain any special operators (such as -> or :>,
+see below), it is treated as a context name. Context name operands may 
+contain match variables, but may not contain whitespace.
+If the context name refers to an existing context, the operand evaluates
+TRUE, otherwise it evaluates FALSE.
+.PP
+For example, consider the following rule sequence:
+.PP
+type=Single
+.br
+ptype=RegExp
+.br
+pattern=Test: (\\d+)
+.br
+desc=test
+.br
+action=create CONT_$1
+.PP
+type=Single
+.br
+ptype=RegExp
+.br
+pattern=Test2: (\\d+) (\\d+)
+.br
+context=CONT_$1 && CONT_$2
+.br
+desc=test
+.br
+action=write - Both $1 and $2 have been seen in the past
+.PP
+If the following input lines appear in this order
+.PP
+Test: 19
+.br
+Test: 261
+.br
+Test2: 19 787
+.br
+Test: 787
+.br
+Test2: 787 261
+.PP
+the first input line matches the first rule which creates the context
+.BR CONT_19 ,
+and similarly, the second input line triggers the creation of the context
+.BR CONT_261 .
+The third input line "Test2: 19 787" matches the regular expression 
+.PP
+Test2: (\\d+) (\\d+)
+.PP
+but does not match the second rule, since the boolean expression
+.PP
+CONT_19 && CONT_787
+.PP
+evaluates FALSE (context 
+.B CONT_19
+exists, but context
+.B CONT_787
+doesn't). The fourth input line matches the first rule which creates 
+the context
+.BR CONT_787 .
+The fifth input line "Test2: 787 261" matches the second rule, since the
+boolean expression
+.PP
+CONT_787 && CONT_261
+.PP
+evaluates TRUE (both context
+.B CONT_787
+and context
+.B CONT_261
+exist), and therefore the string "Both 787 and 261 have been seen in the past"
+is written to standard output.
+.PP
+If the context expression operand contains the arrow operator (->), the text 
+following the arrow must be a valid Perl function definition that is compiled 
+at SEC startup with the Perl
 .BR eval () 
 function. The 
 .BR eval () 
 must return a code reference (see also PERL INTEGRATION section for more
 information). If any text precedes the arrow, it is treated as a list of 
 parameters for the function. Parameters must be separated by whitespace and 
-may contain match variables set by pattern(s).
-In order to evaluate the Perl function operand, the function is called in 
-the Perl scalar context. If the return value of the function is true in the
-Perl boolean context, the operand evaluates TRUE, otherwise it evaluates FALSE.
+may contain match variables.
+In order to evaluate the context expression operand, the Perl function is 
+called in the Perl scalar context. If the return value of the function is 
+true in the Perl boolean context, the operand evaluates TRUE, otherwise it 
+evaluates FALSE.
 .PP
-If instead of arrow the :> operator is used, each parameter is treated as 
-a name of an entry in the pattern match cache. In that case, the parameter 
-is passed to the Perl function as a reference to the Perl hash which contains 
-all match variables for the given entry. In the hash, each key-value pair 
-represents some variable name and value, e.g., if cached match variable $+{ip} 
-is holding 10.1.1.1, the hash contains the value 
-.B 10.1.1.1 
+For example, the following rule matches an SSH login failure event if 
+the login attempt comes from a privileged port of the client host:
+.PP
+type=Single
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from [\\d.]+ port (\\d+) ssh2
+.br
+context=$2 -> ( sub { $_[0] < 1024 } )
+.br
+desc=SSH login failure for $1 priv port $2
+.br
+action=write - SSH login failure for user $1 from a privileged port $2
+.PP
+When the following message from SSH daemon appears
+.PP
+Dec 16 16:24:59 myserver sshd[13685]: Failed password for risto from 10.12.2.5 port 41063 ssh2
+.PP
+the regular expression of the rule matches this message, and the value of 
+the $2 match variable (41063) is passed to the Perl function
+.PP
+sub { $_[0] < 1024 }
+.PP
+This function returns true if its input parameter is less than 1024 and 
+false otherwise, and therefore the above message will not match the rule. 
+However, the following message
+.PP
+Dec 16 16:25:17 myserver sshd[13689]: Failed password for risto from 10.12.2.5 port 1023 ssh2
+.PP
+matches the rule, and the string "SSH login failure for user risto from 
+a privileged port 1023" is written to standard output.
+.PP
+As another example, the following context expression evaluates TRUE if 
+the /var/log/messages file does not exist or was last modified more than 
+1 hour ago (note that the Perl function takes no parameters):
+.PP
+context= -> ( sub { my(@stat) = stat("/var/log/messages"); \\
+.br
+return (!scalar(@stat) || time() - $stat[9] > 3600); } )
+.PP
+If the context expression operand contains the :> operator, the text that
+follows :> must be a valid Perl function definition that is compiled 
+at SEC startup with the Perl
+.BR eval () 
+function. The 
+.BR eval () 
+must return a code reference (see also PERL INTEGRATION section for more
+information). If any text precedes the :> operator, it is treated as a list 
+of parameters for the function. Parameters must be separated by whitespace 
+and may contain match variables.
+It is assumed that each parameter is a name of an entry in the pattern 
+match cache. If an entry with the given name does not exist, Perl undefined
+value is passed to the function. If an entry with the given name exists,
+a reference to the entry is passed to the Perl function. 
+Internally, each pattern match cache entry is implemented as a Perl hash 
+which contains all match variables for the given entry. In the hash, each 
+key-value pair represents some variable name and value, e.g., if cached 
+match variable $+{ip} is holding 10.1.1.1, the hash contains the value
+.B 10.1.1.1
 with the key
 .BR ip .
+In order to evaluate the context expression operand, the Perl function is 
+called in the Perl scalar context. If the return value of the function is 
+true in the Perl boolean context, the operand evaluates TRUE, otherwise it 
+evaluates FALSE.
 .PP
-If the operand begins with the equal sign (=), the following text must be
-a Perl miniprogram which is a valid parameter for the Perl 
+For example, consider the following rule sequence:
+.PP
+type=Single
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: (?<status>Accepted|Failed) .+ \\
+.br
+for (?<invuser>invalid user )?(?<user>\\S+) from (?<ip>[\\d.]+) \\
+.br
+port (?<port>\\d+) ssh2
+.br
+varmap=SSH
+.br
+continue=TakeNext
+.br
+desc=parse SSH login events and pass them to following rules
+.br
+action=none
+.PP
+type=Single
+.br
+ptype=Cached
+.br
+pattern=SSH
+.br
+context=SSH :> ( sub { $_[0]->{"status"} eq "Failed" && \\
+                       $_[0]->{"port"} < 1024 && \\
+                       defined($_[0]->{"invuser"}) } )
+.br
+desc=Probe of invalid user $+{user} from privileged port of $+{ip}
+.br
+action=pipe '%t: %s' /bin/mail -s 'SSH alert' root@localhost
+.PP
+The first rule matches and parses SSH login messages, and stores parsing
+results to the pattern match cache under the name
+.BR SSH .
+The pattern of the second rule (defined with
+.I ptype=Cached
+and
+.IR pattern=SSH )
+matches any input event for which the entry
+.B SSH
+has been previously created in the pattern match cache (in other words,
+the event has been recognized and parsed as an SSH login message).
+For each matching event, the second rule passes the reference to the
+.B SSH
+cache entry to the Perl function
+.PP
+sub { $_[0]->{"status"} eq "Failed" && \\
+      $_[0]->{"port"} < 1024 && \\
+      defined($_[0]->{"invuser"}) }
+.PP
+The function checks the values of $+{status}, $+{port}, and $+{invuser}
+match variables under the
+.B SSH
+entry, and returns true if $+{status} equals to the string "Failed" 
+(i.e., login attempt failed), the value of $+{port} is less than 1024, 
+and $+{invuser} holds a defined value (i.e., user account does not exist). 
+If the function (and thus context expression) evaluates TRUE, the rule sends 
+a warning e-mail to root@localhost that a non-existing user account was 
+probed from a privileged port of a client host.
+.PP
+If the context expression operand begins with the
+.I varset
+keyword, the following string is treated as a name of an entry in the pattern 
+match cache. The operand evaluates TRUE if the given entry exists, and FALSE 
+otherwise.
+.PP
+For example, the following context expression definition evaluates TRUE if 
+the pattern match cache entry
+.B SSH
+exists and under this entry, the value of the match variable $+{user}
+equals to the string "risto":
+.PP
+context=varset SSH && SSH :> ( sub { $_[0]->{"user"} eq "risto" } )
+.PP
+If the context expression operand begins with the equal sign (=), 
+the following text must be a Perl miniprogram which is a valid parameter 
+for the Perl 
 .BR eval ()
-function. The miniprogram may contain match variables set by the pattern(s).
+function. The miniprogram may contain match variables.
 In order to evaluate the Perl miniprogram operand, it will be compiled and 
 executed by calling the Perl
 .BR eval ()
@@ -1321,74 +1544,51 @@ function in the Perl scalar context (see also PERL INTEGRATION section).
 If the return value from 
 .BR eval ()
 is true in the Perl boolean context, the operand evaluates TRUE, otherwise it
-evaluates FALSE.
+evaluates FALSE. Please note that unlike Perl functions of -> and :> 
+operators which are compiled once at SEC startup, Perl miniprograms are
+compiled before each execution, and their evaluation is thus considerably
+more expensive.
 .PP
-Note that since Perl functions, miniprograms, and parameter lists may contain
-strings that clash with context expression operators (e.g., '!'), 
-it is strongly recommended to enclose them in parentheses, e.g.,
+For example, the following context expression evaluates TRUE when neither 
+the context 
+.B C1 
+nor the context 
+.B C2 
+exists and the value of the $1 variable equals to the string "myhost.mydomain": 
 .PP
-($1 $2) -> (sub { return ($_[0] != $_[1]); })
+context=!(C1 || C2) && =("$1" eq "myhost.mydomain")
 .PP
-=({my($temp) = 0; return !$temp;})
+Since && is a short-circuiting operator, the Perl code 
 .PP
+"$1" eq "myhost.mydomain" 
 .PP
-If the
-.I varset
-keyword precedes the operand, it is treated as a name of an entry in 
-the pattern match cache. The operand evaluates TRUE if the given entry exists,
-and FALSE otherwise.
+is *not* evaluated if either
+.B C1
+or
+.B C2
+exists. 
 .PP
-If the operand is not a Perl function or miniprogram, it is treated as 
-a context name. As other operands, context names may contain match variables. 
-If the context name refers to an existing context, the operand evaluates
-TRUE, otherwise it evaluates FALSE.
+Note that since Perl functions and miniprograms may contain strings that 
+clash with context expression operators (e.g., '!'), it is recommended 
+to enclose them in parentheses, e.g.,
+.PP
+context=$1 $2 -> ( sub { $_[0] != $_[1] } )
+.PP
+context= =({my($temp) = 0; !$temp;})
+.PP
+Also, if function parameter lists contain such strings, they should be 
+enclosed in parentheses in the similar way:
+.PP
+context=($1! $2) -> ( sub { $_[0] eq $_[1] } )
 .PP
 If the whole context expression is enclosed in square brackets [], e.g.,
 .RB [ MYCONTEXT1 " && !" MYCONTEXT2 ], 
 SEC evaluates the expression *before* pattern matching (normally, the pattern 
 is matched with input line(s) first, so that match variables would be 
-initialized and ready for expression evaluation). 
+initialized and substituted before the expression is evaluated). 
 However, if the expression does not contain match variables and many input
 events are known to match the pattern but not the expression,
 the []-operator could save substantial amount of CPU time. 
-.PP
-In order to illustrate the discussion, consider the context expressions below.
-The following expression evaluates TRUE if the /var/log/messages file does 
-not exist or was last modified more than 1 hour ago:
-.PP
--> ( sub { my(@stat) = stat("/var/log/messages"); \\
-.br
-return (!scalar(@stat) || time() - $stat[9] > 3600); } )
-.PP
-The following expression evaluates TRUE if the values of $1 and $2 match 
-variables are numerically unequal and the context 
-.B C1 
-exists:
-.PP
-($1 $2) -> (sub { return ($_[0] != $_[1]); }) && C1
-.PP
-The following expression evaluates TRUE when neither the context 
-.B C1 
-nor the context 
-.B C2 
-exists and the value of $1 the variable equals to the string "myhost.mydomain". 
-Note that since && is a short-circuiting operator, the Perl code is not 
-evaluated if 
-.B C1
-and/or
-.B C2
-exist: 
-.PP
-!(C1 || C2) && =("$1" eq "myhost.mydomain")
-.PP
-The following expression evaluates true if the pattern match cache entry
-.B SSH
-exists and under this entry, the value of the match variable $+{user}
-equals to the string "risto". Note that inside the Perl function, the first 
-input parameter $_[0] holds a reference to the hash of variable name-value 
-pairs:
-.PP
-varset SSH && SSH :> ( sub { $_[0]->{"user"} eq "risto" } )
 .SH "ACTIONS, ACTION LISTS AND ACTION LIST VARIABLES"
 Action lists are defined with the
 .I action*
@@ -1407,7 +1607,7 @@ and
 .I shellcmd
 actions:
 .PP
-delete MYCONTEXT; shellcmd (rm /tmp/sec1.tmp; rm /tmp/sec2.tmp)
+action=delete MYCONTEXT; shellcmd (rm /tmp/sec1.tmp; rm /tmp/sec2.tmp)
 .PP
 The
 .I delete
@@ -1518,6 +1718,19 @@ However, several signals cause the file to be closed and reopened
 (see SIGNALS section for more information).
 Default value for <string> is %s.
 .TP
+.I writen <filename> [<string>]
+Similar to the
+.I write
+action, except that the string <string> is written without a terminating 
+newline.
+.TP 
+.I closef <filename>
+Close the file <filename> that has been previously opened by the
+.I write
+or
+.I writen
+action (<filename> may not contain whitespace).
+.TP
 .I owritecl <filename> [<string>]
 Similar to the
 .I write 
@@ -1540,6 +1753,11 @@ However, several signals cause the socket to be closed and reopened
 (see SIGNALS section for more information).
 Default value for <string> is %s.
 .TP 
+.I closeudgr <filename>
+Close the UNIX datagram socket <filename> that has been previously opened by the
+.I udgram
+action (<filename> may not contain whitespace).
+.TP 
 .I ustream <filename> [<string>]
 String <string> is written to the UNIX stream socket <filename> 
 (<filename> may not contain whitespace).
@@ -1551,6 +1769,11 @@ However, several signals cause the socket to be closed and reopened
 (see SIGNALS section for more information).
 Default value for <string> is %s.
 .TP 
+.I closeustr <filename>
+Close the UNIX stream socket <filename> that has been previously opened by the
+.I ustream
+action (<filename> may not contain whitespace).
+.TP 
 .I udpsock <host>:<port> [<string>]
 String <string> is sent to the UDP port <port> of the host <host>.
 Note that the UDP socket which is used for communication will not be closed 
@@ -1560,6 +1783,12 @@ actions for the same remote peer will use an already existing socket.
 However, several signals cause the socket to be closed and recreated
 (see SIGNALS section for more information).
 Default value for <string> is %s.
+.TP 
+.I closeudp <host>:<port>
+Close the UDP socket for peer <host>:<port> that has been previously opened 
+by the
+.I udpsock
+action.
 .TP 
 .I tcpsock <host>:<port> [<string>]
 String <string> is sent to the TCP port <port> of the host <host>.
@@ -1577,6 +1806,12 @@ actions for the same peer will use an already existing socket.
 However, several signals cause the socket to be closed and recreated
 (see SIGNALS section for more information).
 Default value for <string> is %s.
+.TP 
+.I closetcp <host>:<port>
+Close the TCP socket for peer <host>:<port> that has been previously opened 
+by the
+.I tcpsock
+action.
 .TP 
 .I shellcmd <cmdline>
 Fork a process for executing command line <cmdline>. If the
@@ -1944,7 +2179,7 @@ not exist or evaluates false (i.e., %<var> holds 0, empty string or Perl
 undefined value).
 .TP
 .I while %<var> ( <action list> )
-Execute the action list <action list> repeatedly until the action list 
+Execute the action list <action list> repeatedly as long as the action list 
 variable %<var> evaluates true in the Perl boolean context
 (i.e., it holds a defined value which is neither 0 nor empty string). 
 .TP
@@ -1961,29 +2196,28 @@ otherwise terminates the execution of the entire action list.
 Follow the /var/log/trapd.log file and feed to SEC input all lines that are 
 appended to the file:
 .PP
-spawn /bin/tail -f /var/log/trapd.log
+action=spawn /bin/tail -f /var/log/trapd.log
 .PP
 Mail the timestamp and the value of the $0 variable to the local root:
 .PP
-pipe '%t: $0' /bin/mail -s "alert message" root@localhost
+action=pipe '%t: $0' /bin/mail -s "alert message" root@localhost
 .PP
 Add the value of the $0 variable to the event store of the context 
 .BR "ftp_<the value of $1>" , 
 and set the context to expire after 30 minutes. 
 When the context expires, its event store will be mailed to the local root:
 .PP
-add ftp_$1 $0; set ftp_$1 1800 (report ftp_$1 /bin/mail root@localhost)
+action=add ftp_$1 $0; \\
+       set ftp_$1 1800 (report ftp_$1 /bin/mail root@localhost)
 .PP
 Create a subroutine for weeding out comment lines from the input list, and 
 use this subroutine for removing comment lines from the event store of the 
 context 
 .BR C1 :
 .PP
-eval %funcptr ( sub { my(@buf) = split(/\\n/, $_[0]); \\
-.br
-my(@ret) = grep(!/^#/, @buf); return @ret; } ); \\
-.br
-copy C1 %in; call %out %funcptr %in; fill C1 %out
+action=eval %funcptr ( sub { my(@buf) = split(/\\n/, $_[0]); \\
+            my(@ret) = grep(!/^#/, @buf); return @ret; } ); \\
+       copy C1 %in; call %out %funcptr %in; fill C1 %out
 .PP
 The following action list achieves the same goal as the previous action list
 with 
@@ -1992,13 +2226,10 @@ and
 .I if 
 actions:
 .PP
-getsize %size C1; while %size ( shift C1 %event; \\
-.br
-lcall %nocomment %event -> ( sub { $_[0] !~ /^#/ } ); \\
-.br
-if %nocomment ( add C1 %event ); \\
-.br
-lcall %size %size -> ( sub { $_[0]-1; } ) )
+action=getsize %size C1; while %size ( shift C1 %event; \\
+       lcall %nocomment %event -> ( sub { $_[0] !~ /^#/ } ); \\
+       if %nocomment ( add C1 %event ); \\
+       lcall %size %size -> ( sub { $_[0]-1; } ) )
 .SH "PARSING ISSUES"
 As already noted, SEC context expressions and action lists may contain
 parentheses which are used for grouping and masking purposes. When SEC parses
@@ -2341,6 +2572,37 @@ the given rule. Each matching operation executes the action list given with the
 .I action2
 field and finishes. 
 .PP
+If match variables are set when the operation matches an event, they are
+made available as $-prefixed match variables in
+.IR context2 ,
+.IR desc2 ,
+and
+.I action2
+fields of the rule definition. For example, if 
+.I pattern2
+field is a regular expression, then $1 in the
+.I desc2
+field is set by
+.IR pattern2 .
+In order to access match variables set by 
+.IR pattern ,
+%-prefixed match variables have to be used in
+.IR context2 ,
+.IR desc2 ,
+and
+.I action2
+fields. For example, if 
+.I pattern
+and
+.I pattern2
+are regular expressions, then %1 in the
+.I desc2
+field refers to the value set by the first capture group in
+.I pattern
+(i.e., it has the same value as $1 in the
+.I desc
+field).
+.PP
 The Pair rule supports the following fields:
 .TP 
 .I type
@@ -2493,6 +2755,68 @@ the operation will expire without taking any action. Please note that if the
 field would be either removed from the rule definition or set to 0, 
 the operation would never silently expire, but would terminate only after 
 observing an event which contains the substring  "kernel: nfs: server box1 OK".
+.PP
+If the above rule is modified in the following way
+.PP
+type=Pair
+.br
+ptype=RegExp
+.br
+pattern=^([[:alnum:]: ]+) \\S+ kernel: nfs: server (\\S+) not responding, still trying
+.br
+desc=Server $2 is not responding
+.br
+action=logonly
+.br
+ptype2=RegExp
+.br
+pattern2=^([[:alnum:]: ]+) \\S+ kernel: nfs: server $2 OK
+.br
+desc2=Server %2 was not accessible from %1 to $1
+.br
+action2=pipe '%s' /bin/mail root@localhost
+.br
+window=86400
+.PP
+this rule will run event correlation operations which report NFS server
+downtime to root@localhost via e-mail, provided that downtime does not
+exceed 24 hours (86400 seconds).
+.PP
+For example, if SEC observes the following event
+.PP
+Dec 18 23:01:17 test kernel: nfs: server box.test not responding, still trying
+.PP
+then the rule matches this event, sets $1 match variable to "Dec 18 23:01:17" 
+and $2 to "box.test", and creates an event correlation operation for server 
+box.test.
+This operation will start its work by logging the message 
+"Server box.test is not responding", and will then run for 86400 seconds, 
+waiting for an event which would match the regular expression
+.PP
+^([[:alnum:]: ]+) \\S+ kernel: nfs: server box\\.test OK
+.PP
+Note that this expression was created from the regular expression template
+in the
+.I pattern2
+field by substituting the match variable $2 with its value. However, since
+the string "box.test" contains the dot (.) character which is a regular
+expression metacharacter, the dot is masked with the backslash in the regular
+expression.
+.PP
+Suppose SEC will then observe the event
+.PP
+Dec 18 23:09:54 test kernel: nfs: server box.test OK
+.PP
+This event matches the above regular expression which is used by the operation
+running for server box.test. Also, the regular expression match sets the $1 
+variable to "Dec 18 23:09:54" and unsets the $2 variable. In order to refer 
+to their original values when the operation was created, %1 and %2 match 
+variables have to be used in the 
+.I desc2 
+field (%1 equals to "Dec 18 23:01:17" and %2 equals to "box.test"). Therefore,
+the operation will send the e-mail message "Server box.test was not accessible 
+from Dec 18 23:01:17 to Dec 18 23:09:54" to root@localhost, and will terminate
+immediately.
 .SS "PAIRWITHWINDOW RULE"
 The
 .B PairWithWindow
@@ -2530,6 +2854,37 @@ If the operation has not observed a matching event by the end of its lifetime,
 it executes the action list given with the 
 .I action
 field before finishing.
+.PP
+If match variables are set when the operation matches an event, they are
+made available as $-prefixed match variables in
+.IR context2 ,
+.IR desc2 ,
+and
+.I action2
+fields of the rule definition. For example, if 
+.I pattern2
+field is a regular expression, then $1 in the
+.I desc2
+field is set by 
+.IR pattern2 .
+In order to access match variables set by 
+.IR pattern ,
+%-prefixed match variables have to be used in
+.IR context2 ,
+.IR desc2 ,
+and
+.I action2
+fields. For example, if 
+.I pattern
+and
+.I pattern2
+are regular expressions, then %1 in the
+.I desc2
+field refers to the value set by the first capture group in
+.I pattern
+(i.e., it has the same value as $1 in the
+.I desc
+field).
 .PP
 The PairWithWindow rule supports the following fields:
 .TP 
@@ -2670,6 +3025,14 @@ for risto from 10.1.2.7. The operation will run for 60 seconds,
 waiting for an event which would match the regular expression
 .PP
 sshd\\[\\d+\\]: Accepted .+ for risto from 10\\.1\\.2\\.7 port \\d+ ssh2
+.PP
+Note that this expression was created from the regular expression template
+in the
+.I pattern2
+field by substituting match variables $1 and $2 with their values. However, 
+since the value of $2 contains the dot (.) characters which are regular
+expression metacharacters, each dot is masked with the backslash in the regular
+expression.
 .PP
 When the second event is observed at 13:02:30, another operation is started
 for user root and IP address 192.168.1.104 which will expect root
@@ -3719,6 +4082,11 @@ type=Options
 .br
 joincfset=linux solaris
 .SH EVENT CORRELATION OPERATIONS
+Event correlation operations are dynamic entities created by rules.
+After creating an operation, the rule also feeds the operation with events
+that need to be correlated. Since each rule can create and feed many operations
+which are running simultaneously, each operation needs a unique ID.
+.PP
 In order to identify event correlation operations,
 SEC assigns an ID to every operation that is composed from the configuration 
 file name, the rule number, and the operation description string
@@ -3732,7 +4100,7 @@ the operation ID, different rules can have identical
 .I desc
 fields without a danger of a clash between operations.
 .PP
-For example, if the configuration file my.conf contains only one rule
+For example, if the configuration file /etc/sec/my.conf contains only one rule
 .PP
 type=SingleWithThreshold
 .br
@@ -3754,17 +4122,23 @@ the
 .I desc
 field yields an operation description string
 .IR "Repeated login failures for user admin on tty1" , 
-and the event will be processed by the operation with the following ID:
+and the event will be directed for further processing to the operation with 
+the following ID:
 .PP
-my.conf | 0 | Repeated login failures for user admin on tty1
+/etc/sec/my.conf | 0 | Repeated login failures for user admin on tty1
 .PP
-(If the operation for this ID does not exist, SEC will start it.)
+If the operation for this ID does not exist, the rule will create it.
+The newly created operation has its event counter initialized to 1, and it
+expects to receive two additional "user admin login failure on tty1" events
+from the rule within the following 60 seconds. If the operation receives
+such an event, its event counter is incremented, and if the counter reaches
+the value of 3, a warning e-mail is sent to root@localhost. 
+.PP
 By tuning the
 .I desc
 field of the rule, the scope of individual event correlation operations can 
 be changed.
-For instance, the above rule starts three event correlation operations
-for the following events:
+For instance, if the following events occur within 10 seconds
 .PP
 user admin login failure on tty1
 .br
@@ -3772,11 +4146,159 @@ user admin login failure on tty5
 .br
 user admin login failure on tty2
 .PP
+the above rule starts three event correlation operations.
 However, if the
 .I desc
-field is set to 
+field of the rule is changed to 
 .IR "Repeated login failures for user $1" , 
-these events are processed by the *same* event correlation operation.
+these events are processed by the *same* event correlation operation 
+(the operation sends a warning e-mail to root@localhost when it receives
+the third event).
+.PP
+Since rules from the same configuration file are matched against input in 
+the order they are given, the rule ordering influences the creation and
+feeding of event correlation operations. Suppose the configuration file
+/etc/sec/my.conf contains the following rules:
+.PP
+type=Suppress
+.br
+ptype=TValue
+.br
+pattern=TRUE
+.br
+context=MYCONTEXT 
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=user (\\S+) login failure on (\\S+)
+.br
+desc=Repeated login failures for user $1 on $2
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=60
+.br
+thresh=3
+.PP
+The second rule is able to create and feed event correlation operations
+as long as the context MYCONTEXT does not exist. However, after MYCONTEXT
+has been created, no input event will reach the second rule, and the rule
+is thus unable to create new operations and feed existing ones with events.
+.PP
+Note that Pair and PairWithWindow rules can feed the same event to several
+operations. Suppose the configuration file /etc/sec/my2.conf contains 
+the following rules:
+.PP
+type=Suppress
+.br
+ptype=SubStr
+.br
+pattern=test
+.PP
+type=Pair
+.br
+ptype=RegExp
+.br
+pattern=database (\\S+) down
+.br
+desc=Database $1 is down
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+ptype2=RegExp
+.br
+pattern2=database $1 up|all databases up
+.br
+desc2=Database %1 is up
+.br
+action2=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=86400
+.PP
+Since the following input events don't contain the substring "test"
+.PP
+database mydb1 down
+.br
+database mydb2 down
+.br
+database mydb3 down
+.PP
+they are matched by the second rule of type Pair which creates three event 
+correlation operations. Each operation is running for one particular 
+database name, and the operations have the following IDs:
+.PP
+/etc/sec/my2.conf | 1 | Database mydb1 is down
+.br
+/etc/sec/my2.conf | 1 | Database mydb2 is down
+.br
+/etc/sec/my2.conf | 1 | Database mydb3 is down
+.PP
+Each newly created operation sends an e-mail notification to root@localhost
+about the "database down" condition, and will then wait for 86400 seconds
+(24 hours) for either of the following messages:  
+.br
+(a) "database up" message for the given database, 
+.br
+(b) "all databases up" message.
+.PP
+The operation with the ID 
+.PP
+/etc/sec/my2.conf | 1 | Database mydb1 is down
+.PP
+uses the following regular expression for matching expected messages:
+.PP
+database mydb1 up|all databases up
+.PP
+The operation with the ID
+.PP
+/etc/sec/my2.conf | 1 | Database mydb2 is down
+.PP
+employs the following regular expression for matching expected messages:
+.PP
+database mydb2 up|all databases up
+.PP
+Finally, the operation with the ID
+.PP
+/etc/sec/my2.conf | 1 | Database mydb3 is down
+.PP
+uses the following regular expression:
+.PP
+database mydb3 up|all databases up
+.PP
+If the following input events appear after 10 minutes
+.PP
+database test up
+.br
+admin logged in
+.br
+database mydb3 up
+.br
+all databases up
+.PP
+the first event "database test up" matches the first rule (Suppress)
+which does not pass the event further to the second rule (Pair).
+However, all following events reach the Pair rule. 
+Since the messages don't match the
+.I pattern
+field of the rule, the rule feeds them to all currently existing operations 
+it has created, so that the operations can match these events with their 
+regular expressions.
+Because regular expressions of all three operations don't match 
+the event "admin logged in", the operations will continue to run.
+In the case of the "database mydb3 up" event, the regular expression 
+of the operation 
+.PP
+/etc/sec/my2.conf | 1 | Database mydb3 is down
+.PP
+produces a match. Therefore, the operation will send 
+the e-mail notification "Database mydb3 is up" to root@localhost and 
+terminate.
+However, the following event "all databases up" matches the regular 
+expressions of two remaining operations. As a result, the operations will 
+send e-mail notifications "Database mydb1 is up" and "Database mydb2 is up" 
+to root@localhost and terminate.
 .PP
 Each operation has an event correlation window which defines its
 scope in time. The size of the
@@ -4799,7 +5321,7 @@ context=[ _FILE_EVENT_/var/log/secure ]
 .br
 ptype=RegExp
 .br
-pattern=sshd\\[(?<pid>\\d+)\]: (?<status>Accepted|Failed) \\
+pattern=sshd\\[(?<pid>\\d+)\\]: (?<status>Accepted|Failed) \\
 .br
 (?<authmethod>[\\w-]+) for (?<invuser>invalid user )?\\
 .br
@@ -5075,8 +5597,8 @@ Risto Vaarandi (ristov at users d0t s0urcef0rge d0t net)
 This work is supported by SEB.
 The author thanks the following people for supplying software patches,
 documentation fixes, and suggesting new features:
-Al Sorrell, David Lang, James Brown, Jon Frazier, Mark D. Nagel, Peter Eckel, 
-Rick Casey, and William Gertz. 
+Al Sorrell, Brian Mielke, David Lang, James Brown, Jon Frazier, Mark D. Nagel, 
+Peter Eckel, Rick Casey, and William Gertz. 
 Last but not least, the author expresses his profound gratitute to 
 John P. Rouillard for many great ideas and creative discussions that have 
 helped to develop SEC.

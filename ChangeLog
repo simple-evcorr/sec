@@ -1,3 +1,16 @@
+--- version 2.7.7
+
+* added support for the 'writen', 'closef', 'closeudgr', 'closeustr',
+  'closeudp' and 'closetcp' actions.
+
+* starting from this version, the default value for the --bufsize 
+  command line option is 0 (detect appropriate input buffer size 
+  automatically).
+
+* starting from this version, the default value for  
+  --jointbuf/--nojointbuf command line options is --nojointbuf.
+
+
 --- version 2.7.6
 
 * added support for the 'cspawn' and 'cevent' actions which allow
