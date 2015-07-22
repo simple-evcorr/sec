@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.6.2 - sec
-# Copyright (C) 2000-2012 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.7.0 - sec
+# Copyright (C) 2000-2013 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -80,7 +80,7 @@ use vars qw(
   %context_list
   %corr_list
   $debuglevel
-  $debuglevelset
+  $debuglevelinc
   $detach
   $dumpdata
   $dumpfile
@@ -126,6 +126,7 @@ use vars qw(
   $SEC_VERSION
   $SYSLOGAVAIL
   $sec_options
+  $sigreceived
   $softrefresh
   $startuptime
   $syslogf
@@ -156,8 +157,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.6.2";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2012 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.0";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2013 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -251,20 +252,34 @@ use constant SETCONTEXT		=> 9;
 use constant ALIAS		=> 10;
 use constant UNALIAS		=> 11;
 use constant ADD		=> 12;
-use constant FILL		=> 13;
-use constant REPORT		=> 14;
-use constant COPYCONTEXT	=> 15;
-use constant EMPTYCONTEXT	=> 16;
-use constant EVENT		=> 17;
-use constant TEVENT		=> 18;
-use constant RESET		=> 19;
-use constant GETWINPOS		=> 20;
-use constant SETWINPOS		=> 21;
-use constant ASSIGN		=> 22;
-use constant EVAL		=> 23;
-use constant CALL		=> 24;
-use constant LCALL		=> 25;
-use constant REWRITE		=> 26;
+use constant PREPEND		=> 13;
+use constant FILL		=> 14;
+use constant REPORT		=> 15;
+use constant COPYCONTEXT	=> 16;
+use constant EMPTYCONTEXT	=> 17;
+use constant POP		=> 18;
+use constant SHIFT		=> 19;
+use constant EXISTS		=> 20;
+use constant GETSIZE		=> 21;
+use constant GETALIASES		=> 22;
+use constant GETLIFETIME	=> 23;
+use constant GETCTIME		=> 24;
+use constant SETCTIME		=> 25;
+use constant EVENT		=> 26;
+use constant TEVENT		=> 27;
+use constant RESET		=> 28;
+use constant GETWINPOS		=> 29;
+use constant SETWINPOS		=> 30;
+use constant ASSIGN		=> 31;
+use constant FREE		=> 32;
+use constant EVAL		=> 33;
+use constant CALL		=> 34;
+use constant LCALL		=> 35;
+use constant REWRITE		=> 36;
+use constant IF			=> 100;
+use constant WHILE		=> 101;
+use constant BREAK		=> 102;
+use constant CONTINUE		=> 103;
 
 use constant OPERAND		=> 0;
 use constant NEGATION		=> 1;
@@ -273,9 +288,12 @@ use constant OR			=> 3;
 use constant EXPRESSION		=> 4;
 use constant ECODE		=> 5;
 use constant CCODE		=> 6;
+use constant CCODE2		=> 7;
+use constant VARSET		=> 8;
 
 use constant EXPRSYMBOL		=> "\0";
 
+use constant LOG_WITHOUT_LEVEL  => 0;
 use constant LOG_CRIT           => 1;
 use constant LOG_ERR            => 2;
 use constant LOG_WARN           => 3;
@@ -284,6 +302,7 @@ use constant LOG_INFO           => 5;
 use constant LOG_DEBUG          => 6;
 
 use constant SYSLOG_LEVELS => {
+  0 => "notice",
   1 => "crit",
   2 => "err",
   3 => "warning",
@@ -395,8 +414,10 @@ sub log_msg {
     print LOGFILE "$ltime: $msg\n"; 
   }
 
+  # if call to syslog() fails (e.g., because syslog daemon is going through 
+  # restart), older versions of Sys::Syslog will die, thus we use eval
+
   if ($syslogf) { 
-    $msg =~ s/%/%%/g;
     eval { Sys::Syslog::syslog(SYSLOG_LEVELS->{$level}, $msg) }; 
   }
 
@@ -448,6 +469,47 @@ sub contains_matchvars {
     $string2 = $string;
     subst_string(\%subst, $string2, $token);
     if ($string ne $string2)  { return 1; }
+  }
+
+  return 0;
+
+}
+
+
+# Parameters: par1 - reference to a context expression
+#             par2, .. - one or more tokens that match variables begin with
+# Action: return 1 if expression par1 contains match variables, 0 otherwise
+
+sub volatile_context {
+
+  my($ref) = shift @_;
+  my($i, $j, $elem);
+
+  $i = 0;
+  $j = scalar(@{$ref});
+
+  while ($i < $j) {
+
+    if ($ref->[$i] == OPERAND || $ref->[$i] == ECODE 
+                              || $ref->[$i] == VARSET) {
+      if (contains_matchvars($ref->[$i+1], @_))  { return 1; }
+      $i += 2;
+    } 
+
+    elsif ($ref->[$i] == EXPRESSION) {
+      if (volatile_context($ref->[$i+1], @_))  { return 1; }
+      $i += 2;
+    }
+
+    elsif ($ref->[$i] == CCODE || $ref->[$i] == CCODE2) { 
+      foreach $elem (@{$ref->[$i+1]}) {
+        if (contains_matchvars($elem, @_))  { return 1; }
+      }
+      $i += 3; 
+    }
+
+    else { ++$i; }
+
   }
 
   return 0;
@@ -737,10 +799,27 @@ sub analyze_varmap {
 }
 
 
+# Parameters: par1, par2, .. - strings
+# Action: for each string, remove the outer pair of parens and backslashes 
+#         from the front of other parens
+
+sub process_action_parens {
+
+  my($string);
+
+  foreach $string (@_) {
+    if ($string =~ /^\s*\(\s*(.*?)\s*\)\s*$/) { $string = $1; }
+    $string =~ s/\\([\(\)])/$1/g;
+  }
+}
+
+
 # Parameters: par1 - action
 #             par2 - the name of the configuration file
 #             par3 - line number in configuration file
 #             par4 - rule ID
+#             par5 - action with masked subexpressions
+#             par6 - list of subexpressions
 # Action: par1 will be analyzed and pair of integers
 #         (action type, action description) will be returned. If errors
 #         are found when analyzing par1, error message about improper 
@@ -752,9 +831,12 @@ sub analyze_action {
   my($conffile) = $_[1];
   my($lineno) = $_[2];
   my($ruleid) = $_[3];
-  my($file, $cmdline, $progname);
+  my($action2) = $_[4];
+  my($list) = $_[5];
+  my($keyword, $file, $cmdline);
   my($sign, $rule, $count);
   my($actionlist, @action);
+  my($actionlist2, @action2);
   my($createafter, $event, $timestamp);
   my($lifetime, $context, $alias);
   my($variable, $value, $code, $codeptr, $params, $evalok);
@@ -764,60 +846,41 @@ sub analyze_action {
   elsif ($action =~ /^logonly(?:\s+(.*))?$/i) { 
 
     $event = defined($1)?$1:"";
-
-    # strip outer parentheses if they exist
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-
-    # remove backslashes in front of the parentheses
-    $event =~ s/\\([\(\)])/$1/g;
-
+    process_action_parens($event);
     if (!length($event))  { $event = "%s"; }
 
     return (LOGONLY, $event); 
-
   }
 
   elsif ($action =~ /^write\s+(\S+)\s*(.*)/i) {
 
     $file = $1;
     $event = $2;
+    process_action_parens($file, $event);
 
-    # strip outer parentheses if they exist
-    if ($file =~ /^\s*\(\s*(.*)\)\s*$/)  { $file = $1; }
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-
-    # remove backslashes in front of the parentheses
-    $file =~ s/\\([\(\)])/$1/g;
-    $event =~ s/\\([\(\)])/$1/g;
+    if (!length($file)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty filename given for write action");
+      return INVALIDVALUE;
+    }
 
     if (!length($event))  { $event = "%s"; }
 
     return (WRITE, $file, $event); 
-
   }
 
   elsif ($action =~ /^shellcmd\s+(.*\S)/i) { 
 
     $cmdline = $1;
+    process_action_parens($cmdline);
 
-    # strip outer parentheses if they exist
-    if ($cmdline =~ /^\s*\(\s*(.*)\)\s*$/)  { $cmdline = $1; }
-
-    # remove backslashes in front of the parentheses
-    $cmdline =~ s/\\([\(\)])/$1/g;
-
-    $progname = (split(' ', $cmdline))[0];
-
-    if (! -f $progname) {
-      log_msg(LOG_WARN, "Rule in $conffile at line $lineno:", 
-              "Warning - could not find '$progname'");
-    } elsif (! -x $progname) {
-      log_msg(LOG_WARN, "Rule in $conffile at line $lineno:", 
-              "Warning - '$progname' is not executable");
+    if (!length($cmdline)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty commandline given for shellcmd action");
+      return INVALIDVALUE;
     }
 
     return (SHELLCOMMAND, $cmdline); 
-
   }
 
   elsif ($action =~ /^spawn\s+(.*\S)/i) { 
@@ -828,58 +891,26 @@ sub analyze_action {
     }
 
     $cmdline = $1;
+    process_action_parens($cmdline);
 
-    # strip outer parentheses if they exist
-    if ($cmdline =~ /^\s*\(\s*(.*)\)\s*$/)  { $cmdline = $1; }
-
-    # remove backslashes in front of the parentheses
-    $cmdline =~ s/\\([\(\)])/$1/g;
-
-    $progname = (split(' ', $cmdline))[0];
-
-    if (! -f $progname) {
-      log_msg(LOG_WARN, "Rule in $conffile at line $lineno:", 
-              "Warning - could not find '$progname'");
-    } elsif (! -x $progname) {
-      log_msg(LOG_WARN, "Rule in $conffile at line $lineno:", 
-              "Warning - '$progname' is not executable");
+    if (!length($cmdline)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty commandline given for spawn action");
+      return INVALIDVALUE;
     }
 
     return (SPAWN, $cmdline); 
-
   }
 
   elsif ($action =~ /^pipe\s+'([^']*)'(?:\s+(.*))?$/i) {
 
     $event = $1;
     $cmdline = defined($2)?$2:"";
-
-    # strip outer parentheses if they exist
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-    if ($cmdline =~ /^\s*\(\s*(.*)\)\s*$/)  { $cmdline = $1; }
-
-    # remove backslashes in front of the parentheses
-    $event =~ s/\\([\(\)])/$1/g;
-    $cmdline =~ s/\\([\(\)])/$1/g;
+    process_action_parens($event, $cmdline);
 
     if (!length($event))  { $event = "%s"; }
 
-    if (length($cmdline)) {
-
-      $progname = (split(' ', $cmdline))[0];
-
-      if (! -f $progname) {
-        log_msg(LOG_WARN, "Rule in $conffile at line $lineno:", 
-                "Warning - could not find '$progname'");
-      } elsif (! -x $progname) {
-        log_msg(LOG_WARN, "Rule in $conffile at line $lineno:", 
-                "Warning - '$progname' is not executable");
-      }
-
-    }
-
     return (PIPE, $event, $cmdline); 
-
   }
 
   elsif ($action =~ /^create(?:\s+(\S*)\s*(\S*)\s*(.*))?$/i) { 
@@ -888,61 +919,33 @@ sub analyze_action {
     $lifetime = defined($2)?$2:"";
     $actionlist = defined($3)?$3:"";
 
-    # strip outer parentheses if they exist
-    if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
-    if ($lifetime =~ /^\s*\(\s*(.*)\)\s*$/)  { $lifetime = $1; }
-    if ($actionlist =~ /^\s*\(\s*(.*)\)\s*$/)  { $actionlist = $1; }
+    process_action_parens($context, $lifetime);
 
-    # remove backslashes in front of the parentheses
-    $context =~ s/\\([\(\)])/$1/g;
-    $lifetime =~ s/\\([\(\)])/$1/g;
+    # strip outer parentheses from actionlist if they exist
+    if ($actionlist =~ /^\s*\(\s*(.*?)\s*\)\s*$/)  { $actionlist = $1; }
 
     if (!length($context))  { $context = "%s"; }
     if (!length($lifetime))  { $lifetime = 0; }
 
     if (length($actionlist)) {
-
       if (!analyze_actionlist($actionlist, \@action,
           $conffile, $lineno, $ruleid))  { return INVALIDVALUE; }
-
       return (CREATECONTEXT, $context, $lifetime, [ @action ]);
-
     }
 
     return (CREATECONTEXT, $context, $lifetime, []);
-
   }
 
-  elsif ($action =~ /^delete(?:\s+(\S+))?\s*$/i) { 
+  elsif ($action =~ /^(delete|obsolete|unalias)(?:\s+(\S+))?$/i) { 
 
-    $context = defined($1)?$1:"";
-
-    # strip outer parentheses if they exist
-    if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
-
-    # remove backslashes in front of the parentheses
-    $context =~ s/\\([\(\)])/$1/g;
-
+    $keyword = lc($1);
+    $context = defined($2)?$2:"";
+    process_action_parens($context);
     if (!length($context))  { $context = "%s"; }
 
-    return (DELETECONTEXT, $context); 
-
-  }
-
-  elsif ($action =~ /^obsolete(?:\s+(\S+))?\s*$/i) { 
-
-    $context = defined($1)?$1:"";
-
-    # strip outer parentheses if they exist
-    if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
-
-    # remove backslashes in front of the parentheses
-    $context =~ s/\\([\(\)])/$1/g;
-
-    if (!length($context))  { $context = "%s"; }
-
-    return (OBSOLETECONTEXT, $context); 
-
+    if ($keyword eq "delete") { return (DELETECONTEXT, $context); } 
+    elsif ($keyword eq "obsolete") { return (OBSOLETECONTEXT, $context); }
+    else { return (UNALIAS, $context); }
   }
 
   elsif ($action =~ /^set\s+(\S+)\s+(\S+)\s*(.*)/i) {
@@ -951,136 +954,96 @@ sub analyze_action {
     $lifetime = $2;
     $actionlist = $3;
 
-    # strip outer parentheses if they exist
-    if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
-    if ($lifetime =~ /^\s*\(\s*(.*)\)\s*$/)  { $lifetime = $1; }
-    if ($actionlist =~ /^\s*\(\s*(.*)\)\s*$/)  { $actionlist = $1; }
+    process_action_parens($context, $lifetime);
 
-    # remove backslashes in front of the parentheses
-    $context =~ s/\\([\(\)])/$1/g;
-    $lifetime =~ s/\\([\(\)])/$1/g;
+    # strip outer parentheses from actionlist if they exist
+    if ($actionlist =~ /^\s*\(\s*(.*?)\s*\)\s*$/)  { $actionlist = $1; }
+
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for set action");
+      return INVALIDVALUE;
+    }
+
+    if (!length($lifetime)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty lifetime given for set action");
+      return INVALIDVALUE;
+    }
 
     if (length($actionlist)) {
-
       if (!analyze_actionlist($actionlist, \@action,
           $conffile, $lineno, $ruleid))  { return INVALIDVALUE; }
-
       return (SETCONTEXT, $context, $lifetime, [ @action ]);
-
     }
 
     return (SETCONTEXT, $context, $lifetime, []);
-
   }
 
-  elsif ($action =~ /^alias\s+(\S+)\s*(\S*)\s*$/i) {
+  elsif ($action =~ /^alias\s+(\S+)(?:\s+(\S+))?$/i) {
 
     $context = $1;
-    $alias = $2;
+    $alias = defined($2)?$2:"";
+    process_action_parens($context, $alias);
 
-    # strip outer parentheses if they exist
-    if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
-    if ($alias =~ /^\s*\(\s*(.*)\)\s*$/)  { $alias = $1; }
-
-    # remove backslashes in front of the parentheses
-    $context =~ s/\\([\(\)])/$1/g;
-    $alias =~ s/\\([\(\)])/$1/g;
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for alias action");
+      return INVALIDVALUE;
+    }
 
     if (!length($alias))  { $alias = "%s"; }
 
     return (ALIAS, $context, $alias); 
-
   }
 
-  elsif ($action =~ /^unalias(?:\s+(\S+))?\s*$/i) { 
+  elsif ($action =~ /^(add|prepend|fill)\s+(\S+)\s*(.*)/i) {
 
-    $alias = defined($1)?$1:"";
+    $keyword = lc($1);
+    $context = $2;
+    $event = $3;
+    process_action_parens($context, $event);
 
-    # strip outer parentheses if they exist
-    if ($alias =~ /^\s*\(\s*(.*)\)\s*$/)  { $alias = $1; }
-
-    # remove backslashes in front of the parentheses
-    $alias =~ s/\\([\(\)])/$1/g;
-
-    if (!length($alias))  { $alias = "%s"; }
-
-    return (UNALIAS, $alias); 
-
-  }
-
-  elsif ($action =~ /^add\s+(\S+)\s*(.*)/i) {
-
-    $context = $1;
-    $event = $2;
-
-    # strip outer parentheses if they exist
-    if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-
-    # remove backslashes in front of the parentheses
-    $context =~ s/\\([\(\)])/$1/g;
-    $event =~ s/\\([\(\)])/$1/g;
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for $keyword action");
+      return INVALIDVALUE;
+    }
 
     if (!length($event))  { $event = "%s"; }
 
-    return (ADD, $context, $event); 
-
-  }
-
-  elsif ($action =~ /^fill\s+(\S+)\s*(.*)/i) {
-
-    $context = $1;
-    $event = $2;
-
-    # strip outer parentheses if they exist
-    if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-
-    # remove backslashes in front of the parentheses
-    $context =~ s/\\([\(\)])/$1/g;
-    $event =~ s/\\([\(\)])/$1/g;
-
-    if (!length($event))  { $event = "%s"; }
-
-    return (FILL, $context, $event); 
-
+    if ($keyword eq "add") { return (ADD, $context, $event); }
+    elsif ($keyword eq "prepend") { return (PREPEND, $context, $event); }
+    else { return (FILL, $context, $event); }
   }
 
   elsif ($action =~ /^report\s+(\S+)\s*(.*)/i) {
 
     $context = $1;
     $cmdline = $2;
+    process_action_parens($context, $cmdline);
 
-    # strip outer parentheses if they exist
-    if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
-    if ($cmdline =~ /^\s*\(\s*(.*)\)\s*$/)  { $cmdline = $1; }
-
-    # remove backslashes in front of the parentheses
-    $context =~ s/\\([\(\)])/$1/g;
-    $cmdline =~ s/\\([\(\)])/$1/g;
-
-    if (length($cmdline)) {
-
-      $progname = (split(' ', $cmdline))[0];
-
-      if (! -f $progname) {
-        log_msg(LOG_WARN, "Rule in $conffile at line $lineno:", 
-                "Warning - could not find '$progname'");
-      } elsif (! -x $progname) {
-        log_msg(LOG_WARN, "Rule in $conffile at line $lineno:", 
-                "Warning - '$progname' is not executable");
-      }
-
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for report action");
+      return INVALIDVALUE;
     }
 
     return (REPORT, $context, $cmdline); 
-
   }
 
-  elsif ($action =~ /^copy\s+(\S+)\s+(\S+)\s*$/i) {
+  elsif ($action =~ /^(copy|pop|shift)\s+(\S+)\s+(\S+)$/i) {
 
-    $context = $1;
-    $variable = $2;
+    $keyword = lc($1);
+    $context = $2;
+    $variable = $3;
+    process_action_parens($context);
+
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for $keyword action");
+      return INVALIDVALUE;
+    }
 
     if ($variable !~ /^%[[:alpha:]]\w*$/) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
@@ -1089,20 +1052,24 @@ sub analyze_action {
       return INVALIDVALUE;
     }
 
-    # strip outer parentheses if they exist
-    if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
-
-    # remove backslashes in front of the parentheses
-    $context =~ s/\\([\(\)])/$1/g;
-
-    return (COPYCONTEXT, $context, substr($variable, 1)); 
-
+    if ($keyword eq "copy") { 
+      return (COPYCONTEXT, $context, substr($variable, 1)); 
+    } elsif ($keyword eq "pop") {
+      return (POP, $context, substr($variable, 1));
+    } else { return (SHIFT, $context, substr($variable, 1)); }
   }
 
-  elsif ($action =~ /^empty\s+(\S+)\s*(\S*)\s*$/i) {
+  elsif ($action =~ /^empty\s+(\S+)(?:\s+(\S+))?$/i) {
 
     $context = $1;
-    $variable = $2;
+    $variable = defined($2)?$2:"";
+    process_action_parens($context);
+
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for empty action");
+      return INVALIDVALUE;
+    }
 
     if (length($variable)  &&  $variable !~ /^%[[:alpha:]]\w*$/) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
@@ -1111,53 +1078,90 @@ sub analyze_action {
       return INVALIDVALUE;
     }
 
-    # strip outer parentheses if they exist
-    if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
-
-    # remove backslashes in front of the parentheses
-    $context =~ s/\\([\(\)])/$1/g;
-
     if (!length($variable))  { return (EMPTYCONTEXT, $context, ""); }
 
     return (EMPTYCONTEXT, $context, substr($variable, 1)); 
+  }
 
+  elsif ($action =~ /^(exists|getsize|getaliases|getltime|getctime)\s+(\S+)\s+(\S+)$/i) {
+
+    $keyword = lc($1);
+    $variable = $2;
+    $context = $3;
+    process_action_parens($context);
+
+    if ($variable !~ /^%[[:alpha:]]\w*$/) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+                       "Variable $variable does not have the form",
+                       "%<letter>[<letter>|<digit>|<underscore>]...");
+      return INVALIDVALUE;
+    }
+
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for $keyword action");
+      return INVALIDVALUE;
+    }
+
+    if ($keyword eq "exists") { 
+      return (EXISTS, substr($variable, 1), $context); 
+    } elsif ($keyword eq "getsize") {
+      return (GETSIZE, substr($variable, 1), $context); 
+    } elsif ($keyword eq "getaliases") {
+      return (GETALIASES, substr($variable, 1), $context); 
+    } elsif ($keyword eq "getltime") {
+      return (GETLIFETIME, substr($variable, 1), $context); 
+    } else { return (GETCTIME, substr($variable, 1), $context); }
+  }
+
+  elsif ($action =~ /^setctime\s+(\S+)\s+(\S+)$/i) {
+
+    $timestamp = $1;
+    $context = $2;
+    process_action_parens($context);
+
+    if (!length($timestamp)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty timestamp given for setwpos action");
+      return INVALIDVALUE;
+    }
+
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for size action");
+      return INVALIDVALUE;
+    }
+
+    return (SETCTIME, $timestamp, $context); 
   }
 
   elsif ($action =~ /^event(?:\s+0*(\d+))?(?:\s+(.*))?$/i) {
 
     $createafter = defined($1)?$1:"";
     $event = defined($2)?$2:"";
-
-    # strip outer parentheses if they exist
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-
-    # remove backslashes in front of the parentheses
-    $event =~ s/\\([\(\)])/$1/g;
+    process_action_parens($event);
 
     if (!length($createafter))  { $createafter = 0; }
     if (!length($event))  { $event = "%s"; }
 
     return (EVENT, $createafter, $event); 
-
   }
 
   elsif ($action =~ /^tevent\s+(\S+)\s*(.*)/i) {
 
     $createafter = $1;
     $event = $2;
+    process_action_parens($createafter, $event);
 
-    # strip outer parentheses if they exist
-    if ($createafter =~ /^\s*\(\s*(.*)\)\s*$/)  { $createafter = $1; }
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-
-    # remove backslashes in front of the parentheses
-    $createafter =~ s/\\([\(\)])/$1/g;
-    $event =~ s/\\([\(\)])/$1/g;
+    if (!length($createafter)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty time offset given for tevent action");
+      return INVALIDVALUE;
+    }
 
     if (!length($event))  { $event = "%s"; }
 
     return (TEVENT, $createafter, $event); 
-
   }
 
   elsif ($action =~ /^reset(?:\s+([\+-]?)0*(\d+))?(?:\s+(.*))?$/i) { 
@@ -1166,25 +1170,18 @@ sub analyze_action {
     $rule = defined($2)?$2:"";
     $event = defined($3)?$3:"";
 
-    if (length($rule)) {
+    process_action_parens($event);
 
+    if (length($rule)) {
       if ($sign eq "+") { $rule = $ruleid + $rule; }
       elsif ($sign eq "-") { $rule = $ruleid - $rule; }
       elsif (!$rule) { $rule = $ruleid; } 
       else { --$rule; }
-
     } else { $rule = ""; }
-
-    # strip outer parentheses if they exist
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-
-    # remove backslashes in front of the parentheses
-    $event =~ s/\\([\(\)])/$1/g;
 
     if (!length($event))  { $event = "%s"; }
 
     return (RESET, $conffile, $rule, $event); 
-
   }
 
   elsif ($action =~ /^getwpos\s+(\S+)\s+([\+-]?)0*(\d+)(?:\s+(.*))?$/i) { 
@@ -1194,6 +1191,8 @@ sub analyze_action {
     $rule = $3;
     $event = defined($4)?$4:"";
 
+    process_action_parens($event);
+
     if ($variable !~ /^%[[:alpha:]]\w*$/) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
                        "Variable $variable does not have the form",
@@ -1206,16 +1205,9 @@ sub analyze_action {
     elsif (!$rule) { $rule = $ruleid; } 
     else { --$rule; }
 
-    # strip outer parentheses if they exist
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-
-    # remove backslashes in front of the parentheses
-    $event =~ s/\\([\(\)])/$1/g;
-
     if (!length($event))  { $event = "%s"; }
 
     return (GETWINPOS, substr($variable, 1), $conffile, $rule, $event); 
-
   }
 
   elsif ($action =~ /^setwpos\s+(\S+)\s+([\+-]?)0*(\d+)(?:\s+(.*))?$/i) { 
@@ -1225,29 +1217,29 @@ sub analyze_action {
     $rule = $3;
     $event = defined($4)?$4:"";
 
+    process_action_parens($timestamp, $event);
+
     if ($sign eq "+") { $rule = $ruleid + $rule; }
     elsif ($sign eq "-") { $rule = $ruleid - $rule; }
     elsif (!$rule) { $rule = $ruleid; } 
     else { --$rule; }
 
-    # strip outer parentheses if they exist
-    if ($timestamp =~ /^\s*\(\s*(.*)\)\s*$/)  { $timestamp = $1; }
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-
-    # remove backslashes in front of the parentheses
-    $timestamp =~ s/\\([\(\)])/$1/g;
-    $event =~ s/\\([\(\)])/$1/g;
+    if (!length($timestamp)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty timestamp given for setwpos action");
+      return INVALIDVALUE;
+    }
 
     if (!length($event))  { $event = "%s"; }
 
     return (SETWINPOS, $timestamp, $conffile, $rule, $event); 
-
   }
 
   elsif ($action =~ /^assign\s+(\S+)\s*(.*)/i) {
 
     $variable = $1;
     $value = $2;
+    process_action_parens($value);
 
     if ($variable !~ /^%[[:alpha:]]\w*$/) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
@@ -1256,22 +1248,30 @@ sub analyze_action {
       return INVALIDVALUE;
     }
 
-    # strip outer parentheses if they exist
-    if ($value =~ /^\s*\(\s*(.*)\)\s*$/)  { $value = $1; }
-
-    # remove backslashes in front of the parentheses
-    $value =~ s/\\([\(\)])/$1/g;
-
     if (!length($value))  { $value = "%s"; }
 
     return (ASSIGN, substr($variable, 1), $value); 
+  }
 
+  elsif ($action =~ /^free\s+(\S+)$/i) {
+
+    $variable = $1;
+
+    if ($variable !~ /^%[[:alpha:]]\w*$/) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+                       "Variable $variable does not have the form",
+                       "%<letter>[<letter>|<digit>|<underscore>]...");
+      return INVALIDVALUE;
+    }
+
+    return (FREE, substr($variable, 1)); 
   }
 
   elsif ($action =~ /^eval\s+(\S+)\s+(.*\S)/i) {
 
     $variable = $1;
     $code = $2;
+    process_action_parens($code);
 
     if ($variable !~ /^%[[:alpha:]]\w*$/) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
@@ -1280,14 +1280,7 @@ sub analyze_action {
       return INVALIDVALUE;
     }
 
-    # strip outer parentheses if they exist
-    if ($code =~ /^\s*\(\s*(.*)\)\s*$/)  { $code = $1; }
-
-    # remove backslashes in front of the parentheses
-    $code =~ s/\\([\(\)])/$1/g;
-
     return (EVAL, substr($variable, 1), $code); 
-
   }
 
   elsif ($action =~ /^call\s+(\S+)\s+(\S+)\s*(.*)/i) {
@@ -1295,6 +1288,8 @@ sub analyze_action {
     $variable = $1;
     $codeptr = $2;
     $params = $3;
+
+    process_action_parens($params);
 
     if ($variable !~ /^%[[:alpha:]]\w*$/) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
@@ -1310,15 +1305,8 @@ sub analyze_action {
       return INVALIDVALUE;
     }
 
-    # strip outer parentheses if they exist
-    if ($params =~ /^\s*\(\s*(.*)\)\s*$/)  { $params = $1; }
-
-    # remove backslashes in front of the parentheses
-    $params =~ s/\\([\(\)])/$1/g;
-
     return (CALL, substr($variable, 1), 
                   substr($codeptr, 1), [ split(' ', $params) ]); 
-
   }
 
   elsif ($action =~ /^lcall\s+(\S+)\s*(.*?)\s*->\s*(.*\S)/i) {
@@ -1327,20 +1315,14 @@ sub analyze_action {
     $params = $2;
     $code = $3;
 
+    process_action_parens($params, $code);
+
     if ($variable !~ /^%[[:alpha:]]\w*$/) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
                        "Variable $variable does not have the form",
                        "%<letter>[<letter>|<digit>|<underscore>]...");
       return INVALIDVALUE;
     }
-
-    # strip outer parentheses if they exist
-    if ($params =~ /^\s*\(\s*(.*)\)\s*$/)  { $params = $1; }
-    if ($code =~ /^\s*\(\s*(.*)\)\s*$/)  { $code = $1; }
-
-    # remove backslashes in front of the parentheses
-    $params =~ s/\\([\(\)])/$1/g;
-    $code =~ s/\\([\(\)])/$1/g;
 
     ($evalok, $codeptr) = SEC::call_eval($code, 0);
 
@@ -1352,27 +1334,94 @@ sub analyze_action {
     }
 
     return (LCALL, substr($variable, 1), $codeptr, [ split(' ', $params) ]); 
-
   }
 
   elsif ($action =~ /^rewrite\s+(\S+)\s*(.*)/i) { 
 
     $count = $1;
     $event = $2;
+    process_action_parens($count, $event);
 
-    # strip outer parentheses if they exist
-    if ($count =~ /^\s*\(\s*(.*)\)\s*$/)  { $count = $1; }
-    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
-
-    # remove backslashes in front of the parentheses
-    $count =~ s/\\([\(\)])/$1/g;
-    $event =~ s/\\([\(\)])/$1/g;
+    if (!length($timestamp)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty linecount given for rewrite action");
+      return INVALIDVALUE;
+    }
 
     if (!length($event))  { $event = "%s"; }
 
     return (REWRITE, $count, $event); 
-
   }
+
+  elsif ($action =~ /^if\s/i) {
+
+    $value = EXPRSYMBOL;
+
+    if ($action2 =~ /^if\s+(\S+)\s+$value\s+else\s+$value$/i) {
+      $variable = $1;
+      $actionlist = $list->[0];
+      $actionlist2 = $list->[1];
+    } elsif ($action2 =~ /^if\s+(\S+)\s+$value$/i) {
+      $variable = $1;
+      $actionlist = $list->[0];
+      $actionlist2 = "";
+    } else { return INVALIDVALUE; }
+
+    if ($variable !~ /^%[[:alpha:]]\w*$/) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:",
+                       "Variable $variable does not have the form",
+                       "%<letter>[<letter>|<digit>|<underscore>]...");
+      return INVALIDVALUE;
+    }
+
+    if ($actionlist =~ /^\s*$/) { @action = (); }
+    elsif (!analyze_actionlist($actionlist, \@action,
+           $conffile, $lineno, $ruleid))  { return INVALIDVALUE; }
+
+    if ($actionlist2 =~ /^\s*$/) { @action2 = (); }
+    elsif (!analyze_actionlist($actionlist2, \@action2,
+           $conffile, $lineno, $ruleid))  { return INVALIDVALUE; }
+
+    if (!scalar(@action) && !scalar(@action2)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:",
+                       "empty action lists given for if-else");
+      return INVALIDVALUE;
+    }
+
+    return (IF, substr($variable, 1), [ @action ], [ @action2 ]);
+  }
+
+  elsif ($action =~ /^while\s/i) {
+
+    $value = EXPRSYMBOL;
+
+    if ($action2 =~ /^while\s+(\S+)\s+$value$/i) {
+      $variable = $1;
+      $actionlist = $list->[0];
+    } else { return INVALIDVALUE; }
+
+    if ($variable !~ /^%[[:alpha:]]\w*$/) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:",
+                       "Variable $variable does not have the form",
+                       "%<letter>[<letter>|<digit>|<underscore>]...");
+      return INVALIDVALUE;
+    }
+
+    if ($actionlist =~ /^\s*$/) { 
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:",
+                       "empty action list given for while");
+      return INVALIDVALUE;
+    }
+
+    if (!analyze_actionlist($actionlist, \@action,
+        $conffile, $lineno, $ruleid))  { return INVALIDVALUE; }
+
+    return (WHILE, substr($variable, 1), [ @action ]);
+  }
+
+  elsif ($action =~ /^break$/i)  { return BREAK; }
+
+  elsif ($action =~ /^continue$/i)  { return CONTINUE; }
 
   log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
           "Invalid action '$action'");
@@ -1399,19 +1448,29 @@ sub analyze_actionlist {
   my($conffile) = $_[2];
   my($lineno) = $_[3];
   my($ruleid) = $_[4];
-  my(@parts, $part);
+  my(@parts, $part, $part2);
   my($actiontype, @action);
-  my($newactionlist, @list, $expr);
+  my($newactionlist, @list, @list2, $expr);
   my($pos, $l);
 
   @{$arrayref} = ();
+
+  # remove leading and trailing whitespace from actionlist
+  if ($actionlist =~ /^\s*(.*?)\s*$/)  { $actionlist = $1; }
 
   # replace the actions that are in parentheses with special symbols
   # and save the actions to @list
 
   $newactionlist = replace_subexpr($actionlist, \@list);
 
-  if (!defined($newactionlist))  { return 0; }
+  if (!defined($newactionlist)) { 
+    log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+            "Unbalanced parentheses found in action list '$actionlist'");
+    return 0; 
+  }
+
+  # split actionlist into parts by semicolon, removing
+  # all whitespace before and after semicolons
 
   @parts = split(/\s*;\s*/, $newactionlist);
 
@@ -1422,6 +1481,9 @@ sub analyze_actionlist {
     # substitute special symbols with expressions 
     # that were removed previously
 
+    $part2 = $part;
+    @list2 = ();
+
     for (;;) {
 
       $pos = index($part, EXPRSYMBOL);
@@ -1430,12 +1492,13 @@ sub analyze_actionlist {
       $expr = shift @list;
       substr($part, $pos, $l) = "(" . $expr . ")";
 
+      push @list2, $expr;
     }
 
     # analyze the action list part
 
     ($actiontype, @action) = 
-        analyze_action($part, $conffile, $lineno, $ruleid);
+        analyze_action($part, $conffile, $lineno, $ruleid, $part2, \@list2);
 
     if ($actiontype == INVALIDVALUE)  { return 0; }
 
@@ -1450,17 +1513,16 @@ sub analyze_actionlist {
 
 # Parameters: par1 - context expression
 #             par2 - reference to an array
-# Action: par1 will be analyzed and saved to array par2 in reverse
-#         polish notation form (it is assumed that par1 does not contain
-#         expressions in parentheses). Previous content of the array par2 
-#         is erased. If errors are found when analyzing par1, 0 will be 
-#         returned, otherwise 1 will be returned.
+# Action: par1 will be analyzed and saved to array par2 (it is assumed 
+#         that par1 does not contain expressions in parentheses). Previous 
+#         content of the array par2 is erased. If errors are found when 
+#         analyzing par1, 0 will be returned, otherwise 1 will be returned.
 
 sub analyze_context_expr {
 
   my($context) = $_[0];
   my($result) = $_[1];
-  my($pos, $op1, $op2);
+  my($pos, $oper, $op1, $op2);
   my(@side1, @side2);
   my($evalok, $retval);
 
@@ -1480,7 +1542,6 @@ sub analyze_context_expr {
 
     @{$result} = ( @side1, @side2, OR );
     return 1;
-
   }
 
   $pos = rindex($context, "&&");
@@ -1495,7 +1556,6 @@ sub analyze_context_expr {
 
     @{$result} = ( @side1, @side2, AND );
     return 1;
-
   }
 
   # check for possible typos for '!' operator (any preceding illegal symbols)
@@ -1512,7 +1572,6 @@ sub analyze_context_expr {
 
     @{$result} = ( @side2, NEGATION );
     return 1;
-
   }
 
   # since CCODE, ECODE and OPERAND are terminals, make sure that any 
@@ -1520,13 +1579,14 @@ sub analyze_context_expr {
   # (rest of the code relies on that); also, remove backslashes in front 
   # of the parentheses
 
-  if ($context =~ /^\s*(.*?)\s*->\s*(.*\S)/) {
+  if ($context =~ /^\s*(.*?)\s*(->|:>)\s*(.*\S)/) {
 
     $op1 = $1;
-    $op2 = $2;
+    $oper = $2;
+    $op2 = $3;
 
     if ($op1 ne EXPRSYMBOL) { 
-      $op1 =~ s/\\([\(\)])/$1/g; 
+      $op1 =~ s/\\([\(\)])/$1/g;
       $op1 = [ split(' ', $op1) ];
     }
 
@@ -1546,9 +1606,10 @@ sub analyze_context_expr {
 
     }
 
-    @{$result} = ( CCODE, $op1, $op2 );
-    return 1;
+    if ($oper eq "->") { @{$result} = ( CCODE, $op1, $op2 ); }
+      else { @{$result} = ( CCODE2, $op1, $op2 ); }
 
+    return 1;
   }
 
   if ($context =~ /^\s*=\s*(.*\S)/) {
@@ -1558,22 +1619,24 @@ sub analyze_context_expr {
 
     @{$result} = ( ECODE, $op1 );
     return 1;
-
   }
 
-  if ($context =~ /^\s*(.*\S)/) {
+  if ($context =~ /^\s*varset\s+(\S+)\s*$/) {
 
     $op1 = $1;
+    if ($op1 ne EXPRSYMBOL)  { $op1 =~ s/\\([\(\)])/$1/g; }
 
-    if ($op1 ne EXPRSYMBOL) { 
-      $op1 =~ s/\\([\(\)])/$1/g; 
-      # if operand is a context name, verify it contains no whitespace
-      if ($op1 !~ /^\S+$/)  { return 0; }
-    }
+    @{$result} = ( VARSET, $op1 );
+    return 1;
+  }
+
+  if ($context =~ /^\s*(\S+)\s*$/) {
+
+    $op1 = $1;
+    if ($op1 ne EXPRSYMBOL)  { $op1 =~ s/\\([\(\)])/$1/g; }
 
     @{$result} = ( OPERAND, $op1 );
     return 1;
-
   }
 
   return 0;
@@ -1581,12 +1644,11 @@ sub analyze_context_expr {
 }
 
 
-# Parameters: par1 - context description
+# Parameters: par1 - context expression
 #             par2 - reference to an array
-# Action: par1 will be analyzed and saved to array par2 in reverse polish
-#         notation form. Previous content of the array par2 is erased. 
-#         If errors are found when analyzing par1, 0 will be returned, 
-#         otherwise 1 will be returned.
+# Action: par1 will be analyzed and saved to array par2. Previous content 
+#         of the array par2 is erased. If errors are found when analyzing 
+#         par1, 0 will be returned, otherwise 1 will be returned.
 
 sub analyze_context {
 
@@ -1605,17 +1667,16 @@ sub analyze_context {
 
   if (!defined($newcontext))  { return 0; }
 
-  # convert the context to reverse polish notation, and if there
-  # were no parenthesized subexpressions found in the context during
-  # previous step, exit
+  # convert context expression to internal format, and if no parenthesized 
+  # subexpressions were found in the expression during previous step, exit
 
   if (!analyze_context_expr($newcontext, $result))  { return 0; }
 
   if ($newcontext eq $context)  { return 1; }
 
-  # If the context contains parenthesized subexpressions, analyze and 
+  # If the expression contains parenthesized subexpressions, analyze and 
   # convert these expressions recursively, attaching the results to 
-  # the current context. If a parenthesized expression is a Perl code,
+  # the current expression. If a parenthesized subexpression is a Perl code,
   # it will not be analyzed recursively but rather treated as a terminal
   # (backslashes in front of the parentheses are removed)
 
@@ -1627,40 +1688,32 @@ sub analyze_context {
     if ($result->[$i] == OPERAND) {
 
       if ($result->[$i+1] eq EXPRSYMBOL) {
-
         $result->[$i] = EXPRESSION;
         $result->[$i+1] = [];
         $subexpr = shift @expr;
         if (!analyze_context($subexpr, $result->[$i+1]))  { return 0; }
-
       }
 
       $i += 2;
- 
     }
 
     elsif ($result->[$i] == ECODE) {
 
       if ($result->[$i+1] eq EXPRSYMBOL) { 
-
         $code = shift @expr;
         $code =~ s/\\([\(\)])/$1/g;
         $result->[$i+1] = $code; 
-
       }
  
       $i += 2;
- 
     }
 
-    elsif ($result->[$i] == CCODE) {
+    elsif ($result->[$i] == CCODE || $result->[$i] == CCODE2) {
 
       if ($result->[$i+1] eq EXPRSYMBOL) {
-
         $params = shift @expr;
         $params =~ s/\\([\(\)])/$1/g;
         $result->[$i+1] = [ split(' ', $params) ];
-
       }
 
       if ($result->[$i+2] eq EXPRSYMBOL) { 
@@ -1681,7 +1734,17 @@ sub analyze_context {
       }
 
       $i += 3;
+    }
+
+    elsif ($result->[$i] == VARSET) {
+
+      if ($result->[$i+1] eq EXPRSYMBOL) { 
+        $subexpr = shift @expr;
+        $subexpr =~ s/\\([\(\)])/$1/g;
+        $result->[$i+1] = $subexpr; 
+      }
  
+      $i += 2;
     }
 
     else { ++$i; }
@@ -1693,7 +1756,7 @@ sub analyze_context {
 }
 
 
-# Parameters: par1 - context description
+# Parameters: par1 - context expression
 # Action: if par1 is surrounded by [] brackets, the brackets will be
 #         removed and 1 will be returned, otherwise 0 will be returned.
 
@@ -2008,7 +2071,7 @@ sub check_rule {
   my($lineno) = $_[2];
   my($number) = $_[3];
   my($type, $rule, %keywords);
-  my($progname, $ncomp, $cfset, $evtnum, $i, $j);
+  my($ncomp, $cfset, $evtnum, $i, $j);
 
   if (!exists($ref->{"type"})) { 
     log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
@@ -2065,7 +2128,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context"}, '$'))
+      if (volatile_context($rule->{"Context"}, '$'))
         { $rule->{"ContVolat"} = 1; }
     }
 
@@ -2134,7 +2197,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context"}, '$'))
+      if (volatile_context($rule->{"Context"}, '$'))
         { $rule->{"ContVolat"} = 1; }
     }
 
@@ -2156,16 +2219,6 @@ sub check_rule {
       }
       if (contains_matchvars($ref->{"action2"}, '$')) 
         { $rule->{"ActVolat2"} = 1; }
-    }
-
-    $progname = (split(' ', $ref->{"script"}))[0];
-
-    if (! -f $progname) {
-      log_msg(LOG_WARN, "Rule in $conffile at line $lineno:", 
-              "Warning - could not find '$progname'");
-    } elsif (! -x $progname) {
-      log_msg(LOG_WARN, "Rule in $conffile at line $lineno:", 
-              "Warning - '$progname' is not executable");
     }
 
     $configuration{$conffile}->[$number] = $rule;
@@ -2222,7 +2275,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context"}, '$'))
+      if (volatile_context($rule->{"Context"}, '$'))
         { $rule->{"ContVolat"} = 1; }
     }
 
@@ -2322,7 +2375,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context"}, '$'))
+      if (volatile_context($rule->{"Context"}, '$'))
         { $rule->{"ContVolat"} = 1; }
     }
 
@@ -2334,7 +2387,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context2"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context2"}, '$', '%'))
+      if (volatile_context($rule->{"Context2"}, '$', '%'))
         { $rule->{"ContVolat2"} = 1; }
     } 
 
@@ -2445,7 +2498,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context"}, '$'))
+      if (volatile_context($rule->{"Context"}, '$'))
         { $rule->{"ContVolat"} = 1; }
     }
 
@@ -2457,7 +2510,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context2"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context2"}, '$', '%'))
+      if (volatile_context($rule->{"Context2"}, '$', '%'))
         { $rule->{"ContVolat2"} = 1; }
     }
 
@@ -2540,7 +2593,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context"}, '$'))
+      if (volatile_context($rule->{"Context"}, '$'))
         { $rule->{"ContVolat"} = 1; }
     }
 
@@ -2633,7 +2686,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context"}, '$'))
+      if (volatile_context($rule->{"Context"}, '$'))
         { $rule->{"ContVolat"} = 1; }
     }
 
@@ -2778,7 +2831,7 @@ sub check_rule {
                   "Invalid context specification '", $ref->{"context$j"}, "'");
           return 0; 
         } 
-        if (contains_matchvars($ref->{"context$j"}, '$'))
+        if (volatile_context($rule->{"ContextList"}->[$i], '$'))
           { $rule->{"ContVolatList"}->{$i} = 1; }
       }
 
@@ -2903,7 +2956,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context"}, '$'))
+      if (volatile_context($rule->{"Context"}, '$'))
         { $rule->{"ContVolat"} = 1; }
     }
 
@@ -3038,7 +3091,7 @@ sub check_rule {
                 "Invalid context specification '", $ref->{"context"}, "'");
         return 0; 
       } 
-      if (contains_matchvars($ref->{"context"}, '$'))
+      if (volatile_context($rule->{"Context"}, '$'))
         { $rule->{"ContVolat"} = 1; }
     }
 
@@ -4000,7 +4053,7 @@ sub execute_create_action {
                                   "Buffer" => [],
                                   "Action" => $list,
                                   "Desc" => $text,
-                                  "Aliases" => [ $context ] };
+                                  "Aliases" => { $context => 1 } };
 
     }
 
@@ -4027,14 +4080,14 @@ sub execute_delete_action {
   if (exists($context_list{$context})  &&
       !exists($context_list{$context}->{"DeleteInProgress"})) {
 
-    foreach $alias (@{$context_list{$context}->{"Aliases"}}) { 
+    foreach $alias (keys %{$context_list{$context}->{"Aliases"}}) { 
       delete $context_list{$alias};
       log_msg(LOG_DEBUG, "Context '$alias' deleted"); 
     }
 
   } else {
-    log_msg(LOG_WARN,
-    "Context '$context' does not exist or is going through deletion, can't delete");
+    log_msg(LOG_DEBUG,
+    "Context '$context' does not exist or is already going through deletion");
   }
 
   return 2;
@@ -4059,8 +4112,8 @@ sub execute_obsolete_action {
     valid_context($context);
 
   } else {
-    log_msg(LOG_WARN,
-            "Context '$context' does not exist or is going through deletion, can't obsolete");
+    log_msg(LOG_DEBUG,
+    "Context '$context' does not exist or is already going through deletion");
   }
 
   return 2;
@@ -4082,14 +4135,16 @@ sub execute_set_action {
 
   log_msg(LOG_DEBUG, "Changing settings for context '$context'");
 
-  if ($lifetime =~ /^\s*0*(\d+)\s*$/) {
+  if ($lifetime =~ /^\s*(?:0*(\d+)|-)\s*$/) {
 
     $lifetime = $1;
 
     if (exists($context_list{$context})) {
 
-      $context_list{$context}->{"Time"} = time();
-      $context_list{$context}->{"Window"} = $lifetime;
+      if (defined($lifetime)) {
+        $context_list{$context}->{"Time"} = time();
+        $context_list{$context}->{"Window"} = $lifetime;
+      }
 
       if (scalar(@{$list})) {
         $context_list{$context}->{"Action"} = $list;
@@ -4128,9 +4183,9 @@ sub execute_alias_action {
     log_msg(LOG_WARN, 
             "Context '$context' does not exist, can't create alias");
   } elsif (exists($context_list{$alias})) {
-    log_msg(LOG_WARN, "Alias '$alias' already exists");
+    log_msg(LOG_DEBUG, "Alias '$alias' already exists");
   } else {
-    push @{$context_list{$context}->{"Aliases"}}, $alias;
+    $context_list{$context}->{"Aliases"}->{$alias} = 1;
     $context_list{$alias} = $context_list{$context};
   }
 
@@ -4152,10 +4207,9 @@ sub execute_unalias_action {
   if (exists($context_list{$alias})  &&
       !exists($context_list{$alias}->{"DeleteInProgress"})) {
 
-    @{$context_list{$alias}->{"Aliases"}} =
-      grep($_ ne $alias, @{$context_list{$alias}->{"Aliases"}});
+    delete $context_list{$alias}->{"Aliases"}->{$alias};
 
-    if (!scalar(@{$context_list{$alias}->{"Aliases"}})) {
+    if (!scalar(%{$context_list{$alias}->{"Aliases"}})) {
       log_msg(LOG_DEBUG,
               "Alias '$alias' was the last reference to a context");
     }
@@ -4163,8 +4217,7 @@ sub execute_unalias_action {
     delete $context_list{$alias};
 
   } else {
-    log_msg(LOG_WARN,
-            "Alias '$alias' does not exist or the referred context is going through deletion, can't remove alias");
+    log_msg(LOG_DEBUG, "Alias '$alias' does not exist or the referred context is already going through deletion");
   }
 
   return 2;
@@ -4192,7 +4245,7 @@ sub execute_add_action {
                                 "Buffer" => [],
                                 "Action" => [],
                                 "Desc" => "",
-                                "Aliases" => [ $context ] };
+                                "Aliases" => { $context => 1 } };
   }
 
   @event = split(/\n/, $event);  # split returns empty list for "" or undef
@@ -4202,7 +4255,45 @@ sub execute_add_action {
     push @{$context_list{$context}->{"Buffer"}}, @event;
   } else {
     log_msg(LOG_WARN,
-            "Can't add event(s) '$event' to context '$context', store full");
+    "Can't add event(s) '$event' to context '$context', store full");
+  }
+
+  return 3;
+}
+
+sub execute_prepend_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $event, @event);
+
+  $context = $actionlist->[$i+1];
+  $event = $actionlist->[$i+2];
+
+  substitute_var($context, $text);
+  substitute_var($event, $text);
+
+  log_msg(LOG_DEBUG, "Prepending event(s) '$event' to context '$context'");
+
+  if (!exists($context_list{$context})) { 
+
+    $context_list{$context} = { "Time" => time(), 
+                                "Window" => 0, 
+                                "Buffer" => [],
+                                "Action" => [],
+                                "Desc" => "",
+                                "Aliases" => { $context => 1 } };
+  }
+
+  @event = split(/\n/, $event);  # split returns empty list for "" or undef
+
+  if (!$evstoresize  ||  scalar(@{$context_list{$context}->{"Buffer"}}) 
+                       + scalar(@event) <= $evstoresize) {
+    unshift @{$context_list{$context}->{"Buffer"}}, @event;
+  } else {
+    log_msg(LOG_WARN,
+    "Can't prepend event(s) '$event' to context '$context', store full");
   }
 
   return 3;
@@ -4230,7 +4321,7 @@ sub execute_fill_action {
                                 "Buffer" => [],
                                 "Action" => [],
                                 "Desc" => "",
-                                "Aliases" => [ $context ] };
+                                "Aliases" => { $context => 1 } };
   }
 
   @event = split(/\n/, $event);  # split returns empty list for "" or undef
@@ -4258,14 +4349,13 @@ sub execute_report_action {
   substitute_var($context, $text);
   substitute_var($cmdline, $text);
 
-  log_msg(LOG_INFO,
-          "Reporting the event store of context '$context' through shell command '$cmdline'");
+  log_msg(LOG_INFO, "Reporting the event store of context '$context' through shell command '$cmdline'");
 
   if (!exists($context_list{$context})) {
     log_msg(LOG_WARN, "Context '$context' does not exist, can't report");
   } elsif (!scalar(@{$context_list{$context}->{"Buffer"}})) {
-    log_msg(LOG_WARN,
-            "Event store of context '$context' is empty, can't report");
+    log_msg(LOG_DEBUG,
+            "Event store of context '$context' is empty, nothing to report");
   } else {
 
     if (length($cmdline)) {
@@ -4342,6 +4432,240 @@ sub execute_empty_action {
   return 3;
 }
 
+sub execute_pop_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $variable, $value);
+
+  $context = $actionlist->[$i+1];
+  $variable = $actionlist->[$i+2];
+
+  substitute_var($context, $text);
+
+  log_msg(LOG_DEBUG, "Pop the last element of context '$context' event store into variable '%$variable'");
+
+  if (exists($context_list{$context})) { 
+
+    $value = pop @{$context_list{$context}->{"Buffer"}};
+    $variables{$variable} = defined($value)?$value:"";
+    log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
+
+  } else {
+    log_msg(LOG_WARN, "Context '$context' does not exist, can't pop");
+  }
+
+  return 3;
+}
+
+sub execute_shift_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $variable, $value);
+
+  $context = $actionlist->[$i+1];
+  $variable = $actionlist->[$i+2];
+
+  substitute_var($context, $text);
+
+  log_msg(LOG_DEBUG, "Shift the first element of context '$context' event store into variable '%$variable'");
+
+  if (exists($context_list{$context})) { 
+
+    $value = shift @{$context_list{$context}->{"Buffer"}};
+    $variables{$variable} = defined($value)?$value:"";
+    log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
+
+  } else {
+    log_msg(LOG_WARN, "Context '$context' does not exist, can't shift");
+  }
+
+  return 3;
+}
+
+sub execute_exists_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $variable, $value);
+
+  $variable = $actionlist->[$i+1];
+  $context = $actionlist->[$i+2];
+
+  substitute_var($context, $text);
+
+  log_msg(LOG_DEBUG, "Checking the presence of context '$context'");
+
+  $value = (exists($context_list{$context}))?1:0; 
+  $variables{$variable} = $value;
+
+  log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
+
+  return 3;
+}
+
+sub execute_getsize_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $variable, $value);
+
+  $variable = $actionlist->[$i+1];
+  $context = $actionlist->[$i+2];
+
+  substitute_var($context, $text);
+
+  log_msg(LOG_DEBUG, "Finding the size of context '$context' event store");
+
+  if (exists($context_list{$context})) { 
+    $value = scalar(@{$context_list{$context}->{"Buffer"}});
+    $variables{$variable} = $value;
+    log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
+  } else {
+    $variables{$variable} = undef;
+    log_msg(LOG_DEBUG, 
+    "Context '$context' does not exist, variable '%$variable' set to undef");
+  }
+
+  return 3;
+}
+
+sub execute_getaliases_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $variable, $value);
+
+  $variable = $actionlist->[$i+1];
+  $context = $actionlist->[$i+2];
+
+  substitute_var($context, $text);
+
+  log_msg(LOG_DEBUG, 
+  "Assigning aliases of context '$context' to variable '%$variable'");
+
+  if (exists($context_list{$context})) { 
+    $value = join("\n", keys %{$context_list{$context}->{"Aliases"}});
+    $variables{$variable} = $value;
+    log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
+  } else {
+    log_msg(LOG_WARN, "Context '$context' does not exist, can't get aliases");
+  }
+
+  return 3;
+}
+
+sub execute_getltime_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $variable, $value);
+
+  $variable = $actionlist->[$i+1];
+  $context = $actionlist->[$i+2];
+
+  substitute_var($context, $text);
+
+  log_msg(LOG_DEBUG, 
+  "Assigning the lifetime of context '$context' to variable '%$variable'");
+
+  if (exists($context_list{$context})) { 
+    $value = $context_list{$context}->{"Window"};
+    $variables{$variable} = $value;
+    log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
+  } else {
+    log_msg(LOG_WARN, "Context '$context' does not exist, can't get lifetime");
+  }
+
+  return 3;
+}
+
+sub execute_getctime_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $variable, $value);
+
+  $variable = $actionlist->[$i+1];
+  $context = $actionlist->[$i+2];
+
+  substitute_var($context, $text);
+
+  log_msg(LOG_DEBUG, 
+  "Assigning the creation time of context '$context' to variable '%$variable'");
+
+  if (exists($context_list{$context})) { 
+    $value = $context_list{$context}->{"Time"};
+    $variables{$variable} = $value;
+    log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
+  } else {
+    log_msg(LOG_WARN, 
+            "Context '$context' does not exist, can't get creation time");
+  }
+
+  return 3;
+}
+
+sub execute_setctime_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $timestamp);
+  my($ltime, $time, $time2);
+
+  $timestamp = $actionlist->[$i+1];
+  $context = $actionlist->[$i+2];
+
+  substitute_var($timestamp, $text);
+  substitute_var($context, $text);
+
+  if ($timestamp =~ /^\s*0*(\d+)\s*$/) { 
+
+    $timestamp = $1; 
+    $ltime = scalar(localtime($timestamp));
+
+    log_msg(LOG_DEBUG, 
+            "Setting the creation time of context '$context' to '$ltime'"); 
+
+    if (exists($context_list{$context})) { 
+
+      $time = $context_list{$context}->{"Time"};
+      $time2 = time();
+
+      if ($timestamp < $time) {
+        log_msg(LOG_WARN, 
+        "Can't set context creation time backwards to '$ltime'");
+      } elsif ($timestamp > $time2) {
+        log_msg(LOG_WARN, 
+        "Can't set context creation time into future to '$ltime'");
+      } elsif ($timestamp == $time) {
+        log_msg(LOG_DEBUG, "Context creation time already set to '$ltime'");
+      } else {
+        $context_list{$context}->{"Time"} = $timestamp;
+      }
+
+    } else {
+      log_msg(LOG_WARN, 
+      "Context '$context' does not exist, can't set creation time"); 
+    }
+
+  } else {
+    log_msg(LOG_WARN, 
+    "Invalid timestamp '$timestamp' for creation time of context '$context'"); 
+  }
+
+  return 3;
+}
+
 sub execute_event_action {
 
   my($actionlist) = $_[0];
@@ -4401,8 +4725,8 @@ sub execute_tevent_action {
     }
 
   } else {
-    log_msg(LOG_WARN,
-    "Can't create event(s) '$event' after '$createafter' seconds");
+    log_msg(LOG_WARN, 
+    "Invalid time specification '$createafter' for creating events");
   }
 
   return 3;
@@ -4439,7 +4763,7 @@ sub execute_reset_action {
 
     log_msg(LOG_DEBUG,
             "Terminating all event correlation operations started from",
-            $conffile, "with an operation description string '$event'");
+            $conffile, "with operation description string '$event'");
 
     foreach $rule (@{$configuration{$conffile}}) {
 
@@ -4481,7 +4805,7 @@ sub execute_getwpos_action {
     log_msg(LOG_DEBUG, "Variable '%$variable' set to '$time'");
   } else {
     log_msg(LOG_WARN, 
-    "Operation '$key' does not exist, can't set variable '%$variable'");
+    "Operation '$key' does not exist, can't get window position");
   }
 
   return 5;
@@ -4570,12 +4894,12 @@ sub execute_setwpos_action {
 
     } else {
       log_msg(LOG_WARN, 
-      "Operation '$key' does not exist, can't move event correlation window");
+      "Operation '$key' does not exist, can't set window position");
     }
 
   } else {
     log_msg(LOG_WARN, 
-    "Invalid timestamp '$timestamp', can't move event correlation window");
+    "Invalid timestamp '$timestamp' for moving the window of operation '$key'");
   }
 
   return 5;
@@ -4598,6 +4922,21 @@ sub execute_assign_action {
   $variables{$variable} = $value;
 
   return 3;
+}
+
+sub execute_free_action {
+
+  my($actionlist) = $_[0];
+  my($i) = $_[2];
+  my($variable);
+
+  $variable = $actionlist->[$i+1];
+
+  log_msg(LOG_DEBUG, "Freeing variable '%$variable'");
+
+  delete $variables{$variable};
+
+  return 2;
 }
 
 sub execute_eval_action {
@@ -4804,24 +5143,75 @@ sub execute_rewrite_action {
   return 3;
 }
 
+sub execute_if_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($variable, $ret);
+
+  $variable = $actionlist->[$i+1];
+  $ret = 1;
+
+  if (exists($variables{$variable}) && $variables{$variable}) {
+    if (scalar(@{$actionlist->[$i+2]})) { 
+      $ret = execute_actionlist($actionlist->[$i+2], $text);
+    }
+  } else {
+    if (scalar(@{$actionlist->[$i+3]})) { 
+      $ret = execute_actionlist($actionlist->[$i+3], $text);
+    }
+  }
+
+  if ($ret != 1) { return $ret; }
+
+  return 4;
+}
+
+sub execute_while_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($variable);
+
+  $variable = $actionlist->[$i+1];
+
+  while (exists($variables{$variable}) && $variables{$variable}) {
+    if (execute_actionlist($actionlist->[$i+2], $text) == -1) { last; }
+  }
+
+  return 3;
+}
+
+sub execute_break_action { return -1; }
+
+sub execute_continue_action { return 0; }
+
 
 # Parameters: par1 - reference to a list of actions
 #             par2 - event description text
-# Action: execute actions in a given action list
+# Action: execute actions in a given action list. 
+#         Return 1 if the action list was fully executed; 
+#         return 0 if the execution was interrupted with the continue action;
+#         return -1 if the execution was interrupted with the break action.
 
 sub execute_actionlist {
 
   my($actionlist) = $_[0];
   my($text) = $_[1];
-  my($i, $j);
+  my($i, $j, $k);
 
   $i = 0;
   $j = scalar(@{$actionlist});
 
   while ($i < $j) {
-    $i += $execactionfunc[$actionlist->[$i]]->($actionlist, $text, $i);
+    $k = $execactionfunc[$actionlist->[$i]]->($actionlist, $text, $i);
+    if ($k <= 0) { return $k; }
+    $i += $k;
   } 
 
+  return 1;
 }
 
 
@@ -4900,7 +5290,7 @@ sub valid_context {
 
     # remove all names of the context from the list of contexts
 
-    foreach $alias (@{$context_list{$context}->{"Aliases"}}) { 
+    foreach $alias (keys %{$context_list{$context}->{"Aliases"}}) { 
       delete $context_list{$alias};
       log_msg(LOG_DEBUG, "Stale context '$alias' deleted");
     }
@@ -4921,7 +5311,7 @@ sub tval_context_expr {
   my($ref) = $_[0];
   my($i, $j, $left, @right);
   my($evalresult, $evalok, $retval);
-  my($code, $func, $args);
+  my($code, $func, $param, @params);
 
   $i = 0;
   $j = scalar(@{$ref});
@@ -4933,8 +5323,7 @@ sub tval_context_expr {
     if ($ref->[$i] == OPERAND) {
 
       if (defined($left)) {
-        push @right, OPERAND;
-        push @right, $ref->[$i+1];
+        push @right, OPERAND, $ref->[$i+1];
       } else { 
         $left = valid_context($ref->[$i+1]); 
       }
@@ -4985,8 +5374,7 @@ sub tval_context_expr {
     elsif ($ref->[$i] == EXPRESSION) {
 
       if (defined($left)) {
-        push @right, EXPRESSION;
-        push @right, $ref->[$i+1];
+        push @right, EXPRESSION, $ref->[$i+1];
       } else { 
         $left = tval_context_expr($ref->[$i+1]); 
       }
@@ -4999,8 +5387,7 @@ sub tval_context_expr {
 
       if (defined($left)) {
 
-        push @right, ECODE;
-        push @right, $ref->[$i+1];
+        push @right, ECODE, $ref->[$i+1];
 
       } else {
 
@@ -5027,22 +5414,22 @@ sub tval_context_expr {
 
       if (defined($left)) {
 
-        push @right, CCODE;
-        push @right, $ref->[$i+1];
-        push @right, $ref->[$i+2];
+        push @right, CCODE, $ref->[$i+1], $ref->[$i+2];
 
       } else {
 
-        $args = $ref->[$i+1];
+        # parameters for $func->() are copied into a new list @params, since 
+        # tval_context_expr() function could be called for the original 
+        # context expression definition (e.g., if the rule type is Calendar 
+        # or if the context expression is in []-brackets). Thus, passing 
+        # original parameter list to the end user would allow the user to 
+        # modify the original context definition. Furthermore, varset
+        # parameters need to be replaced with corresponding references.
+
+        @params = @{$ref->[$i+1]};
         $func = $ref->[$i+2];
 
-        # don't call $func->($args), since the tval_context_expr() function
-        # could be called for the original context expression definition
-        # (e.g., if the rule type is Calendar or if the context expression
-        # is in []-brackets), and passing $args to the end user would allow 
-        # the user to modify the original context definition
-
-        $retval = eval { $func->( ( @{$args} ) ) };
+        $retval = eval { $func->(@params) };
       
         # if function call failed or returned false in boolean context
         # (undef, "", or 0), set $left to 0, otherwise set $left to 1
@@ -5057,6 +5444,59 @@ sub tval_context_expr {
       }
 
       $i += 3;
+
+    }
+
+    elsif ($ref->[$i] == CCODE2) {
+
+      if (defined($left)) {
+
+        push @right, CCODE2, $ref->[$i+1], $ref->[$i+2];
+
+      } else {
+
+        # parameters for $func->() are copied into a new list @params, since 
+        # tval_context_expr() function could be called for the original 
+        # context expression definition (e.g., if the rule type is Calendar 
+        # or if the context expression is in []-brackets). Thus, passing 
+        # original parameter list to the end user would allow the user to 
+        # modify the original context definition. Furthermore, varset
+        # parameters need to be replaced with corresponding references.
+
+        @params = @{$ref->[$i+1]};
+        $func = $ref->[$i+2];
+
+        foreach $param (@params) {
+          $param = exists($pmatch_cache{$param})?$pmatch_cache{$param}:undef; 
+        }
+ 
+        $retval = eval { $func->(@params) };
+      
+        # if function call failed or returned false in boolean context
+        # (undef, "", or 0), set $left to 0, otherwise set $left to 1
+
+        if ($@) {
+          log_msg(LOG_ERR, "Context expression runtime error:", $@);
+          $left = 0;
+        } else { 
+          $left = $retval?1:0; 
+        }
+      
+      }
+
+      $i += 3;
+
+    }
+
+    elsif ($ref->[$i] == VARSET) {
+
+      if (defined($left)) {
+        push @right, VARSET, $ref->[$i+1];
+      } else { 
+        $left = exists($pmatch_cache{$ref->[$i+1]})?1:0; 
+      }
+
+      $i += 2;
 
     }
 
@@ -5227,6 +5667,10 @@ sub match_regexp {
     # substring matches from the regular expression
     %{$subst_ref} = %+;
 
+    # add the $<number> match variables to the variable hash
+    $i = 1;
+    foreach $match (@matches)  { $subst_ref->{$i++} = $match; }
+
     # create the $0 variable
     $subst_ref->{"0"} = $line;
 
@@ -5238,10 +5682,6 @@ sub match_regexp {
       $subst_ref->{"_inputsrc"} = 
         defined($input_sources[$bufpos])?$input_sources[$bufpos]:"synthetic";
     }
-
-    # add the $<number> match variables to the variable hash
-    $i = 1;
-    foreach $match (@matches)  { $subst_ref->{$i++} = $match; }
 
     # add the $<name> match variables to the variable hash,
     # and add match variable values to pattern match cache
@@ -5355,7 +5795,21 @@ sub match_perlfunc {
   $size = scalar(@matches);
   if ($size == 0 || ($size == 1 && !$matches[0]))  { return 0; }
 
-  # erase the previous content of the match variable hash, and
+  # initialize the match variable hash
+  %{$subst_ref} = ();
+
+  # if the function returned a hash reference, create named match
+  # variables from key=value pairs in the hash; otherwise add
+  # function return values to the variable hash as numeric variables
+  if ($size == 1 && ref($matches[0]) eq "HASH") {
+    while ($var = each %{$matches[0]}) { 
+      $subst_ref->{$var} = $matches[0]->{$var}; 
+    }
+  } else {
+    $i = 1;
+    foreach $match (@matches)  { $subst_ref->{$i++} = $match; }
+  }
+
   # create the $0 and $+{_inputsrc} variables
   if ($jointbuf) {
     $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
@@ -5372,11 +5826,8 @@ sub match_perlfunc {
     $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
     $source = "synthetic";
   }
-  %{$subst_ref} = ( "0" => $line, "_inputsrc" => $source );
-
-  # add function return values to the variable hash
-  $i = 1;
-  foreach $match (@matches)  { $subst_ref->{$i++} = $match; }
+  $subst_ref->{"0"} = $line;
+  $subst_ref->{"_inputsrc"} = $source;
 
   # add the $<name> match variables to the variable hash,
   # and add match variable values to pattern match cache
@@ -5484,8 +5935,7 @@ sub copy_two_elem_action {
   my($dest_ref) = $_[1];
   my($i) = $_[2];
 
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i];
+  push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i];
   return 2; 
 }
 
@@ -5495,9 +5945,7 @@ sub copy_three_elem_action {
   my($dest_ref) = $_[1];
   my($i) = $_[2];
 
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i];
+  push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], $src_ref->[$i];
   return 3; 
 }
 
@@ -5507,10 +5955,8 @@ sub copy_four_elem_action {
   my($dest_ref) = $_[1];
   my($i) = $_[2];
 
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i];
+  push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], 
+                     $src_ref->[$i++], $src_ref->[$i];
   return 4; 
 }
 
@@ -5520,11 +5966,8 @@ sub copy_five_elem_action {
   my($dest_ref) = $_[1];
   my($i) = $_[2];
 
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i];
+  push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], 
+                     $src_ref->[$i++], $src_ref->[$i++], $src_ref->[$i];
   return 5; 
 }
 
@@ -5534,10 +5977,7 @@ sub copy_create_set_action {
   my($dest_ref) = $_[1];
   my($i) = $_[2];
 
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, [];
+  push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], $src_ref->[$i++], [];
   copy_actionlist($src_ref->[$i], $dest_ref->[$i]);
   return 4;
 }
@@ -5548,11 +5988,33 @@ sub copy_call_lcall_action {
   my($dest_ref) = $_[1];
   my($i) = $_[2];
 
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, $src_ref->[$i++];
-  push @{$dest_ref}, [ @{$src_ref->[$i]} ];
+  push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], 
+                     $src_ref->[$i++], [ @{$src_ref->[$i]} ];
   return 4; 
+}
+
+sub copy_if_action {
+
+  my($src_ref) = $_[0];
+  my($dest_ref) = $_[1];
+  my($i) = $_[2];
+
+  push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], [], [];
+  copy_actionlist($src_ref->[$i], $dest_ref->[$i]);
+  ++$i;
+  copy_actionlist($src_ref->[$i], $dest_ref->[$i]);
+  return 4;
+}
+
+sub copy_while_action {
+
+  my($src_ref) = $_[0];
+  my($dest_ref) = $_[1];
+  my($i) = $_[2];
+
+  push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], [];
+  copy_actionlist($src_ref->[$i], $dest_ref->[$i]);
+  return 3;
 }
 
 
@@ -5594,29 +6056,34 @@ sub copy_context {
   while ($i < $j) {
 
     if ($src_ref->[$i] == OPERAND) {
-      push @{$dest_ref}, OPERAND;
-      push @{$dest_ref}, $src_ref->[$i+1];
+      push @{$dest_ref}, OPERAND, $src_ref->[$i+1];
       $i += 2;
     } 
 
     elsif ($src_ref->[$i] == EXPRESSION) {
-      push @{$dest_ref}, EXPRESSION;
-      push @{$dest_ref}, [];
+      push @{$dest_ref}, EXPRESSION, [];
       copy_context($src_ref->[$i+1], $dest_ref->[$i+1]);
       $i += 2;
     }
 
     elsif ($src_ref->[$i] == ECODE) {
-      push @{$dest_ref}, ECODE;
-      push @{$dest_ref}, $src_ref->[$i+1];
+      push @{$dest_ref}, ECODE, $src_ref->[$i+1];
       $i += 2;
     } 
 
     elsif ($src_ref->[$i] == CCODE) {
-      push @{$dest_ref}, CCODE;
-      push @{$dest_ref}, [ @{$src_ref->[$i+1]} ];
-      push @{$dest_ref}, $src_ref->[$i+2];
+      push @{$dest_ref}, CCODE, [ @{$src_ref->[$i+1]} ], $src_ref->[$i+2];
       $i += 3;
+    } 
+
+    elsif ($src_ref->[$i] == CCODE2) {
+      push @{$dest_ref}, CCODE2, [ @{$src_ref->[$i+1]} ], $src_ref->[$i+2];
+      $i += 3;
+    } 
+
+    elsif ($src_ref->[$i] == VARSET) {
+      push @{$dest_ref}, VARSET, $src_ref->[$i+1];
+      $i += 2;
     } 
 
     else { 
@@ -5652,10 +6119,24 @@ sub subst_string {
   # both with a letter and underscore, both cases are handled below
 
   foreach $msg (@_) {
+
     if (index($msg, $token) == -1)  { next; }
-    $msg =~ s/$token2(?:(\d+|$token2)|\{(\d+)\}|\+\{([[:alpha:]_]\w*)\})/
-              ($+ eq $token)?$token:
-              (defined($subst_ref->{$+})?$subst_ref->{$+}:"")/egx;
+
+    elsif (index($msg, "$token:{") == -1) {    
+
+      $msg =~ s/$token2(?:$token2|(\d+)|
+                          \+\{([[:alpha:]_][\w!]*|\d+)\})/
+      !defined($+)?$token:(defined($subst_ref->{$+})?$subst_ref->{$+}:"")/egx;
+
+    } else {
+
+      $msg =~ s/$token2(?:$token2|(\d+)|
+                          \+\{([[:alpha:]_][\w!]*|\d+)\}|
+                          :\{([[:alpha:]]\w*):([[:alpha:]_][\w!]*|\d+)\})/
+      !defined($+)?$token:
+          (!defined($3)?(defined($subst_ref->{$+})?$subst_ref->{$+}:"")
+           :(defined($pmatch_cache{$3}->{$+})?$pmatch_cache{$3}->{$+}:""))/egx;
+    }
   }
 
 }
@@ -5689,9 +6170,9 @@ sub subst_regexp {
 
 
 # Parameters: par1 - reference to the array of replacements
-#             par2 - reference to a context formula
+#             par2 - reference to a context expression
 #             par3 - token that special variables start with
-# Action: Context formula par2 will be searched for special variables
+# Action: Context expression par2 will be searched for special variables
 #         (like $1, $2, ..) that will be replaced with 1st, 2nd, .. element
 #         from array par1 
 
@@ -5707,7 +6188,8 @@ sub subst_context {
 
   while ($i < $j) {
 
-    if ($ref->[$i] == OPERAND) {
+    if ($ref->[$i] == OPERAND || $ref->[$i] == VARSET 
+                              || $ref->[$i] == ECODE) {
       subst_string($subst_ref, $ref->[$i+1], $token);
       $i += 2;
     } 
@@ -5717,12 +6199,7 @@ sub subst_context {
       $i += 2;
     }
 
-    elsif ($ref->[$i] == ECODE) { 
-      subst_string($subst_ref, $ref->[$i+1], $token);
-      $i += 2; 
-    }
-
-    elsif ($ref->[$i] == CCODE) { 
+    elsif ($ref->[$i] == CCODE || $ref->[$i] == CCODE2) { 
       subst_string($subst_ref, @{$ref->[$i+1]}, $token);
       $i += 3; 
     }
@@ -5744,7 +6221,9 @@ sub subst_context {
 #         element from array par1 or par2; the function will return an offset
 #         for advancing the pointer par5 
 
-sub subst_none_action { return 1; }
+sub subst_none_break_continue { return 1; }
+
+sub subst_free { return 2; }
 
 sub subst_two_elem_action {
 
@@ -5783,7 +6262,7 @@ sub subst_create_set_action {
   return 4;
 }
 
-sub subst_copy_empty_action {
+sub subst_copy_empty_etc_action {
 
   my($subst_ref) = $_[0];
   my($actionlist) = $_[2];
@@ -5794,7 +6273,7 @@ sub subst_copy_empty_action {
   return 3;
 }
 
-sub subst_event_assign_eval_action {
+sub subst_event_assign_etc_action {
 
   my($subst_ref) = $_[0];
   my($actionlist) = $_[2];
@@ -5848,6 +6327,29 @@ sub subst_call_lcall_action {
 
   subst_string($subst_ref, @{$actionlist->[$i+3]}, $token);
   return 4;
+}
+
+sub subst_if_action {
+
+  my($subst_orig_ref) = $_[1];
+  my($actionlist) = $_[2];
+  my($token) = $_[3];
+  my($i) = $_[4];
+
+  subst_actionlist($subst_orig_ref, $actionlist->[$i+2], $token);
+  subst_actionlist($subst_orig_ref, $actionlist->[$i+3], $token);
+  return 4;
+}
+
+sub subst_while_action {
+
+  my($subst_orig_ref) = $_[1];
+  my($actionlist) = $_[2];
+  my($token) = $_[3];
+  my($i) = $_[4];
+
+  subst_actionlist($subst_orig_ref, $actionlist->[$i+2], $token);
+  return 3;
 }
 
 
@@ -7510,6 +8012,11 @@ sub actionlist2str {
       $i += 3;
     }
 
+    elsif ($actionlist->[$i] == PREPEND) { 
+      $result .= "prepend " . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
     elsif ($actionlist->[$i] == FILL) { 
       $result .= "fill " . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
       $i += 3;
@@ -7531,6 +8038,46 @@ sub actionlist2str {
       } else {
         $result .= "empty " . $actionlist->[$i+1];
       }
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == POP) { 
+      $result .= "pop " . $actionlist->[$i+1] . " %" . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == SHIFT) { 
+      $result .= "shift " . $actionlist->[$i+1] . " %" . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == EXISTS) { 
+      $result .= "exists %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == GETSIZE) { 
+      $result .= "getsize %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == GETALIASES) { 
+      $result .= "getaliases %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == GETLIFETIME) { 
+      $result .= "getltime %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == GETCTIME) { 
+      $result .= "getctime %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == SETCTIME) { 
+      $result .= "setctime %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
       $i += 3;
     }
 
@@ -7566,6 +8113,11 @@ sub actionlist2str {
       $i += 3;
     }
 
+    elsif ($actionlist->[$i] == FREE) { 
+      $result .= "free %" . $actionlist->[$i+1]; 
+      $i += 2;
+    }
+
     elsif ($actionlist->[$i] == EVAL) { 
       $result .= "eval %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
       $i += 3;
@@ -7588,6 +8140,38 @@ sub actionlist2str {
       $result .= "rewrite " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
       $i += 3;
     } 
+
+    elsif ($actionlist->[$i] == IF) {
+      $result .= "if %" . $actionlist->[$i+1] . " (";
+      if (scalar(@{$actionlist->[$i+2]})) {
+        $result .= actionlist2str($actionlist->[$i+2]);
+      }
+      if (scalar(@{$actionlist->[$i+3]})) {
+        $result .= ") else (";
+        $result .= actionlist2str($actionlist->[$i+3]);
+      }
+      $result .= ")";
+      $i += 4;
+    }
+
+    elsif ($actionlist->[$i] == WHILE) {
+      $result .= "while %" . $actionlist->[$i+1] . " (";
+      if (scalar(@{$actionlist->[$i+2]})) {
+        $result .= actionlist2str($actionlist->[$i+2]);
+      }
+      $result .= ")";
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == BREAK) { 
+      $result .= "break"; 
+      ++$i;
+    }
+
+    elsif ($actionlist->[$i] == CONTINUE) { 
+      $result .= "continue"; 
+      ++$i;
+    }
 
     else { return "Unknown action type in the action list"; }
 
@@ -7669,7 +8253,7 @@ sub continue2str {
 }
 
 
-# Parameters: par1 - reference to a context formula
+# Parameters: par1 - reference to a context expression
 # Action: convert given context to a printable representation
 
 sub context2str {
@@ -7699,8 +8283,21 @@ sub context2str {
     elsif ($ref->[$i] == CCODE) {
       $op1 = $ref->[$i+1];
       $op2 = $ref->[$i+2];
-      push @stack, join(" ", @{$op1}) . " -> " . $op2;
+      push @stack, join(" ", @{$op1}) . " -> $op2";
       $i += 3;
+    }
+
+    elsif ($ref->[$i] == CCODE2) {
+      $op1 = $ref->[$i+1];
+      $op2 = $ref->[$i+2];
+      push @stack, join(" ", @{$op1}) . " :> $op2";
+      $i += 3;
+    }
+
+    elsif ($ref->[$i] == VARSET) {
+      $op1 = $ref->[$i+1];
+      push @stack, "varset $op1";
+      $i += 2;
     }
 
     elsif ($ref->[$i] == OPERAND) {
@@ -8082,7 +8679,8 @@ sub print_element {
 sub dump_data {
 
   my($i, $key, $ref, $file, $event);
-  my($time, $user, $system, $cuser, $csystem);
+  my($time, $user, $system, $cuser, $csystem, $fpos, @stat);
+  my($width1, $width2, $width3);
   my($name, %reported_names);
 
   # verify that dumpfile does not exist and open it
@@ -8149,16 +8747,33 @@ sub dump_data {
 
   foreach $file (@conffiles) {
 
-    $i = 1;
     print DUMPFILE "\nStatistics for the rules from $file\n";
     print DUMPFILE "(loaded at ", 
                     scalar(localtime($config_ltimes{$file})), ")\n";
     print DUMPFILE '-' x 60, "\n";
 
+    $width1 = length(scalar(@{$configuration{$file}}));
+    $width2 = $width3 = 0;
+
     foreach $ref (@{$configuration{$file}}) {
-      print DUMPFILE "Rule $i at line ", $ref->{"LineNo"}, 
-        " (", $ref->{"Desc"}, ") has matched ", 
-          $ref->{"MatchCount"}, " events\n";
+      if (length($ref->{"LineNo"}) > $width2) { 
+        $width2 = length($ref->{"LineNo"}); 
+      }
+      if (length($ref->{"MatchCount"}) > $width3) { 
+        $width3 = length($ref->{"MatchCount"}); 
+      }
+    }
+
+    $i = 1;
+
+    foreach $ref (@{$configuration{$file}}) {
+      print  DUMPFILE "Rule ";
+      printf DUMPFILE "%*s", $width1, $i;
+      print  DUMPFILE " line "; 
+      printf DUMPFILE "%*s", $width2, $ref->{"LineNo"}; 
+      print  DUMPFILE " matched "; 
+      printf DUMPFILE "%*s", $width3, $ref->{"MatchCount"}; 
+      print  DUMPFILE " events (", $ref->{"Desc"}, ")\n";
       ++$i;
     }
 
@@ -8177,8 +8792,17 @@ sub dump_data {
 
     if ($inputsrc{$file}->{"open"}) { 
       print DUMPFILE "(status: Open, "; 
-      print DUMPFILE "type: ";
-      print DUMPFILE $inputsrc{$file}->{"regfile"}?"regular file":"pipe"; 
+      if ($inputsrc{$file}->{"regfile"}) {
+        $fpos = sysseek($inputsrc{$file}->{"fh"}, 0, SEEK_CUR);
+        @stat = stat($inputsrc{$file}->{"fh"});
+        print DUMPFILE "type: regular file, ";
+        # sysseek returns a string "0 but true" for offset 0, 
+        # so force numeric context by adding 0
+        print DUMPFILE "read offset: ", defined($fpos)?$fpos+0:"undef", ", "; 
+        print DUMPFILE "file size: ", scalar(@stat)?$stat[7]:"undef"; 
+      } else {
+        print DUMPFILE "type: pipe";
+      }
       print DUMPFILE ", ";
       print DUMPFILE "device/inode: ", $inputsrc{$file}->{"dev"}; 
       print DUMPFILE "/", $inputsrc{$file}->{"inode"}, ", "; 
@@ -8284,7 +8908,8 @@ sub dump_data {
   while (($key, $ref) = each (%pmatch_cache)) { 
     print DUMPFILE "Match: ", $key, "\n";
     foreach $name (sort keys %{$ref}) {
-      print DUMPFILE "$name = ", $ref->{$name}, "\n"; 
+      print DUMPFILE "$name = ", 
+                     defined($ref->{$name})?$ref->{$name}:"undef", "\n"; 
     }
     print DUMPFILE "\n";
     ++$i;
@@ -8317,7 +8942,7 @@ sub dump_data {
 
     if (exists($reported_names{$key}))  { next; }
 
-    foreach $name (@{$ref->{"Aliases"}}) {
+    foreach $name (keys %{$ref->{"Aliases"}}) {
       print DUMPFILE "Context Name: ", $name, "\n";
       $reported_names{$name} = 1;
     }
@@ -8515,7 +9140,7 @@ sub internal_event {
                               "Buffer" => [],
                               "Action" => [],
                               "Desc" => "SEC internal",
-                              "Aliases" => [ $context ] };
+                              "Aliases" => { $context => 1 } };
 
   log_msg(LOG_INFO, "Creating SEC internal event '$text'");
 
@@ -8986,8 +9611,7 @@ sub open_input {
 
     for ($i = 0; $i < $j; $i += 2) {
       if (!exists($fcont{$readbuffer[$i+1]}))  { next; }
-      push @buf, $readbuffer[$i];
-      push @buf, $readbuffer[$i+1];
+      push @buf, $readbuffer[$i], $readbuffer[$i+1];
     }
 
     @readbuffer = @buf;
@@ -9010,7 +9634,7 @@ sub open_input {
                                   "Buffer" => [],
                                   "Action" => [],
                                   "Desc" => "SEC internal",
-                                  "Aliases" => [ $context ] };
+                                  "Aliases" => { $context => 1 } };
 
     }
 
@@ -9021,7 +9645,7 @@ sub open_input {
                                 "Buffer" => [],
                                 "Action" => [],
                                 "Desc" => "SEC internal",
-                                "Aliases" => [ $context ] };
+                                "Aliases" => { $context => 1 } };
 
   }
 
@@ -9318,8 +9942,7 @@ sub read_line {
       # if we received a new line, write the line to the read buffer; also 
       # update time-related variables and call external script, if necessary
 
-      push @readbuffer, $line;
-      push @readbuffer, $file;
+      push @readbuffer, $line, $file;
 
       if ($input_timeout)  { $inputsrc{$file}->{"lastread"} = $time; }
 
@@ -9603,22 +10226,21 @@ sub check_signals {
 
   }
 
-  # if SIGINT has arrived, set the debug level to a new value
+  # if SIGINT has arrived, set the debug level to a new value; also, log
+  # a message without level, so that it would always appear in the log
 
-  if ($debuglevelset) {
+  if ($debuglevelinc) {
 
-    # if the current debuglevel is 6, roll over to 1,
-    # otherwise increase the current level by 1
+    $templevel = ($debuglevel + $debuglevelinc - 1) % 6 + 1;
 
-    $templevel = ($debuglevel == 6)?1:$debuglevel+1;
-
-    log_msg(LOG_NOTICE, "SIGINT received: setting debuglevel to $templevel");
+    log_msg(LOG_WITHOUT_LEVEL, $debuglevelinc, "SIGINT signal(s) received:",
+            "setting debuglevel from $debuglevel to $templevel");
 
     $debuglevel = $templevel;
 
-    # set the signal flag back to zero
+    # set the signal counter back to zero
 
-    $debuglevelset = 0;
+    $debuglevelinc = 0;
 
   }
 
@@ -9674,7 +10296,7 @@ sub hup_handler {
 
   $SIG{HUP} = \&hup_handler;
   $refresh = 1;
-
+  $sigreceived = 1;
 }               
 
 
@@ -9685,7 +10307,7 @@ sub abrt_handler {
 
   $SIG{ABRT} = \&abrt_handler;
   $softrefresh = 1;
-
+  $sigreceived = 1;
 }               
 
 
@@ -9696,7 +10318,7 @@ sub usr1_handler {
 
   $SIG{USR1} = \&usr1_handler;
   $dumpdata = 1;
-
+  $sigreceived = 1;
 }               
 
 
@@ -9707,18 +10329,18 @@ sub usr2_handler {
 
   $SIG{USR2} = \&usr2_handler;
   $openlog = 1;
-
+  $sigreceived = 1;
 }               
 
 
 # Parameters: -
-# Action: on arrival of SIGINT set flag $debuglevelset
+# Action: on arrival of SIGINT set flag $debuglevelinc
 
 sub int_handler {
 
   $SIG{INT} = \&int_handler;
-  $debuglevelset = 1;
-
+  ++$debuglevelinc;
+  $sigreceived = 1;
 }               
 
 
@@ -9729,7 +10351,7 @@ sub term_handler {
 
   $SIG{TERM} = \&term_handler;
   $terminate = 1;
-
+  $sigreceived = 1;
 }               
 
 
@@ -9939,9 +10561,292 @@ sub read_options {
 }
 
 
+############################
+# Function for the main loop
+############################
+
+
+# Parameters: -
+# Action: the main loop - receive events from inputs and process them
+
+sub main_loop {
+
+  my($line, $file, $ret);
+  my($context, $conffile);
+
+  for (;;) {
+
+    # if there are pending events in the event buffer or the read buffer, 
+    # read new line from there, otherwise read new line from input stream.
+
+    if (scalar(@events)) { 
+      $line = shift @events;
+      $file = undef;
+    } elsif (scalar(@readbuffer)) { 
+      $line = shift @readbuffer;
+      $file = shift @readbuffer;
+    } else {
+      read_line($line, $file);
+    }
+
+    if (defined($line)) {
+
+      if ($intcontexts) {
+        $context = defined($file)?$inputsrc{$file}->{"context"}:"_INTERNAL_EVENT";
+        $context_list{$context} = $int_contexts{$context};
+      }
+
+      # update input buffers (they are implemented as circular buffers, since
+      # according to benchmarks an array queue using shift and push is slower)
+      # note that joint buffer is also maintained during --nojointbuf mode,
+      # since @input_sources list is used for pattern matching purposes
+
+      $bufpos = ($bufpos + 1) % $bufsize;
+      $input_buffer[$bufpos] = $line;
+      $input_sources[$bufpos] = $file;
+
+      if (!$jointbuf) {
+        if (defined($file)) {
+          $input_buffers{$file}->{"BufPos"} = ($input_buffers{$file}->{"BufPos"} + 1) % $bufsize;
+          $input_buffers{$file}->{"Events"}->[$input_buffers{$file}->{"BufPos"}] = $line;
+        } else {
+          $event_buffer{"BufPos"} = ($event_buffer{"BufPos"} + 1) % $bufsize;
+          $event_buffer{"Events"}->[$event_buffer{"BufPos"}] = $line;
+        }
+      }
+
+      # clear pattern match cache
+
+      %pmatch_cache = ();
+
+      # process rules from configuration files
+
+      foreach $conffile (@maincfiles)  { process_rules($conffile); }
+
+      if ($intcontexts)  { delete $context_list{$context}; }
+
+      if (defined($file))  { ++$inputsrc{$file}->{"lines"}; }
+      ++$processedlines;
+
+    } elsif (!$file) {
+
+      # if we didn't get new data and -tail option was specified, sleep 
+      # for $poll_timeout seconds; if -notail option is active and all
+      # input files have been closed, exit
+
+      if ($tail) {
+
+        # sleep with select()
+
+        $ret = select(undef, undef, undef, $poll_timeout);
+
+        if ((!defined($ret) || $ret < 0)  &&  $! != EINTR) {
+          log_msg(LOG_CRIT, "Select error ($!), exiting!");
+          child_cleanup();
+          exit(1);
+        }
+
+      } elsif (!grep($inputsrc{$_}->{"open"}, @inputfiles)) {
+
+        # after generating SEC_SHUTDOWN event, SEC will sleep for TERMTIMEOUT 
+        # seconds, so that child processes that were triggered by SEC_SHUTDOWN 
+        # have time to create a signal handler for SIGTERM if they wish
+
+        if ($intevents) {
+          internal_event("SEC_SHUTDOWN"); 
+          sleep(TERMTIMEOUT);
+        }
+
+        child_cleanup();
+        exit(0); 
+
+      }
+    }
+
+    # search lists for accomplishing timed tasks and removing obsolete elements
+
+    if (time() - $lastcleanuptime >= $cleantime) {
+      process_lists();
+      $lastcleanuptime = time();
+    }
+
+    # manage child processes
+
+    if (scalar(%children))  { check_children(); }
+
+    # check signal flags
+
+    if ($sigreceived) { 
+      check_signals(); 
+      $sigreceived = 0; 
+    }
+
+  }
+}
+
+
 ##################################################################
 # ------------------------- MAIN PROGRAM -------------------------
 ##################################################################
+
+### Set function pointers
+
+$matchfunc[SUBSTR] = \&match_substr;
+$matchfunc[REGEXP] = \&match_regexp;
+$matchfunc[PERLFUNC] = \&match_perlfunc;
+$matchfunc[CACHED] = \&match_cached;
+$matchfunc[NSUBSTR] = \&match_nsubstr;
+$matchfunc[NREGEXP] = \&match_nregexp;
+$matchfunc[NPERLFUNC] = \&match_nperlfunc;
+$matchfunc[NCACHED] = \&match_ncached;
+$matchfunc[TVALUE] = \&match_tvalue;
+
+$matchrulefunc[SINGLE] = \&match_1pattern_rule;
+$matchrulefunc[SINGLE_W_SCRIPT] = \&match_1pattern_rule;
+$matchrulefunc[SINGLE_W_SUPPRESS] = \&match_1pattern_rule;
+$matchrulefunc[PAIR] = \&match_2pattern_rule;
+$matchrulefunc[PAIR_W_WINDOW] = \&match_2pattern_rule;
+$matchrulefunc[SINGLE_W_THRESHOLD] = \&match_1pattern_rule;
+$matchrulefunc[SINGLE_W_2_THRESHOLDS] = \&match_1pattern_rule;
+$matchrulefunc[EVENT_GROUP] = \&match_eventgroup_rule;
+$matchrulefunc[SUPPRESS] = \&match_1pattern_rule;
+$matchrulefunc[JUMP] = \&match_1pattern_rule;
+
+$processrulefunc[SINGLE] = \&process_single_rule;
+$processrulefunc[SINGLE_W_SCRIPT] = \&process_singlewithscript_rule;
+$processrulefunc[SINGLE_W_SUPPRESS] = \&process_singlewithsuppress_rule;
+$processrulefunc[PAIR] = \&process_pair_rule;
+$processrulefunc[PAIR_W_WINDOW] = \&process_pairwithwindow_rule;
+$processrulefunc[SINGLE_W_THRESHOLD] = \&process_singlewiththreshold_rule;
+$processrulefunc[SINGLE_W_2_THRESHOLDS] = \&process_singlewith2thresholds_rule;
+$processrulefunc[EVENT_GROUP] = \&process_eventgroup_rule;
+$processrulefunc[JUMP] = \&process_jump_rule;
+
+$actioncopyfunc[NONE] = \&copy_one_elem_action;
+$actioncopyfunc[LOGONLY] = \&copy_two_elem_action;
+$actioncopyfunc[WRITE] = \&copy_three_elem_action;
+$actioncopyfunc[SHELLCOMMAND] = \&copy_two_elem_action;
+$actioncopyfunc[SPAWN] = \&copy_two_elem_action;
+$actioncopyfunc[PIPE] = \&copy_three_elem_action;
+$actioncopyfunc[CREATECONTEXT] = \&copy_create_set_action;
+$actioncopyfunc[DELETECONTEXT] = \&copy_two_elem_action;
+$actioncopyfunc[OBSOLETECONTEXT] = \&copy_two_elem_action;
+$actioncopyfunc[SETCONTEXT] = \&copy_create_set_action;
+$actioncopyfunc[ALIAS] = \&copy_three_elem_action;
+$actioncopyfunc[UNALIAS] = \&copy_two_elem_action;
+$actioncopyfunc[ADD] = \&copy_three_elem_action;
+$actioncopyfunc[PREPEND] = \&copy_three_elem_action;
+$actioncopyfunc[FILL] = \&copy_three_elem_action;
+$actioncopyfunc[REPORT] = \&copy_three_elem_action;
+$actioncopyfunc[COPYCONTEXT] = \&copy_three_elem_action;
+$actioncopyfunc[EMPTYCONTEXT] = \&copy_three_elem_action;
+$actioncopyfunc[POP] = \&copy_three_elem_action;
+$actioncopyfunc[SHIFT] = \&copy_three_elem_action;
+$actioncopyfunc[EXISTS] = \&copy_three_elem_action;
+$actioncopyfunc[GETSIZE] = \&copy_three_elem_action;
+$actioncopyfunc[GETALIASES] = \&copy_three_elem_action;
+$actioncopyfunc[GETLIFETIME] = \&copy_three_elem_action;
+$actioncopyfunc[GETCTIME] = \&copy_three_elem_action;
+$actioncopyfunc[SETCTIME] = \&copy_three_elem_action;
+$actioncopyfunc[EVENT] = \&copy_three_elem_action;
+$actioncopyfunc[TEVENT] = \&copy_three_elem_action;
+$actioncopyfunc[RESET] = \&copy_four_elem_action;
+$actioncopyfunc[GETWINPOS] = \&copy_five_elem_action;
+$actioncopyfunc[SETWINPOS] = \&copy_five_elem_action;
+$actioncopyfunc[ASSIGN] = \&copy_three_elem_action;
+$actioncopyfunc[FREE] = \&copy_two_elem_action;
+$actioncopyfunc[EVAL] = \&copy_three_elem_action;
+$actioncopyfunc[CALL] = \&copy_call_lcall_action;
+$actioncopyfunc[LCALL] = \&copy_call_lcall_action;
+$actioncopyfunc[REWRITE] = \&copy_three_elem_action;
+$actioncopyfunc[IF] = \&copy_if_action;
+$actioncopyfunc[WHILE] = \&copy_while_action;
+$actioncopyfunc[BREAK] = \&copy_one_elem_action;
+$actioncopyfunc[CONTINUE] = \&copy_one_elem_action;
+
+$actionsubstfunc[NONE] = \&subst_none_break_continue;
+$actionsubstfunc[LOGONLY] = \&subst_two_elem_action;
+$actionsubstfunc[WRITE] = \&subst_three_elem_action;
+$actionsubstfunc[SHELLCOMMAND] = \&subst_two_elem_action;
+$actionsubstfunc[SPAWN] = \&subst_two_elem_action;
+$actionsubstfunc[PIPE] = \&subst_three_elem_action;
+$actionsubstfunc[CREATECONTEXT] = \&subst_create_set_action;
+$actionsubstfunc[DELETECONTEXT] = \&subst_two_elem_action;
+$actionsubstfunc[OBSOLETECONTEXT] = \&subst_two_elem_action;
+$actionsubstfunc[SETCONTEXT] = \&subst_create_set_action;
+$actionsubstfunc[ALIAS] = \&subst_three_elem_action;
+$actionsubstfunc[UNALIAS] = \&subst_two_elem_action;
+$actionsubstfunc[ADD] = \&subst_three_elem_action;
+$actionsubstfunc[PREPEND] = \&subst_three_elem_action;
+$actionsubstfunc[FILL] = \&subst_three_elem_action;
+$actionsubstfunc[REPORT] = \&subst_three_elem_action;
+$actionsubstfunc[COPYCONTEXT] = \&subst_copy_empty_etc_action;
+$actionsubstfunc[EMPTYCONTEXT] = \&subst_copy_empty_etc_action;
+$actionsubstfunc[POP] = \&subst_copy_empty_etc_action;
+$actionsubstfunc[SHIFT] = \&subst_copy_empty_etc_action;
+$actionsubstfunc[EXISTS] = \&subst_event_assign_etc_action;
+$actionsubstfunc[GETSIZE] = \&subst_event_assign_etc_action;
+$actionsubstfunc[GETALIASES] = \&subst_event_assign_etc_action;
+$actionsubstfunc[GETLIFETIME] = \&subst_event_assign_etc_action;
+$actionsubstfunc[GETCTIME] = \&subst_event_assign_etc_action;
+$actionsubstfunc[SETCTIME] = \&subst_three_elem_action;
+$actionsubstfunc[EVENT] = \&subst_event_assign_etc_action;
+$actionsubstfunc[TEVENT] = \&subst_three_elem_action;
+$actionsubstfunc[RESET] = \&subst_reset_action;
+$actionsubstfunc[GETWINPOS] = \&subst_getwpos_action;
+$actionsubstfunc[SETWINPOS] = \&subst_setwpos_action;
+$actionsubstfunc[ASSIGN] = \&subst_event_assign_etc_action;
+$actionsubstfunc[FREE] = \&subst_free;
+$actionsubstfunc[EVAL] = \&subst_event_assign_etc_action;
+$actionsubstfunc[CALL] = \&subst_call_lcall_action;
+$actionsubstfunc[LCALL] = \&subst_call_lcall_action;
+$actionsubstfunc[REWRITE] = \&subst_three_elem_action;
+$actionsubstfunc[IF] = \&subst_if_action;
+$actionsubstfunc[WHILE] = \&subst_while_action;
+$actionsubstfunc[BREAK] = \&subst_none_break_continue;
+$actionsubstfunc[CONTINUE] = \&subst_none_break_continue;
+
+$execactionfunc[NONE] = \&execute_none_action;
+$execactionfunc[LOGONLY] = \&execute_logonly_action;
+$execactionfunc[WRITE] = \&execute_write_action;
+$execactionfunc[SHELLCOMMAND] = \&execute_shellcmd_action;
+$execactionfunc[SPAWN] = \&execute_spawn_action;
+$execactionfunc[PIPE] = \&execute_pipe_action;
+$execactionfunc[CREATECONTEXT] = \&execute_create_action;
+$execactionfunc[DELETECONTEXT] = \&execute_delete_action;
+$execactionfunc[OBSOLETECONTEXT] = \&execute_obsolete_action;
+$execactionfunc[SETCONTEXT] = \&execute_set_action;
+$execactionfunc[ALIAS] = \&execute_alias_action;
+$execactionfunc[UNALIAS] = \&execute_unalias_action;
+$execactionfunc[ADD] = \&execute_add_action;
+$execactionfunc[PREPEND] = \&execute_prepend_action;
+$execactionfunc[FILL] = \&execute_fill_action;
+$execactionfunc[REPORT] = \&execute_report_action;
+$execactionfunc[COPYCONTEXT] = \&execute_copy_action;
+$execactionfunc[EMPTYCONTEXT] = \&execute_empty_action;
+$execactionfunc[POP] = \&execute_pop_action;
+$execactionfunc[SHIFT] = \&execute_shift_action;
+$execactionfunc[EXISTS] = \&execute_exists_action;
+$execactionfunc[GETSIZE] = \&execute_getsize_action;
+$execactionfunc[GETALIASES] = \&execute_getaliases_action;
+$execactionfunc[GETLIFETIME] = \&execute_getltime_action;
+$execactionfunc[GETCTIME] = \&execute_getctime_action;
+$execactionfunc[SETCTIME] = \&execute_setctime_action;
+$execactionfunc[EVENT] = \&execute_event_action;
+$execactionfunc[TEVENT] = \&execute_tevent_action;
+$execactionfunc[RESET] = \&execute_reset_action;
+$execactionfunc[GETWINPOS] = \&execute_getwpos_action;
+$execactionfunc[SETWINPOS] = \&execute_setwpos_action;
+$execactionfunc[ASSIGN] = \&execute_assign_action;
+$execactionfunc[FREE] = \&execute_free_action;
+$execactionfunc[EVAL] = \&execute_eval_action;
+$execactionfunc[CALL] = \&execute_call_action;
+$execactionfunc[LCALL] = \&execute_lcall_action;
+$execactionfunc[REWRITE] = \&execute_rewrite_action;
+$execactionfunc[IF] = \&execute_if_action;
+$execactionfunc[WHILE] = \&execute_while_action;
+$execactionfunc[BREAK] = \&execute_break_action;
+$execactionfunc[CONTINUE] = \&execute_continue_action;
 
 ### Read and process SEC options from command line and resource file
 
@@ -10010,6 +10915,8 @@ if ($pidfile) {
 
 ### Set signal handlers
 
+$sigreceived = 0;
+
 $refresh = 0;
 $SIG{HUP} = \&hup_handler;
 
@@ -10022,7 +10929,7 @@ $SIG{USR1} = \&usr1_handler;
 $openlog = 0;
 $SIG{USR2} = \&usr2_handler;
 
-$debuglevelset = 0;
+$debuglevelinc = 0;
 if (-t STDIN) {
   log_msg(LOG_NOTICE, 
           "Stdin connected to terminal, SIGINT can't be used for changing the logging level");
@@ -10032,123 +10939,6 @@ if (-t STDIN) {
 
 $terminate = 0;
 $SIG{TERM} = \&term_handler;
-
-### Set function pointers
-
-$matchfunc[SUBSTR] = \&match_substr;
-$matchfunc[REGEXP] = \&match_regexp;
-$matchfunc[PERLFUNC] = \&match_perlfunc;
-$matchfunc[CACHED] = \&match_cached;
-$matchfunc[NSUBSTR] = \&match_nsubstr;
-$matchfunc[NREGEXP] = \&match_nregexp;
-$matchfunc[NPERLFUNC] = \&match_nperlfunc;
-$matchfunc[NCACHED] = \&match_ncached;
-$matchfunc[TVALUE] = \&match_tvalue;
-
-$matchrulefunc[SINGLE] = \&match_1pattern_rule;
-$matchrulefunc[SINGLE_W_SCRIPT] = \&match_1pattern_rule;
-$matchrulefunc[SINGLE_W_SUPPRESS] = \&match_1pattern_rule;
-$matchrulefunc[PAIR] = \&match_2pattern_rule;
-$matchrulefunc[PAIR_W_WINDOW] = \&match_2pattern_rule;
-$matchrulefunc[SINGLE_W_THRESHOLD] = \&match_1pattern_rule;
-$matchrulefunc[SINGLE_W_2_THRESHOLDS] = \&match_1pattern_rule;
-$matchrulefunc[EVENT_GROUP] = \&match_eventgroup_rule;
-$matchrulefunc[SUPPRESS] = \&match_1pattern_rule;
-$matchrulefunc[JUMP] = \&match_1pattern_rule;
-
-$processrulefunc[SINGLE] = \&process_single_rule;
-$processrulefunc[SINGLE_W_SCRIPT] = \&process_singlewithscript_rule;
-$processrulefunc[SINGLE_W_SUPPRESS] = \&process_singlewithsuppress_rule;
-$processrulefunc[PAIR] = \&process_pair_rule;
-$processrulefunc[PAIR_W_WINDOW] = \&process_pairwithwindow_rule;
-$processrulefunc[SINGLE_W_THRESHOLD] = \&process_singlewiththreshold_rule;
-$processrulefunc[SINGLE_W_2_THRESHOLDS] = \&process_singlewith2thresholds_rule;
-$processrulefunc[EVENT_GROUP] = \&process_eventgroup_rule;
-$processrulefunc[JUMP] = \&process_jump_rule;
-
-$actioncopyfunc[NONE] = \&copy_one_elem_action;
-$actioncopyfunc[LOGONLY] = \&copy_two_elem_action;
-$actioncopyfunc[WRITE] = \&copy_three_elem_action;
-$actioncopyfunc[SHELLCOMMAND] = \&copy_two_elem_action;
-$actioncopyfunc[SPAWN] = \&copy_two_elem_action;
-$actioncopyfunc[PIPE] = \&copy_three_elem_action;
-$actioncopyfunc[CREATECONTEXT] = \&copy_create_set_action;
-$actioncopyfunc[DELETECONTEXT] = \&copy_two_elem_action;
-$actioncopyfunc[OBSOLETECONTEXT] = \&copy_two_elem_action;
-$actioncopyfunc[SETCONTEXT] = \&copy_create_set_action;
-$actioncopyfunc[ALIAS] = \&copy_three_elem_action;
-$actioncopyfunc[UNALIAS] = \&copy_two_elem_action;
-$actioncopyfunc[ADD] = \&copy_three_elem_action;
-$actioncopyfunc[FILL] = \&copy_three_elem_action;
-$actioncopyfunc[REPORT] = \&copy_three_elem_action;
-$actioncopyfunc[COPYCONTEXT] = \&copy_three_elem_action;
-$actioncopyfunc[EMPTYCONTEXT] = \&copy_three_elem_action;
-$actioncopyfunc[EVENT] = \&copy_three_elem_action;
-$actioncopyfunc[TEVENT] = \&copy_three_elem_action;
-$actioncopyfunc[RESET] = \&copy_four_elem_action;
-$actioncopyfunc[GETWINPOS] = \&copy_five_elem_action;
-$actioncopyfunc[SETWINPOS] = \&copy_five_elem_action;
-$actioncopyfunc[ASSIGN] = \&copy_three_elem_action;
-$actioncopyfunc[EVAL] = \&copy_three_elem_action;
-$actioncopyfunc[CALL] = \&copy_call_lcall_action;
-$actioncopyfunc[LCALL] = \&copy_call_lcall_action;
-$actioncopyfunc[REWRITE] = \&copy_three_elem_action;
-
-$actionsubstfunc[NONE] = \&subst_none_action;
-$actionsubstfunc[LOGONLY] = \&subst_two_elem_action;
-$actionsubstfunc[WRITE] = \&subst_three_elem_action;
-$actionsubstfunc[SHELLCOMMAND] = \&subst_two_elem_action;
-$actionsubstfunc[SPAWN] = \&subst_two_elem_action;
-$actionsubstfunc[PIPE] = \&subst_three_elem_action;
-$actionsubstfunc[CREATECONTEXT] = \&subst_create_set_action;
-$actionsubstfunc[DELETECONTEXT] = \&subst_two_elem_action;
-$actionsubstfunc[OBSOLETECONTEXT] = \&subst_two_elem_action;
-$actionsubstfunc[SETCONTEXT] = \&subst_create_set_action;
-$actionsubstfunc[ALIAS] = \&subst_three_elem_action;
-$actionsubstfunc[UNALIAS] = \&subst_two_elem_action;
-$actionsubstfunc[ADD] = \&subst_three_elem_action;
-$actionsubstfunc[FILL] = \&subst_three_elem_action;
-$actionsubstfunc[REPORT] = \&subst_three_elem_action;
-$actionsubstfunc[COPYCONTEXT] = \&subst_copy_empty_action;
-$actionsubstfunc[EMPTYCONTEXT] = \&subst_copy_empty_action;
-$actionsubstfunc[EVENT] = \&subst_event_assign_eval_action;
-$actionsubstfunc[TEVENT] = \&subst_three_elem_action;
-$actionsubstfunc[RESET] = \&subst_reset_action;
-$actionsubstfunc[GETWINPOS] = \&subst_getwpos_action;
-$actionsubstfunc[SETWINPOS] = \&subst_setwpos_action;
-$actionsubstfunc[ASSIGN] = \&subst_event_assign_eval_action;
-$actionsubstfunc[EVAL] = \&subst_event_assign_eval_action;
-$actionsubstfunc[CALL] = \&subst_call_lcall_action;
-$actionsubstfunc[LCALL] = \&subst_call_lcall_action;
-$actionsubstfunc[REWRITE] = \&subst_three_elem_action;
-
-$execactionfunc[NONE] = \&execute_none_action;
-$execactionfunc[LOGONLY] = \&execute_logonly_action;
-$execactionfunc[WRITE] = \&execute_write_action;
-$execactionfunc[SHELLCOMMAND] = \&execute_shellcmd_action;
-$execactionfunc[SPAWN] = \&execute_spawn_action;
-$execactionfunc[PIPE] = \&execute_pipe_action;
-$execactionfunc[CREATECONTEXT] = \&execute_create_action;
-$execactionfunc[DELETECONTEXT] = \&execute_delete_action;
-$execactionfunc[OBSOLETECONTEXT] = \&execute_obsolete_action;
-$execactionfunc[SETCONTEXT] = \&execute_set_action;
-$execactionfunc[ALIAS] = \&execute_alias_action;
-$execactionfunc[UNALIAS] = \&execute_unalias_action;
-$execactionfunc[ADD] = \&execute_add_action;
-$execactionfunc[FILL] = \&execute_fill_action;
-$execactionfunc[REPORT] = \&execute_report_action;
-$execactionfunc[COPYCONTEXT] = \&execute_copy_action;
-$execactionfunc[EMPTYCONTEXT] = \&execute_empty_action;
-$execactionfunc[EVENT] = \&execute_event_action;
-$execactionfunc[TEVENT] = \&execute_tevent_action;
-$execactionfunc[RESET] = \&execute_reset_action;
-$execactionfunc[GETWINPOS] = \&execute_getwpos_action;
-$execactionfunc[SETWINPOS] = \&execute_setwpos_action;
-$execactionfunc[ASSIGN] = \&execute_assign_action;
-$execactionfunc[EVAL] = \&execute_eval_action;
-$execactionfunc[CALL] = \&execute_call_action;
-$execactionfunc[LCALL] = \&execute_lcall_action;
-$execactionfunc[REWRITE] = \&execute_rewrite_action;
 
 ### Set various global variables
 
@@ -10181,114 +10971,6 @@ if ($intevents)  { internal_event("SEC_STARTUP"); }
 process_lists();
 $lastcleanuptime = time();
 
-### The main loop - read lines from input stream and process them
+### read lines from input stream and process them
 
-for (;;) {
-
-  my($line, $file, $ret);
-  my($context, $conffile);
-
-  # if there are pending events in the event buffer or the read buffer, 
-  # read new line from there, otherwise read new line from input stream.
-
-  if (scalar(@events)) { 
-    $line = shift @events;
-    $file = undef;
-  } elsif (scalar(@readbuffer)) { 
-    $line = shift @readbuffer;
-    $file = shift @readbuffer;
-  } else {
-    read_line($line, $file);
-  }
-
-  if (defined($line)) {
-
-    if ($intcontexts) {
-      $context = defined($file)?$inputsrc{$file}->{"context"}:"_INTERNAL_EVENT";
-      $context_list{$context} = $int_contexts{$context};
-    }
-
-    # update input buffers (they are implemented as circular buffers, since
-    # according to benchmarks an array queue using shift and push is slower)
-    # note that joint buffer is also maintained during --nojointbuf mode,
-    # since @input_sources list is used for pattern matching purposes
-
-    $bufpos = ($bufpos + 1) % $bufsize;
-    $input_buffer[$bufpos] = $line;
-    $input_sources[$bufpos] = $file;
-
-    if (!$jointbuf) {
-      if (defined($file)) {
-        $input_buffers{$file}->{"BufPos"} = ($input_buffers{$file}->{"BufPos"} + 1) % $bufsize;
-        $input_buffers{$file}->{"Events"}->[$input_buffers{$file}->{"BufPos"}] = $line;
-      } else {
-        $event_buffer{"BufPos"} = ($event_buffer{"BufPos"} + 1) % $bufsize;
-        $event_buffer{"Events"}->[$event_buffer{"BufPos"}] = $line;
-      }
-    }
-
-    # clear pattern match cache
-
-    %pmatch_cache = ();
-
-    # process rules from configuration files
-
-    foreach $conffile (@maincfiles)  { process_rules($conffile); }
-
-    if ($intcontexts)  { delete $context_list{$context}; }
-
-    if (defined($file))  { ++$inputsrc{$file}->{"lines"}; }
-    ++$processedlines;
-
-  } elsif (!$file) {
-
-    # if we didn't get new data and -tail option was specified, sleep 
-    # for $poll_timeout seconds; if -notail option is active and all
-    # input files have been closed, exit
-
-    if ($tail) {
-
-      # sleep with select()
-
-      $ret = select(undef, undef, undef, $poll_timeout);
-
-      if ((!defined($ret) || $ret < 0)  &&  $! != EINTR) {
-        log_msg(LOG_CRIT, "Select error ($!), exiting!");
-        child_cleanup();
-        exit(1);
-      }
-
-    } elsif (!grep($inputsrc{$_}->{"open"}, @inputfiles)) {
-
-      # after generating SEC_SHUTDOWN event, SEC will sleep for TERMTIMEOUT 
-      # seconds, so that child processes that were triggered by SEC_SHUTDOWN 
-      # have time to create a signal handler for SIGTERM if they wish
-
-      if ($intevents) {
-        internal_event("SEC_SHUTDOWN"); 
-        sleep(TERMTIMEOUT);
-      }
-
-      child_cleanup();
-      exit(0); 
-
-    }
-
-  }
-
-  # search lists for accomplishing timed tasks and removing obsolete elements
-
-  if (time() - $lastcleanuptime >= $cleantime) {
-    process_lists();
-    $lastcleanuptime = time();
-  }
-
-  # manage child processes
-
-  if (scalar(%children))  { check_children(); }
-
-  # check signal flags
-
-  check_signals();
-
-}
+main_loop();

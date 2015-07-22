@@ -1,3 +1,22 @@
+--- version 2.7.0
+
+* added support for the 'if', 'while', 'break', 'continue', 'prepend', 
+  'pop', 'shift', 'exists', 'getsize', 'getaliases', 'getltime', 'getctime',
+  'setctime' and 'free' actions.
+
+* added support for varset and :> operators in context expressions.
+
+* added support for $:{cacheentry:varname} match variables which refer
+  to variables from previously cached matches.
+
+* starting from this version, PerlFunc pattern can set named match variables.
+
+* starting from this version, the 'set' action does not change the context
+  lifetime if '-' is specified for lifetime.
+
+* changed the dumpfile format to highlight frequently matching rules.
+
+
 --- version 2.6.2
 
 * added support for the --jointbuf and --nojointbuf command line options.

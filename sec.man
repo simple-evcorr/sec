@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.6.2 - sec.man
-.\" Copyright (C) 2000-2012 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.7.0 - sec.man
+.\" Copyright (C) 2000-2013 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "January 2012" "SEC 2.6.2"
+.TH sec 1 "January 2013" "SEC 2.7.0"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -186,8 +186,12 @@ number of operations created by the rule. For example, if we set the
 field to 
 .IR "Three SSH login failures within 1m" ,
 the root-user would be also alerted on 3 SSH login failure events 
-for *different* users within 1 minute (see EVENT CORRELATION OPERATIONS 
-section for more information).
+for *different* users within 1 minute. 
+In order to avoid clashes between operations started by different rules, 
+operation ID contains not only the value set by the
+.I desc
+field, but also the rule file name and the rule number inside the file
+(see EVENT CORRELATION OPERATIONS section for more information).
 .PP
 The following simple example demonstrates that event correlation schemes
 can be defined by combining several rules. In this example, two rules
@@ -648,9 +652,18 @@ match variables $+{name} and the $0 variable. The $0 variable holds the entire
 string of last N input lines that the regular expression has matched. 
 Named match variables can be created in newer versions of Perl regular 
 expression language, e.g., 
-(?'myvar'AB|CD) sets $+{myvar} to AB or CD. The special named match variable
+(?<myvar>AB|CD) sets $+{myvar} to AB or CD. The special named match variable
 $+{_inputsrc} is created by SEC and holds input file name(s)
 where matching line(s) came from.
+.sp
+For example, the following pattern matches the SSH "Connection from" event,
+and sets $0 to the entire event line, both $1 and $+{ip} to the IP address 
+of the remote node, $2 to the port number at the remote node, 
+and $+{_inputsrc} to the input file name:
+.sp
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Connection from (?<ip>[\\d.]+) port (\\d+)
 .sp
 Also, SEC allows for match caching and for the creation of additional named 
 match variables through variable maps which are defined with the
@@ -747,11 +760,13 @@ lines L1, ..., LN are coming from the same input file:
 function(L1, L2, ..., LN, F)
 .sp
 Also note that if the input line is a synthetic event, the input file name 
-equals to 'undef'.
+is Perl undefined value.
 .sp
-If the function returns several values or a single value that is TRUE in 
-boolean context, the pattern matches. If the pattern matches, return values 
-will be assigned to numbered match variables ($1, $2, etc.). 
+If the function returns several values or a single value that is true in Perl
+boolean context, the pattern matches. If the function returns no values or
+a single value that is false in Perl boolean context (0, empty string or 
+undefined value), the pattern does not match. If the pattern matches, 
+return values will be assigned to numbered match variables ($1, $2, etc.). 
 Like with RegExp patterns, the $0 variable is set to matching input line(s),
 the $+{_inputsrc} variable is set to input file name(s),
 and named match variables can be created from variable maps.
@@ -768,6 +783,14 @@ while two matching lines are concatenated (with the newline character
 between them) and assigned to $0. The file name(s) for matching lines are 
 assigned to $+{_inputsrc}.
 .sp
+The following pattern produces a match for any line, and sets $1, $2 and
+$3 variables to strings "abc", "def" and "ghi", respectively (also,
+$0 is set to the whole input line and $+{_inputsrc} to the input file name):
+.sp
+ptype=perlfunc
+.br
+pattern=sub { return ("abc", "def", "ghi"); }
+.sp
 The following pattern definition produces a match if the input line is not
 a synthetic event and contains either the string "abc" or "def". The $0 
 variable is set to the matching line, while $1, $+{file} and $+{_inputsrc}
@@ -775,11 +798,26 @@ are set to the name of the input file:
 .sp
 ptype=perlfunc
 .br
-pattern=sub { if (defined($_[1]) && $_[0] =~ /(?:abc|def)/) \\
+pattern=sub { if (defined($_[1]) && $_[0] =~ /abc|def/) \\
 .br
 { return $_[1]; } return 0; }
 .br
 varmap= file=1
+.sp
+Finally, if a function pattern returns a single value which is a reference
+to a Perl hash, named match variables are created from key-value pairs 
+in the hash. For example, the following pattern matches a line if it contains
+either the string "three" or "four". Apart from setting $0 and $+{_inputsrc},
+the pattern also creates match variables $+{three} and $+{four}, and sets 
+them to 3 and 4, respectively:
+.sp
+ptype=perlfunc
+.br
+pattern=sub { my(%hash); \\
+.br
+if ($_[0] !~ /three|four/) { return 0; } \\
+.br
+$hash{"three"} = 3; $hash{"four"} = 4; return \\%hash; }
 .TP
 .I Cached
 pattern is a name that is searched in the pattern match cache (entries are
@@ -791,7 +829,7 @@ For example, if the input line matches the following pattern
 .sp
 ptype=perlfunc
 .br
-pattern=sub { if (defined($_[1]) && $_[0] =~ /(?:abc|def)/) \\
+pattern=sub { if (defined($_[1]) && $_[0] =~ /abc|def/) \\
 .br
 { return $_[1]; } return 0; }
 .br
@@ -844,12 +882,34 @@ variable number must be enclosed in braces. For example, the string
 "Received ${1}0" becomes "Received <value_of_1st_var>0" after substitution, 
 while the string "Received $10" would become "Received <value_of_10th_var>".
 .PP
-If the match variable was not set by the pattern or was set to 'undef',
-it is substituted with an empty string (i.e., a zero-width string). 
+If the match variable was not set by the pattern, it is substituted with an 
+empty string (i.e., a zero-width string). 
 Thus the string "Received $10!" becomes "Received !" after substitution if
 the pattern did not set $10.
-(Note that prior to SEC-2.6, unset or undefined variables 
-were *not* substituted.)
+(Note that prior to SEC-2.6, unset variables were *not* substituted.)
+.PP
+In the current version of SEC, names of $+{name} match variables
+must comply with the following naming convention -- the first character 
+can be a letter or underscore, while remaining characters can be letters, 
+digits, underscores and exclamation marks (!). However, when setting named 
+match variables from a pattern, it is recommended to begin the variable 
+name with a letter, since names of special automatically created variables 
+begin with an underscore (e.g., $+{_inputsrc}).
+.PP
+After the pattern has matched an event and match variables have been set, 
+it is also possible to refer to previously cached match variables with 
+the syntax 
+.IR $:{entryname:varname} , 
+where
+.I entryname
+is the name of the pattern match cache entry, and
+.I varname
+is the name of the variable stored under the entry. 
+For example, if the variable $+{ip} has been previously cached under 
+the entry "SSH", it can be referred as $:{SSH:ip}.
+For the reasons of efficiency, the $:{entryname:varname} syntax is not 
+supported for fast pattern types which do not set match variables (i.e., 
+SubStr, NSubStr and TValue).
 .PP
 Note that since Pair and PairWithWindow rules have two patterns, match
 variables of the first pattern are shadowed for some rule fields when the 
@@ -884,7 +944,7 @@ operators:
 .br
 !  - logical NOT, 
 .br
-&&   - short-circuit logical AND, 
+&&  - short-circuit logical AND, 
 .br
 ||  - short-circuit logical OR. 
 .br
@@ -896,13 +956,23 @@ the Perl
 .BR eval () 
 function. The 
 .BR eval () 
-must return a code reference (see also PERL INTEGRATION section).
+must return a code reference (see also PERL INTEGRATION section for more
 information). If any text precedes the arrow, it is treated as a list of 
-parameters for the function. Parameters must separated by whitespace and may 
-contain match variables set by pattern(s).
+parameters for the function. Parameters must be separated by whitespace and 
+may contain match variables set by pattern(s).
 In order to evaluate the Perl function operand, the function is called in 
-the Perl scalar context. If the return value of the function is TRUE in the
+the Perl scalar context. If the return value of the function is true in the
 Perl boolean context, the operand evaluates TRUE, otherwise it evaluates FALSE.
+.PP
+If instead of arrow the :> operator is used, each parameter is treated as 
+a name of an entry in the pattern match cache. In that case, the parameter 
+is passed to the Perl function as a reference to the Perl hash which contains 
+all match variables for the given entry. In the hash, each key-value pair 
+represents some variable name and value, e.g., if cached match variable $+{ip} 
+is holding 10.1.1.1, the hash contains the value 
+.B 10.1.1.1 
+with the key
+.BR ip .
 .PP
 If the operand begins with the equal sign (=), the following text must be
 a Perl miniprogram which is a valid parameter for the Perl 
@@ -914,7 +984,7 @@ executed by calling the Perl
 function in the Perl scalar context (see also PERL INTEGRATION section).
 If the return value from 
 .BR eval ()
-is TRUE in the Perl boolean context, the operand evaluates TRUE, otherwise it
+is true in the Perl boolean context, the operand evaluates TRUE, otherwise it
 evaluates FALSE.
 .PP
 Note that since Perl functions, miniprograms, and parameter lists may contain
@@ -924,6 +994,13 @@ it is strongly recommended to enclose them in parentheses, e.g.,
 ($1 $2) -> (sub { return ($_[0] != $_[1]); })
 .PP
 =({my($temp) = 0; return !$temp;})
+.PP
+.PP
+If the
+.I varset
+keyword precedes the operand, it is treated as a name of an entry in 
+the pattern match cache. The operand evaluates TRUE if the given entry exists,
+and FALSE otherwise.
 .PP
 If the operand is not a Perl function or miniprogram, it is treated as 
 a context name. As other operands, context names may contain match variables. 
@@ -939,34 +1016,43 @@ However, if the expression does not contain match variables and many input
 events are known to match the pattern but not the expression,
 the []-operator could save substantial amount of CPU time. 
 .PP
-In order to illustrate the discussion, consider the following context 
-expressions:
+In order to illustrate the discussion, consider the context expressions below.
+The following expression evaluates TRUE if the /var/log/messages file does 
+not exist or was last modified more than 1 hour ago:
 .PP
 -> ( sub { my(@stat) = stat("/var/log/messages"); \\
 .br
 return (!scalar(@stat) || time() - $stat[9] > 3600); } )
 .PP
+The following expression evaluates TRUE if the values of $1 and $2 match 
+variables are numerically unequal and the context 
+.B C1 
+exists:
+.PP
 ($1 $2) -> (sub { return ($_[0] != $_[1]); }) && C1
 .PP
-!(C1 || C2) && =("$1" eq "myhost.mydomain")
-.PP
-The first expression evaluates TRUE if the /var/log/messages file does not 
-exist or was last modified more than 1 hour ago. The second expression 
-evaluates TRUE if the values of $1 and $2 match variables are numerically 
-unequal and the context 
-.B C1 
-exists.
-The third expression evaluates TRUE when neither the context 
+The following expression evaluates TRUE when neither the context 
 .B C1 
 nor the context 
 .B C2 
 exists and the value of $1 the variable equals to the string "myhost.mydomain". 
-Note that since && is a short-circuiting operator, the Perl code of the third 
-expression is not evaluated if 
+Note that since && is a short-circuiting operator, the Perl code is not 
+evaluated if 
 .B C1
 and/or
 .B C2
-exist. 
+exist: 
+.PP
+!(C1 || C2) && =("$1" eq "myhost.mydomain")
+.PP
+The following expression evaluates true if the pattern match cache entry
+.B SSH
+exists and under this entry, the value of the match variable $+{user}
+equals to the string "risto". Note that inside the Perl function, the first 
+input parameter $_[0] holds a reference to the hash of variable name-value 
+pairs:
+.PP
+varset SSH && SSH :> ( sub { $_[0]->{"user"} eq "risto" } )
 .SS "ACTION LISTS"
 Action lists are defined with the
 .I action*
@@ -1032,12 +1118,11 @@ Whenever a rule field goes through several substitution rounds, the $
 or % characters are masked inside values substituted during earlier rounds,
 in order to avoid unwanted side effects during later rounds.
 .PP
-If the action list variable has not been set or its value is 'undef',
+If the action list variable has not been set,
 it is substituted with an empty string (i.e., a zero-width string).
 Thus the string "Value of A is: %a" becomes "Value of A is: " after
 substitution if the variable %a is unset.
-(Note that prior to SEC-2.6, unset or undefined variables 
-were *not* substituted.)
+(Note that prior to SEC-2.6, unset variables were *not* substituted.)
 .PP
 Finally, the values are substituted as strings, therefore values of other 
 types (e.g., references) lose their original meaning, unless explicitly noted 
@@ -1123,12 +1208,17 @@ action, except that the action list of the context <name> (if present)
 is executed before deletion.
 .TP 
 .I set <name> <time> [<action list>]
-Change settings for the context <name> -- the remaining lifetime of the 
-context is set to <time> seconds, and if the <action list> parameter is 
-given, the context action list is set to <action list>. 
+Change settings for the context <name>. The creation time of the context
+is set to the current time, and the lifetime of the context is set to <time> 
+seconds.
+If the <action list> parameter is given, the context action list is set 
+to <action list>. 
 The <name> parameter may not contain whitespace and defaults to %s.
-The <time> parameter must evaluate to an unsigned integer at runtime.
-Specifying 0 for <time> or omitting the value means infinite lifetime.
+The <time> parameter must evaluate to an unsigned integer or hyphen (-) 
+at runtime.
+Specifying 0 for <time> means infinite lifetime.
+If <time> equals to -, the creation time and lifetime of the context are 
+not changed.
 If <action list> contains several actions, the list must be enclosed in
 parentheses. In <action list>, the internal context name _THIS may be used
 for referring to the current context (see INTERNAL EVENTS AND CONTEXTS
@@ -1170,6 +1260,12 @@ before adding the string to event store.
 If <string> is a multi-line string (i.e., it contains newlines), it is
 split into lines, and each line is appended to the event store separately.
 .TP 
+.I prepend <name> [<string>]
+Similar to the
+.I add 
+action, except that the string <string> is prepended to the beginning
+of the event store of context <name>. 
+.TP 
 .I fill <name> [<string>]
 Similar to the
 .I add 
@@ -1199,6 +1295,50 @@ Similar to the
 action, except that the event store of the context <name> will be emptied 
 after the assignment. If %<var> is omitted, the content of the event store
 is dropped without an assignment.
+.TP 
+.I pop <name> %<var>
+Remove the last string from the event store of context <name>, and assign
+it to the action list variable %<var>. If the event store is empty, %<var> 
+is set to empty string.
+If the context <name> does not exist, the value of %<var> does not change.
+.TP 
+.I shift <name> %<var>
+Remove the first string from the event store of context <name>, and assign
+it to the action list variable %<var>. If the event store is empty, %<var> 
+is set to empty string.
+If the context <name> does not exist, the value of %<var> does not change.
+.TP 
+.I exists %<var> <name>
+If the context <name> exists, set the action list variable %<var> to 1, 
+otherwise set %<var> to 0.
+.TP 
+.I getsize %<var> <name>
+Find the number of strings in the event store of context <name>, and
+assign this number to the action list variable %<var>.
+If the context <name> does not exist, %<var> is set to Perl undefined value.
+.TP 
+.I getaliases %<var> <name>
+Find all alias names for context <name>, join the names into a multi-line 
+string "alias1<NEWLINE>...<NEWLINE>aliasn", and assign this string to
+the action list variable %<var>.
+If the context <name> does not exist, the value of %<var> does not change.
+.TP 
+.I getltime %<var> <name>
+Find the lifetime of context <name>, and assign this number to the action 
+list variable %<var>.
+If the context <name> does not exist, the value of %<var> does not change.
+.TP 
+.I getctime %<var> <name>
+Find the creation time of context <name>, and assign this number to the action 
+list variable %<var>.
+If the context <name> does not exist, the value of %<var> does not change.
+.TP 
+.I setctime <time> <name>
+Set the creation time of context <name> to <time>. 
+The <time> parameter must evaluate to seconds since Epoch (as reported by the
+.BR time (2)
+system call), and must reflect a time moment between the previous creation
+time and the current time (both endpoints included).
 .TP 
 .I event [<time>] [<string>]
 After <time> seconds, create a synthetic event <string>. 
@@ -1264,6 +1404,9 @@ For additional information, see EVENT CORRELATION OPERATIONS section.
 Assign string <string> to the action list variable %<var>. 
 Default value for <string> is %s.
 .TP 
+.I free %<var>
+Unset the action list variable %<var>. 
+.TP 
 .I eval %<var> <code>
 The parameter <code> is a Perl miniprogram that is compiled and executed
 by calling the Perl 
@@ -1273,7 +1416,7 @@ If the miniprogram returns a single value,
 it is assigned to the action list variable %<var>. If the miniprogram 
 returns several values s1,...,sn, they are joined into a multi-line string
 "s1<NEWLINE>...<NEWLINE>sn", and this string is assigned to %<var>.
-If no value is returned, %<var> is set to 'undef'. If
+If no value is returned, %<var> is set to Perl undefined value. If
 .BR eval ()
 fails, the value of %<var> does not change.
 Since most Perl programs contain semicolons which are also employed by SEC
@@ -1293,7 +1436,7 @@ in the <paramlist> string.
 If the function returns a single value, it is assigned to %<var>.
 If the function returns several values s1,...,sn, they are joined into 
 a multi-line string "s1<NEWLINE>...<NEWLINE>sn", and this string is assigned 
-to %<var>. If no value is returned, %<var> is set to 'undef'. 
+to %<var>. If no value is returned, %<var> is set to Perl undefined value. 
 If the function encounters a fatal runtime error or %<ref> is not a code 
 reference, the value of %<var> does not change.
 For additional information, see PERL INTEGRATION section.
@@ -1313,7 +1456,7 @@ in the <paramlist> string.
 If the function returns a single value, it is assigned to %<var>.
 If the function returns several values s1,...,sn, they are joined into 
 a multi-line string "s1<NEWLINE>...<NEWLINE>sn", and this string is assigned 
-to %<var>. If no value is returned, %<var> is set to 'undef'.
+to %<var>. If no value is returned, %<var> is set to Perl undefined value.
 If the function encounters a fatal runtime error, 
 the value of %<var> does not change.
 Since most Perl functions contain semicolons which are also employed by SEC
@@ -1341,6 +1484,27 @@ leading empty lines. If <string> contains more than <lnum> lines,
 only leading <lnum> lines from <string> are written into the buffer. 
 Default value for <string> is %s. 
 For additional information, see INPUT PROCESSING AND TIMING section.
+.TP
+.I if %<var> ( <action list> ) [ else ( <action list2> ) ]
+If the action list variable %<var> evaluates true in the Perl boolean context
+(i.e., it holds a defined value which is neither 0 nor empty string), execute 
+the action list <action list>. If the second action list <action list2> is 
+given with the optional else-statement, it is executed if %<var> either does 
+not exist or evaluates false (i.e., %<var> holds 0, empty string or Perl 
+undefined value).
+.TP
+.I while %<var> ( <action list> )
+Execute the action list <action list> repeatedly until the action list 
+variable %<var> evaluates true in the Perl boolean context
+(i.e., it holds a defined value which is neither 0 nor empty string). 
+.TP
+.I break
+If used inside a while-loop, terminates its execution; 
+otherwise terminates the execution of the entire action list.
+.TP
+.I continue
+If used inside a while-loop, starts the next iteration of the loop; 
+otherwise terminates the execution of the entire action list.
 .PP
 .B Examples:
 .PP
@@ -1370,6 +1534,17 @@ Create a subroutine for weeding out comment lines from the input list, and
 use this subroutine for removing comment lines from the event store of the 
 context 
 .BR C1 .
+.PP
+The following action list achieves the same goal as the previous action list
+with while and if actions:
+.PP
+getsize %size C1; while %size ( shift C1 %event; \\
+.br
+lcall %nocomment %event -> ( sub { $_[0] !~ /^#/ } ); \\
+.br
+if %nocomment ( add C1 %event ); \\
+.br
+lcall %size %size -> ( sub { $_[0]-1; } ) )
 .SS "OTHER ISSUES"
 As already noted, SEC context expressions and action lists may contain
 parentheses which are used for grouping and masking purposes. When SEC parses
@@ -2468,8 +2643,7 @@ login events, e.g.,
 .PP
 Dec 27 19:00:06 test kernel: iptables: IN=eth0 OUT= MAC=00:13:72:8a:83:d2:00:1b:25:07:e2:1b:08:00 SRC=10.1.2.7 DST=10.2.5.5 LEN=60 TOS=0x00 PREC=0x00 TTL=62 ID=1881 DF PROTO=TCP SPT=34342 DPT=23 WINDOW=5840 RES=0x00 SYN URGP=0
 .br
-Dec 27 19:00:24 test sshd[10526]: Failed password for risto from 10.1.2.7 port 5
-2622 ssh2
+Dec 27 19:00:24 test sshd[10526]: Failed password for risto from 10.1.2.7 port 52622 ssh2
 .br
 Dec 27 19:00:27 test sshd[10526]: Accepted password for risto from 10.1.2.7 port 52622 ssh2
 .PP
