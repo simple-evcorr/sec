@@ -1,3 +1,18 @@
+--- version 2.7.4
+
+* added support for the 'owritecl' action.
+
+* added support for the --childterm, --nochildterm, --rwfifo and --norwfifo
+  command line options.
+
+* starting from this version, SEC_LOGROTATE internal event is generated 
+  on the reception of SIGUSR2.
+
+* starting from this version, the --notail option implies reading from
+  input pipe until all writers have closed the pipe (in previous versions,
+  --notail closed the pipe when no data were available for reading)
+
+
 --- version 2.7.3
 
 * improvements to 'spawn', 'write', 'udgram', 'ustream', 'udpsock' and 

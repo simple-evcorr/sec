@@ -1,14 +1,18 @@
-SEC (Simple Event Correlator) 2.7.3
+SEC (Simple Event Correlator) 2.7.4
 
 Introduction:
 -------------
-SEC is a tool for accomplishing event correlation tasks in the domains of 
-log analysis, system monitoring, network and security management, etc.
+SEC is an event correlation tool for advanced event processing which can be 
+harnessed for event log monitoring, for network and security management, for 
+fraud detection, and for any other task which involves event correlation.
 Event correlation is a procedure where a stream of events is processed, 
 in order to detect (and act on) certain event groups that occur within 
-predefined time windows. Unlike most other event correlation products which
-are heavyweight solutions, SEC is a lightweight and platform-independent
-event correlator which runs as a single process.
+predefined time windows. Unlike many other event correlation products which 
+are heavyweight solutions, SEC is a lightweight and platform-independent 
+event correlator which runs as a single process. The user can start it as a
+daemon, employ it in shell pipelines, execute it interactively in a terminal, 
+run many SEC processes simultaneously for different tasks, and use it in a 
+wide variety of other ways.
 
 Availability:
 -------------
@@ -34,6 +38,12 @@ README - this file
 contrib - SEC user contributions
 sec - SEC program
 sec.man - SEC man page
+
+Installation instructions:
+--------------------------
+Copy the SEC program and man page to appropriate directories, for example:
+cp sec /usr/local/bin
+cp sec.man /usr/local/share/man/man1/sec.1
 
 Author: 
 -------

@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.7.3 - sec.man
+.\" SEC (Simple Event Correlator) 2.7.4 - sec.man
 .\" Copyright (C) 2000-2013 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "May 2013" "SEC 2.7.3"
+.TH sec 1 "June 2013" "SEC 2.7.4"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -68,6 +68,10 @@ sec \- simple event correlator
 .br
 [--keepopen | --nokeepopen]
 .br
+[--rwfifo | --norwfifo]
+.br
+[--childterm | --nochildterm]
+.br
 [--intevents | --nointevents]
 .br
 [--intcontexts | --nointcontexts]
@@ -78,13 +82,17 @@ sec \- simple event correlator
 .br
 [--version]
 .SH DESCRIPTION
-SEC is a tool for accomplishing event correlation tasks in the domains of 
-log analysis, system monitoring, network and security management, etc.
+SEC is an event correlation tool for advanced event processing which can
+be harnessed for event log monitoring, for network and security management, 
+for fraud detection, and for any other task which involves event correlation.
 Event correlation is a procedure where a stream of events is processed, 
 in order to detect (and act on) certain event groups that occur within 
 predefined time windows. Unlike many other event correlation products which
 are heavyweight solutions, SEC is a lightweight and platform-independent
-event correlator which runs as a single process.
+event correlator which runs as a single process. The user can start it as
+a daemon, employ it in shell pipelines, execute it interactively in
+a terminal, run many SEC processes simultaneously for different tasks, 
+and use it in a wide variety of other ways.
 .PP
 SEC reads lines from files, named pipes, or standard input,
 matches the lines with patterns (regular expressions, Perl subroutines, etc.) 
@@ -98,9 +106,26 @@ SEC can produce output by executing external programs (e.g.,
 .BR snmptrap (1)
 or
 .BR mail (1)), 
-by writing to files, by calling precompiled Perl subroutines, etc. 
+by writing to files, by sending data to TCP and UDP based servers, 
+by calling precompiled Perl subroutines, etc. 
 .PP
-Some rules start event correlation operations, while other rules react
+SEC can be run in various ways. For example, the following command line
+starts it as a daemon, in order to monitor events appended to the 
+/var/log/messages syslog file with rules from /etc/sec/syslog.rules:
+.PP
+/usr/bin/sec --detach --conf=/etc/sec/syslog.rules \\
+             --input=/var/log/messages
+.PP
+Each time /var/log/messages is rotated, a new instance of /var/log/messages
+is opened and processed from the beginning. The following command line
+runs SEC in a shell pipeline, configuring it to process lines from standard
+input, and to exit when the /usr/bin/nc tool closes its standard output 
+and exits:
+.PP
+/usr/bin/nc -l 8080 | /usr/bin/sec --notail --input=- \\
+                                   --conf=/etc/sec/my.conf
+.PP
+Some SEC rules start event correlation operations, while other rules react
 immediately to input events or system clock. For example, suppose that SEC
 has been started with the following command line
 .PP
@@ -331,6 +356,9 @@ respectively.
 if an input file is in the closed state (e.g., SEC fails to open the file at 
 startup, because it has not been created yet), SEC will attempt
 to reopen the file after every <reopen_timeout> seconds until open succeeds. 
+This option has no meaning when the
+.B \-\-notail
+option is also specified.
 Note that 
 .B \-\-reopen_timeout
 is a synonym for
@@ -447,17 +475,26 @@ Default is
 if the
 .B \-\-notail
 option is specified, SEC will process all data that are currently available 
-in input files and exit after reaching all EOFs. Default is
-.B \-\-tail
--- SEC will jump to the end of input files and wait for new lines to arrive.
+in input files and exit after reaching all EOFs. 
+If all input is received from a pipe and the
+.B \-\-notail
+option is given, SEC terminates when the last writer closes the pipe 
+(EOF condition). Please note that with named pipes
+.B \-\-notail
+should be used with
+.BR \-\-norwfifo .
 With the
 .B \-\-tail
-option, SEC follows an input file both by its name and i-node, and thus
-handles input file rotations seamlessly.
+option, SEC will jump to the end of input files and wait for new lines to 
+arrive.
+Each input file is tracked both by its name and i-node, and
+input file rotations are handled seamlessly.
 If the input file is recreated or truncated, SEC will reopen it and process 
 its content from the beginning. If the input file is removed (i.e., there is
 just an i-node left without a name), SEC will keep the i-node open and wait 
 for the input file recreation. 
+Default is
+.BR \-\-tail .
 .TP 
 .BR \-\-fromstart ", " \-\-nofromstart
 these flags have no meaning when the
@@ -516,6 +553,31 @@ The
 option forces SEC to close and (re)open all input files during soft restarts.
 Default is
 .BR \-\-nokeepopen .
+.TP
+.BR \-\-rwfifo ", " \-\-norwfifo
+if the
+.BR \-\-norwfifo
+option is specified, named pipe input files are opened in read-only mode. 
+In this mode, the named pipe has to be reopened when the last writer
+closes the pipe, in order to clear the EOF condition on the pipe. With the
+.BR \-\-rwfifo
+option, named pipe input files are opened in read-write mode, although
+SEC never writes to the pipes. In this mode, the pipe does not need to be 
+reopened when an external writer closes it, since there is always at least 
+one writer on the pipe and EOF will never appear. Therefore, if the
+.BR \-\-notail
+option has been given,
+.BR \-\-norwfifo
+should also be specified.
+Default is
+.BR \-\-rwfifo .
+.TP
+.BR \-\-childterm ", " \-\-nochildterm
+if the
+.B \-\-childterm
+option is specified, SEC will send the SIGTERM signal to all its child processes
+when it terminates or goes through a full restart. Default is
+.BR \-\-childterm . 
 .TP
 .BR \-\-intevents ", " \-\-nointevents
 SEC will generate internal events when it starts up, when it receives
@@ -1171,6 +1233,17 @@ actions will access an already open file.
 However, several signals cause the file to be closed and reopened
 (see SIGNALS section for more information).
 Default value for <string> is %s.
+.TP
+.I owritecl <filename> [<string>]
+Similar to the
+.I write 
+action, except that the file <filename> is opened and closed at each write. 
+Also, the string <string> is written without a terminating newline. 
+If the file has already been opened by a previous
+.I write
+action, 
+.I owritecl
+does not use existing filehandle, but opens and closes the file separately.
 .TP 
 .I udgram <filename> [<string>]
 String <string> is written to the UNIX datagram socket <filename> 
@@ -2781,7 +2854,6 @@ pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from ([\\d.]+) port \\d+ ssh2
 desc=Three SSH login failures within 1m for user $1 from $2
 .br
 action=pipe '%t: %s' /bin/mail root@localhost; \\
-.br
        create SUPPRESS_IP_$2 3600
 .br
 window=60
@@ -3332,15 +3404,22 @@ SEC_SOFTRESTART - generated after SEC has received the
 signal (this event will be the first event that SEC sees after reloading
 its configuration)
 .PP
+SEC_LOGROTATE - generated after SEC has received the
+.B SIGUSR2
+signal (this event will be the first event that SEC sees after reopening 
+its log file and closing its outputs)
+.PP
 SEC_SHUTDOWN - generated when SEC receives the
 .B SIGTERM
 signal, or when SEC reaches all EOFs of input files after being started with 
 the
 .B \-\-notail
-option. After generating SEC_SHUTDOWN event, SEC sleeps for 3 seconds 
-before sending SIGTERM to its child processes (if a child process was created
-immediately before SEC_SHUTDOWN, this delay leaves the process enough 
-time for setting the signal handler for SIGTERM).
+option. With the
+.B \-\-childterm
+option, SEC sleeps for 3 seconds after generating SEC_SHUTDOWN event, and then 
+sends SIGTERM to its child processes (if a child process was triggered by 
+SEC_SHUTDOWN, this delay leaves the process enough time for setting a signal 
+handler for SIGTERM).
 .PP
 Before generating an internal event, SEC sets up a context named 
 SEC_INTERNAL_EVENT, in order to disambiguate internal events from
@@ -3395,10 +3474,11 @@ data to the pipe reliably.
 .PP
 After forking an external program, SEC continues immediately, and checks
 the program status periodically until the program exits. The running time of 
-a child process is not limited in any way, and before finishing gracefully, 
-SEC sends the
+a child process is not limited in any way. With the
+.B \-\-childterm
+option, SEC sends the
 .B SIGTERM 
-signal to all child processes that are still running.
+signal to all child processes when it terminates.
 If some special exit procedures need to be accomplished in the child process
 (or the child wishes to ignore 
 .BR SIGTERM ), 
@@ -3419,7 +3499,7 @@ without forking a new process, e.g.,
 .PP
 action=spawn exec /usr/local/bin/myscript.pl 2>/var/log/myscript.log
 .PP
-Finally, note that if an action list includes two actions which fork
+Note that if an action list includes two actions which fork
 external programs, the execution order these programs is not determined
 by the order of actions in the list, since both programs are running
 asynchronously.
@@ -3428,6 +3508,49 @@ explicitly (e.g., instead of writing
 .IR "action=shellcmd cmd1; shellcmd cmd2" ,
 use the shell && operator and write
 .IR "action=shellcmd cmd1 && cmd2" ).
+.PP
+Sometimes it is desireable to start an external program and provide it with
+data from several rules. In order to create such setup, names pipes can be used.
+For example, if /var/log/pipe is a named pipe, then
+.PP
+action=shellcmd /usr/bin/logger -f /var/log/pipe -p user.notice
+.PP
+starts the /usr/bin/logger utility which sends all lines read from /var/log/pipe
+to the local syslog daemon with the "user" facility and "notice" level.
+In order to feed events to /usr/bin/logger, the
+.I write
+action can be used (e.g.,
+.IR "write /var/log/pipe This is my event" ).
+Although SEC keeps the named pipe open across different
+.I write
+actions, the pipe will be closed on the reception of SIGHUP, SIGABRT and SIGUSR2
+signals. 
+Since a number of command line tools terminate on receiving EOF from input, they 
+need restarting after such signals have arrived. For this purpose, the
+.B --intevents
+option and SEC internal events can be used. For example, the following rule starts 
+the /usr/bin/logger utility at SEC startup, and also restarts it after the reception 
+of relevant signals:
+.PP
+type=Single
+.br
+ptype=RegExp
+.br
+pattern=^(?:SEC_STARTUP|SEC_RESTART|SEC_SOFTRESTART|SEC_LOGROTATE)$
+.br
+context=SEC_INTERNAL_EVENT
+.br
+desc=start the logger tool
+.br
+action=free %emptystring; owritecl /var/log/pipe %emptystring; \\
+       shellcmd /usr/bin/logger -f /var/log/pipe -p user.notice
+.PP
+Note that if /var/log/pipe is never opened for writing by a
+.I write
+action, /usr/bin/logger will never see EOF and will thus not terminate. The
+.I owritecl
+action opens and closes /var/log/pipe, in order to ensure the presence of EOF
+in such cases.
 .SH PERL INTEGRATION
 SEC supports patterns, context expressions, and actions 
 which involve calls to the Perl
@@ -3456,13 +3579,9 @@ type=Jump
 ptype=PerlFunc
 .br
 pattern=sub { my(%var); my($line) = $_[0]; \\
-.br
         if ($line !~ /kernel: iptables:/g) { return 0; } \\
-.br
         while ($line =~ /\\G\\s*([A-Z]+)(?:=(\\S*))?/g) { \\
-.br
           $var{$1} = defined($2)?$2:1; \\
-.br
         } return \\%var; }
 .br
 varmap=IPTABLES
@@ -3511,7 +3630,6 @@ ptype=Cached
 pattern=IPTABLES
 .br
 context=IPTABLES :> ( sub { return exists($_[0]->{"SYN"}) && \\
-.br
                                    exists($_[0]->{"FIN"}) ; } )
 .br
 desc=SYN+FIN flood from host $+{SRC}
@@ -3570,7 +3688,6 @@ continue=TakeNext
 desc=Load the Storable module and terminate if it is not found
 .br
 action=eval %ret (require Storable); \\
-.br
        if %ret ( logonly Storabe loaded ) else ( eval %o exit(1) ) 
 .PP
 type=Single
@@ -3584,7 +3701,6 @@ context=SEC_INTERNAL_EVENT
 desc=Restore all SEC contexts from /tmp/SEC_CONTEXTS on startup
 .br
 action=lcall %ret -> ( sub { %main::context_list = \\
-.br
        %{Storable::retrieve("/tmp/SEC_CONTEXTS")}; } )
 .PP
 type=Single
@@ -3598,13 +3714,44 @@ context=SEC_INTERNAL_EVENT
 desc=Save all SEC contexts into /tmp/SEC_CONTEXTS on shutdown
 .br
 action=lcall %ret -> ( sub { \\
-.br
        Storable::store(\\%main::context_list, "/tmp/SEC_CONTEXTS"); } )
 .PP
 However, note that modifying data structures within SEC code is recommended 
 only for advanced users who have carefully studied relevant parts of the code. 
+.PP
+Finally, sometimes larger chunks of Perl code have to be used for event
+processing and correlation. However, writing many lines of code directly 
+into a rule is cumbersome and may decrease its readability. In such cases
+it is recommended to separate the code into a custom Perl module which
+is loaded at SEC startup, and use the code through the module interface
+(see
+.BR perlmod (1)
+for further details):
+.PP
+type=Single
+.br
+ptype=SubStr
+.br
+pattern=SEC_STARTUP
+.br
+context=SEC_INTERNAL_EVENT
+.br
+desc=Load the SecStuff module
+.br
+action=eval %ret (require '/usr/local/sec/SecStuff.pm'); \\
+       if %ret ( none ) else ( eval %o exit(1) )
+.PP
+type=Single
+.br
+ptype=PerlFunc
+.br
+pattern=sub { return SecStuff::my_match($_[0]); }
+.br
+desc=event '$0' was matched by my_match()
+.br
+action=write - %s
 .SH EXAMPLES
-.SS Example 1
+.SS Example 1 - a ruleset for Cisco events
 This section presents an example rulebase for managing Cisco devices.
 It is assumed that the managed devices have syslog 
 logging enabled, and that all syslog messages are sent to a central host 
@@ -3785,7 +3932,7 @@ action=pipe '%t: %s' /bin/mail root@localhost
 window=21600
 .br
 thresh=10
-.SS Example 2
+.SS Example 2 - hierarchically organized rulesets for iptables and sshd events
 This section presents an example of hierarchically organized rules for
 processing Linux iptables events from /var/log/messages and SSH login events
 from /var/log/secure. It is assumed that all rule files reside in the
@@ -3797,7 +3944,6 @@ second-level rules which receive their input from first-level Jump rules.
 Also, the example assumes that SEC is started with the following command line:
 .PP
 /usr/bin/sec --conf=/etc/sec/*.rules --intcontexts \\
-.br
              --input=/var/log/messages --input=/var/log/secure
 .PP
 #
@@ -3813,13 +3959,9 @@ context=[ _FILE_EVENT_/var/log/messages ]
 ptype=PerlFunc
 .br
 pattern=sub { my(%var); my($line) = $_[0]; \\
-.br
         if ($line !~ /kernel: iptables:/g) { return 0; } \\
-.br
         while ($line =~ /\\G\\s*([A-Z]+)(?:=(\\S*))?/g) { \\
-.br
           $var{$1} = defined($2)?$2:1; \\
-.br
         } return \\%var; }
 .br
 varmap=IPTABLES
@@ -3877,15 +4019,12 @@ ptype=Cached
 pattern=IPTABLES
 .br
 context=IPTABLES :> ( sub { return exists($_[0]->{"SYN"}) && \\
-.br
                                    exists($_[0]->{"FIN"}) ; } ) \\
-.br
         && !SUPPRESS_IP_$+{SRC}
 .br
 desc=SYN+FIN flood from host $+{SRC}
 .br
 action=pipe '%t: %s' /bin/mail -s 'iptables alert' root@localhost; \\
-.br
        create SUPPRESS_IP_$+{SRC} 3600
 .br
 window=10
@@ -3899,15 +4038,12 @@ ptype=Cached
 pattern=IPTABLES
 .br
 context=IPTABLES :> ( sub { return exists($_[0]->{"SYN"}) && \\
-.br
                                   !exists($_[0]->{"ACK"}) ; } ) \\
-.br
         && !SUPPRESS_IP_$+{SRC}
 .br
 desc=SYN flood from host $+{SRC}
 .br
 action=pipe '%t: %s' /bin/mail -s 'iptables alert' root@localhost; \\
-.br
        create SUPPRESS_IP_$+{SRC} 3600
 .br
 window=10
@@ -3933,9 +4069,7 @@ ptype=Cached
 pattern=SSH_LOGIN
 .br
 context=SSH_LOGIN :> ( sub { return $_[0]->{"status"} eq "Failed" && \\
-.br
                                     $_[0]->{"srcport"} < 1024 && \\
-.br
                                     defined($_[0]->{"invuser"}); } )
 .br
 continue=TakeNext
@@ -3951,7 +4085,6 @@ ptype=Cached
 pattern=SSH_LOGIN
 .br
 context=SSH_LOGIN :> ( sub { return $_[0]->{"status"} eq "Failed" && \\
-.br
                                     defined($_[0]->{"invuser"}); } )
 .br
 desc=Ten login probes for invalid users from $+{srcip} within 60s
@@ -3979,11 +4112,8 @@ ptype2=Cached
 pattern2=SSH_LOGIN
 .br
 context2=SSH_LOGIN :> \\
-.br
            ( sub { return $_[0]->{"status"} eq "Accepted"; } ) && \\
-.br
          $+{user} %+{user} $+{srcip} %+{srcip} -> \\
-.br
            ( sub { return $_[0] eq $_[1]  &&  $_[2] eq $_[3]; }  )
 .br
 desc2=User $+{user} logged in successfully from $+{srcip} within 60s
@@ -4065,8 +4195,9 @@ options, reopen its log and input files, close its output files and sockets
 (these will be reopened on demand), reload its configuration, and 
 drop *all* event correlation state (all event correlation operations
 will be terminated, all contexts will be deleted, all action list variables 
-will be erased, etc.).
-SEC will also send the 
+will be erased, etc.). With the
+.B \-\-childterm
+option, SEC will also send the 
 .B SIGTERM 
 signal to its child processes.
 .TP
@@ -4107,8 +4238,10 @@ the level will be set back to 1. Please note this feature is available only
 if SEC is running non-interactively (e.g., in daemon mode).
 .TP
 .B SIGTERM
-SEC will terminate gracefully (all SEC child processes will receive 
-.BR SIGTERM ).
+SEC will terminate gracefully. With the
+.B \-\-childterm
+option, all SEC child processes will receive 
+.BR SIGTERM .
 .SH BUGS
 With some locale settings, apostrophes (') in this man page might
 be displayed incorrectly. As a workaround, set the LANG environment
@@ -4131,6 +4264,7 @@ helped to develop SEC.
 .BR fork (2),
 .BR mail (1),
 .BR perl (1),
+.BR perlmod (1),
 .BR perlre (1),
 .BR pipe (2),
 .BR sh (1),
