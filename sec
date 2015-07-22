@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.5 - sec
+# SEC (Simple Event Correlator) 2.7.6 - sec
 # Copyright (C) 2000-2014 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -100,7 +100,7 @@ use vars qw(
   $input_timeout
   $intcontexts
   $intevents
-  %int_contexts
+  $int_context
   $jointbuf
   $keepopen
   $lastcleanuptime
@@ -170,7 +170,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.5";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.6";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2014 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -266,38 +266,40 @@ use constant UDPSOCK		=> 6;
 use constant TCPSOCK		=> 7;
 use constant SHELLCOMMAND	=> 8;
 use constant SPAWN		=> 9;
-use constant PIPE		=> 10;
-use constant CREATECONTEXT	=> 11;
-use constant DELETECONTEXT	=> 12;
-use constant OBSOLETECONTEXT	=> 13;
-use constant SETCONTEXT		=> 14;
-use constant ALIAS		=> 15;
-use constant UNALIAS		=> 16;
-use constant ADD		=> 17;
-use constant PREPEND		=> 18;
-use constant FILL		=> 19;
-use constant REPORT		=> 20;
-use constant COPYCONTEXT	=> 21;
-use constant EMPTYCONTEXT	=> 22;
-use constant POP		=> 23;
-use constant SHIFT		=> 24;
-use constant EXISTS		=> 25;
-use constant GETSIZE		=> 26;
-use constant GETALIASES		=> 27;
-use constant GETLIFETIME	=> 28;
-use constant GETCTIME		=> 29;
-use constant SETCTIME		=> 30;
-use constant EVENT		=> 31;
-use constant TEVENT		=> 32;
-use constant RESET		=> 33;
-use constant GETWINPOS		=> 34;
-use constant SETWINPOS		=> 35;
-use constant ASSIGN		=> 36;
-use constant FREE		=> 37;
-use constant EVAL		=> 38;
-use constant CALL		=> 39;
-use constant LCALL		=> 40;
-use constant REWRITE		=> 41;
+use constant CSPAWN		=> 10;
+use constant PIPE		=> 11;
+use constant CREATECONTEXT	=> 12;
+use constant DELETECONTEXT	=> 13;
+use constant OBSOLETECONTEXT	=> 14;
+use constant SETCONTEXT		=> 15;
+use constant ALIAS		=> 16;
+use constant UNALIAS		=> 17;
+use constant ADD		=> 18;
+use constant PREPEND		=> 19;
+use constant FILL		=> 20;
+use constant REPORT		=> 21;
+use constant COPYCONTEXT	=> 22;
+use constant EMPTYCONTEXT	=> 23;
+use constant POP		=> 24;
+use constant SHIFT		=> 25;
+use constant EXISTS		=> 26;
+use constant GETSIZE		=> 27;
+use constant GETALIASES		=> 28;
+use constant GETLIFETIME	=> 29;
+use constant GETCTIME		=> 30;
+use constant SETCTIME		=> 31;
+use constant EVENT		=> 32;
+use constant TEVENT		=> 33;
+use constant CEVENT		=> 34;
+use constant RESET		=> 35;
+use constant GETWINPOS		=> 36;
+use constant SETWINPOS		=> 37;
+use constant ASSIGN		=> 38;
+use constant FREE		=> 39;
+use constant EVAL		=> 40;
+use constant CALL		=> 41;
+use constant LCALL		=> 42;
+use constant REWRITE		=> 43;
 use constant IF			=> 100;
 use constant WHILE		=> 101;
 use constant BREAK		=> 102;
@@ -337,6 +339,10 @@ use constant SEPARATOR		=> " | ";
 
 use constant TERMTIMEOUT	=> 3;
 use constant BATCHREADLIMIT	=> 8192;
+
+use constant SECEVENT_INT_CONTEXT	=> "SEC_INTERNAL_EVENT";
+use constant SYNEVENT_INT_CONTEXT	=> "_INTERNAL_EVENT";
+use constant FILEVENT_INT_CONTEXT_PREF	=> "_FILE_EVENT_";
 
 
 ###############################################################
@@ -875,7 +881,7 @@ sub analyze_action {
     $event = $3;
 
     if ($WIN32 && $keyword ne "write" && $keyword ne "owritecl") {
-      log_msg(LOG_ERR, "'$keyword' action is not supported on Win32");
+      log_msg(LOG_ERR, "$keyword action is not supported on Win32");
       return INVALIDVALUE;
     }
 
@@ -932,7 +938,7 @@ sub analyze_action {
   elsif ($action =~ /^spawn\s+(.*\S)/i) { 
 
     if ($WIN32) {
-      log_msg(LOG_ERR, "'spawn' action is not supported on Win32");
+      log_msg(LOG_ERR, "spawn action is not supported on Win32");
       return INVALIDVALUE;
     }
 
@@ -946,6 +952,32 @@ sub analyze_action {
     }
 
     return (SPAWN, $cmdline); 
+  }
+
+  elsif ($action =~ /^cspawn\s+(\S+)\s+(.*\S)/i) { 
+
+    if ($WIN32) {
+      log_msg(LOG_ERR, "cspawn action is not supported on Win32");
+      return INVALIDVALUE;
+    }
+
+    $context = $1;
+    $cmdline = $2;
+    process_action_parens($context, $cmdline);
+
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for cspawn action");
+      return INVALIDVALUE;
+    }
+
+    if (!length($cmdline)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty commandline given for cspawn action");
+      return INVALIDVALUE;
+    }
+
+    return (CSPAWN, $context, $cmdline); 
   }
 
   elsif ($action =~ /^pipe\s+'([^']*)'(?:\s+(.*))?$/i) {
@@ -1208,6 +1240,31 @@ sub analyze_action {
     if (!length($event))  { $event = "%s"; }
 
     return (TEVENT, $createafter, $event); 
+  }
+
+  elsif ($action =~ /^cevent\s+(\S+)\s+(\S+)\s*(.*)/i) {
+
+    $context = $1;
+    $createafter = $2;
+    $event = $3;
+
+    process_action_parens($context, $createafter, $event);
+
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for cevent action");
+      return INVALIDVALUE;
+    }
+
+    if (!length($createafter)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty time offset given for cevent action");
+      return INVALIDVALUE;
+    }
+
+    if (!length($event))  { $event = "%s"; }
+
+    return (CEVENT, $context, $createafter, $event); 
   }
 
   elsif ($action =~ /^reset(?:\s+([+-]?)0*(\d+))?(?:\s+(.*))?$/i) { 
@@ -3470,7 +3527,13 @@ sub read_configfile {
     # otherwise save the keyword and value to the hash %rule
 
     if ($keyword eq "label") { $label2rule{$value} = $i; }
-    elsif ($keyword ne "rem") { $rule{$keyword} = $value; }
+    elsif ($keyword ne "rem") { 
+      if (exists($rule{$keyword})) { 
+        log_msg(LOG_WARN, "Several '$keyword' keywords specified,", 
+                "overriding previous value '$rule{$keyword}' with '$value'");
+      }
+      $rule{$keyword} = $value; 
+    }
 
   }
 
@@ -3724,6 +3787,7 @@ sub substitute_var {
 
 # Parameters: par1 - shell command
 #             par2 - 'collect output' flag
+#             par3 - context
 # Action: par1 will be executed as a shell command in a child
 #         process. After process has been created, subroutine creates an
 #         entry in the %children hash, and returns the pid of the child 
@@ -3731,12 +3795,15 @@ sub substitute_var {
 #         command has completed, the child process terminates and returns 
 #         command's exit code as its own exit value.
 #         If par2 is defined and non-zero, command's standard output is
-#         returned to the main process through a pipe.
+#         returned to the main process through a pipe. If par3 is also
+#         defined, command's standard output is returned with an internal
+#         context par3 (otherwise default internal context is used).
 
 sub shell_cmd {
 
   my($cmd) = $_[0];
   my($collect_output) = $_[1];
+  my($context) = $_[2];
   my($pid, $read, $write);
 
   # set up a pipe before calling fork()
@@ -3776,6 +3843,8 @@ sub shell_cmd {
       close($write);
       $children{$pid}->{"fh"} = $read;
       $children{$pid}->{"open"} = 1;
+      $children{$pid}->{"context"} = 
+        defined($context)?$context:SYNEVENT_INT_CONTEXT;
     }
 
     log_msg(LOG_DEBUG, "Child $pid created for command '$cmd'");
@@ -4551,6 +4620,36 @@ sub execute_spawn_action {
   return 2;
 }
 
+sub execute_cspawn_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $cmdline, $text2);
+
+  $context = $actionlist->[$i+1];
+  $cmdline = $actionlist->[$i+2];
+  $text2 = $text;
+
+  # if -quoting flag was specified, mask apostrophes in $text2 
+  # and put $text2 inside apostrophes
+
+  if ($quoting) { 
+    $text2 =~ s/'/'\\''/g;
+    $text2 = "'" . $text2 . "'"; 
+  }
+
+  substitute_var($context, $text2);
+  substitute_var($cmdline, $text2);
+
+  log_msg(LOG_INFO, 
+          "Spawning shell command '$cmdline' with context '$context'");
+
+  shell_cmd($cmdline, 1, $context);
+
+  return 3;
+}
+
 sub execute_pipe_action {
 
   my($actionlist) = $_[0];
@@ -4599,12 +4698,19 @@ sub execute_create_action {
 
     if (exists($context_list{$context})) {
 
-      $context_list{$context}->{"Time"} = time();
-      $context_list{$context}->{"Window"} = $lifetime;
-      $context_list{$context}->{"Action"} = $list;
-      $context_list{$context}->{"Desc"} = $text;
-      @{$context_list{$context}->{"Buffer"}} = ();
+      if (!exists($context_list{$context}->{"Internal"})) {
+
+        $context_list{$context}->{"Time"} = time();
+        $context_list{$context}->{"Window"} = $lifetime;
+        $context_list{$context}->{"Action"} = $list;
+        $context_list{$context}->{"Desc"} = $text;
+        @{$context_list{$context}->{"Buffer"}} = ();
         
+      } else {
+        log_msg(LOG_WARN,
+        "Invalid use of create action for internal context '$context'");
+      }
+
     } else {
 
       $context_list{$context} = { "Time" => time(), 
@@ -4639,9 +4745,16 @@ sub execute_delete_action {
   if (exists($context_list{$context})  &&
       !exists($context_list{$context}->{"DeleteInProgress"})) {
 
-    foreach $alias (keys %{$context_list{$context}->{"Aliases"}}) { 
-      delete $context_list{$alias};
-      log_msg(LOG_DEBUG, "Context '$alias' deleted"); 
+    if (!exists($context_list{$context}->{"Internal"})) {
+
+      foreach $alias (keys %{$context_list{$context}->{"Aliases"}}) { 
+        delete $context_list{$alias};
+        log_msg(LOG_DEBUG, "Context '$alias' deleted"); 
+      }
+
+    } else {
+      log_msg(LOG_WARN,
+      "Invalid use of delete action for internal context '$context'");
     }
 
   } else {
@@ -4667,8 +4780,13 @@ sub execute_obsolete_action {
   if (exists($context_list{$context})  &&
       !exists($context_list{$context}->{"DeleteInProgress"})) {
 
-    $context_list{$context}->{"Window"} = -1;
-    valid_context($context);
+    if (!exists($context_list{$context}->{"Internal"})) {
+      $context_list{$context}->{"Window"} = -1;
+      valid_context($context);
+    } else {
+      log_msg(LOG_WARN,
+      "Invalid use of obsolete action for internal context '$context'");
+    }
 
   } else {
     log_msg(LOG_DEBUG,
@@ -4700,14 +4818,21 @@ sub execute_set_action {
 
     if (exists($context_list{$context})) {
 
-      if (defined($lifetime)) {
-        $context_list{$context}->{"Time"} = time();
-        $context_list{$context}->{"Window"} = $lifetime;
-      }
+      if (!exists($context_list{$context}->{"Internal"})) {
 
-      if (scalar(@{$list})) {
-        $context_list{$context}->{"Action"} = $list;
-        $context_list{$context}->{"Desc"} = $text;
+        if (defined($lifetime)) {
+          $context_list{$context}->{"Time"} = time();
+          $context_list{$context}->{"Window"} = $lifetime;
+        }
+
+        if (scalar(@{$list})) {
+          $context_list{$context}->{"Action"} = $list;
+          $context_list{$context}->{"Desc"} = $text;
+        }
+
+      } else {
+        log_msg(LOG_WARN,
+        "Invalid use of set action for internal context '$context'");
       }
 
     } else {
@@ -4743,9 +4868,12 @@ sub execute_alias_action {
             "Context '$context' does not exist, can't create alias");
   } elsif (exists($context_list{$alias})) {
     log_msg(LOG_DEBUG, "Alias '$alias' already exists");
-  } else {
+  } elsif (!exists($context_list{$context}->{"Internal"})) {
     $context_list{$context}->{"Aliases"}->{$alias} = 1;
     $context_list{$alias} = $context_list{$context};
+  } else {
+    log_msg(LOG_WARN,
+    "Invalid use of alias action for internal context '$context'");
   }
 
   return 3;
@@ -4766,14 +4894,21 @@ sub execute_unalias_action {
   if (exists($context_list{$alias})  &&
       !exists($context_list{$alias}->{"DeleteInProgress"})) {
 
-    delete $context_list{$alias}->{"Aliases"}->{$alias};
+    if (!exists($context_list{$alias}->{"Internal"})) {
 
-    if (!scalar(%{$context_list{$alias}->{"Aliases"}})) {
-      log_msg(LOG_DEBUG,
-              "Alias '$alias' was the last reference to a context");
+      delete $context_list{$alias}->{"Aliases"}->{$alias};
+
+      if (!scalar(%{$context_list{$alias}->{"Aliases"}})) {
+        log_msg(LOG_DEBUG,
+                "Alias '$alias' was the last reference to a context");
+      }
+
+      delete $context_list{$alias};
+
+    } else {
+      log_msg(LOG_WARN,
+      "Invalid use of unalias action for internal context '$alias'");
     }
-
-    delete $context_list{$alias};
 
   } else {
     log_msg(LOG_DEBUG, "Alias '$alias' does not exist or the referred context is already going through deletion");
@@ -4807,14 +4942,21 @@ sub execute_add_action {
                                 "Aliases" => { $context => 1 } };
   }
 
-  @event = split(/\n/, $event);  # split returns empty list for "" or undef
+  if (!exists($context_list{$context}->{"Internal"})) {
 
-  if (!$evstoresize  ||  scalar(@{$context_list{$context}->{"Buffer"}}) 
-                       + scalar(@event) <= $evstoresize) {
-    push @{$context_list{$context}->{"Buffer"}}, @event;
+    @event = split(/\n/, $event);  # split returns empty list for "" or undef
+
+    if (!$evstoresize  ||  scalar(@{$context_list{$context}->{"Buffer"}}) 
+                         + scalar(@event) <= $evstoresize) {
+      push @{$context_list{$context}->{"Buffer"}}, @event;
+    } else {
+      log_msg(LOG_WARN,
+      "Can't add event(s) '$event' to context '$context', store full");
+    }
+
   } else {
     log_msg(LOG_WARN,
-    "Can't add event(s) '$event' to context '$context', store full");
+    "Invalid use of add action for internal context '$context'");
   }
 
   return 3;
@@ -4845,14 +4987,21 @@ sub execute_prepend_action {
                                 "Aliases" => { $context => 1 } };
   }
 
-  @event = split(/\n/, $event);  # split returns empty list for "" or undef
+  if (!exists($context_list{$context}->{"Internal"})) {
 
-  if (!$evstoresize  ||  scalar(@{$context_list{$context}->{"Buffer"}}) 
-                       + scalar(@event) <= $evstoresize) {
-    unshift @{$context_list{$context}->{"Buffer"}}, @event;
+    @event = split(/\n/, $event);  # split returns empty list for "" or undef
+
+    if (!$evstoresize  ||  scalar(@{$context_list{$context}->{"Buffer"}}) 
+                         + scalar(@event) <= $evstoresize) {
+      unshift @{$context_list{$context}->{"Buffer"}}, @event;
+    } else {
+      log_msg(LOG_WARN,
+      "Can't prepend event(s) '$event' to context '$context', store full");
+    }
+
   } else {
     log_msg(LOG_WARN,
-    "Can't prepend event(s) '$event' to context '$context', store full");
+    "Invalid use of prepend action for internal context '$context'");
   }
 
   return 3;
@@ -4883,13 +5032,20 @@ sub execute_fill_action {
                                 "Aliases" => { $context => 1 } };
   }
 
-  @event = split(/\n/, $event);  # split returns empty list for "" or undef
+  if (!exists($context_list{$context}->{"Internal"})) {
 
-  if (!$evstoresize  ||  scalar(@event) <= $evstoresize) {
-    @{$context_list{$context}->{"Buffer"}} = @event;
+    @event = split(/\n/, $event);  # split returns empty list for "" or undef
+
+    if (!$evstoresize  ||  scalar(@event) <= $evstoresize) {
+      @{$context_list{$context}->{"Buffer"}} = @event;
+    } else {
+      log_msg(LOG_WARN,
+      "Can't fill context '$context' with event(s) '$event', store full");
+    }
+
   } else {
     log_msg(LOG_WARN,
-            "Can't fill context '$context' with event(s) '$event', store full");
+    "Invalid use of fill action for internal context '$context'");
   }
 
   return 3;
@@ -5008,7 +5164,8 @@ sub execute_pop_action {
   if (exists($context_list{$context})) { 
 
     $value = pop @{$context_list{$context}->{"Buffer"}};
-    $variables{$variable} = defined($value)?$value:"";
+    if (!defined($value))  { $value = ""; }
+    $variables{$variable} = $value;
     log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
 
   } else {
@@ -5035,7 +5192,8 @@ sub execute_shift_action {
   if (exists($context_list{$context})) { 
 
     $value = shift @{$context_list{$context}->{"Buffer"}};
-    $variables{$variable} = defined($value)?$value:"";
+    if (!defined($value))  { $value = ""; }
+    $variables{$variable} = $value;
     log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
 
   } else {
@@ -5197,19 +5355,26 @@ sub execute_setctime_action {
 
     if (exists($context_list{$context})) { 
 
-      $time = $context_list{$context}->{"Time"};
-      $time2 = time();
+      if (!exists($context_list{$context}->{"Internal"})) {
 
-      if ($timestamp < $time) {
-        log_msg(LOG_WARN, 
-        "Can't set context creation time backwards to '$ltime'");
-      } elsif ($timestamp > $time2) {
-        log_msg(LOG_WARN, 
-        "Can't set context creation time into future to '$ltime'");
-      } elsif ($timestamp == $time) {
-        log_msg(LOG_DEBUG, "Context creation time already set to '$ltime'");
+        $time = $context_list{$context}->{"Time"};
+        $time2 = time();
+
+        if ($timestamp < $time) {
+          log_msg(LOG_WARN, 
+          "Can't set context creation time backwards to '$ltime'");
+        } elsif ($timestamp > $time2) {
+          log_msg(LOG_WARN, 
+          "Can't set context creation time into future to '$ltime'");
+        } elsif ($timestamp == $time) {
+          log_msg(LOG_DEBUG, "Context creation time already set to '$ltime'");
+        } else {
+          $context_list{$context}->{"Time"} = $timestamp;
+        }
+
       } else {
-        $context_list{$context}->{"Time"} = $timestamp;
+        log_msg(LOG_WARN,
+        "Invalid use of setctime action for internal context '$context'");
       }
 
     } else {
@@ -5241,12 +5406,14 @@ sub execute_event_action {
 
   if ($createafter) {
     foreach $event (@event) {
-      push @pending_events, [ time() + $createafter, $event ]; 
+      log_msg(LOG_DEBUG, "Scheduling the creation of event '$event' after $createafter seconds");
+      push @pending_events, [ time() + $createafter, $event, 
+                              SYNEVENT_INT_CONTEXT ]; 
     }
   } else {
     foreach $event (@event) {
       log_msg(LOG_DEBUG, "Creating event '$event'");
-      push @events, $event;
+      push @events, $event, SYNEVENT_INT_CONTEXT;
     }
   }
 
@@ -5274,12 +5441,14 @@ sub execute_tevent_action {
 
     if ($createafter) {
       foreach $event (@event) {
-        push @pending_events, [ time() + $createafter, $event ]; 
+        log_msg(LOG_DEBUG, "Scheduling the creation of event '$event' after $createafter seconds");
+        push @pending_events, [ time() + $createafter, $event, 
+                                SYNEVENT_INT_CONTEXT ]; 
       }
     } else {
       foreach $event (@event) {
         log_msg(LOG_DEBUG, "Creating event '$event'");
-        push @events, $event;
+        push @events, $event, SYNEVENT_INT_CONTEXT;
       }
     }
 
@@ -5289,6 +5458,47 @@ sub execute_tevent_action {
   }
 
   return 3;
+}
+
+sub execute_cevent_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($context, $createafter, $event, @event);
+
+  $context = $actionlist->[$i+1];
+  $createafter = $actionlist->[$i+2];
+  $event = $actionlist->[$i+3];
+
+  substitute_var($context, $text);
+  substitute_var($createafter, $text);
+  substitute_var($event, $text);
+
+  @event = split(/\n/, $event);  # split returns empty list for "" or undef
+
+  if ($createafter =~ /^\s*0*(\d+)\s*$/) {
+
+    $createafter = $1;
+
+    if ($createafter) {
+      foreach $event (@event) {
+        log_msg(LOG_DEBUG, "Scheduling the creation of event '$event' with context '$context' after $createafter seconds");
+        push @pending_events, [ time() + $createafter, $event, $context ]; 
+      }
+    } else {
+      foreach $event (@event) {
+        log_msg(LOG_DEBUG, "Creating event '$event' with context '$context'");
+        push @events, $event, $context;
+      }
+    }
+
+  } else {
+    log_msg(LOG_WARN, 
+    "Invalid time specification '$createafter' for creating events");
+  }
+
+  return 4;
 }
 
 sub execute_reset_action {
@@ -6807,6 +7017,19 @@ sub subst_three_elem_action {
   return 3;
 }
 
+sub subst_four_elem_action {
+
+  my($subst_ref) = $_[0];
+  my($actionlist) = $_[2];
+  my($token) = $_[3];
+  my($i) = $_[4];
+
+  subst_string($subst_ref, $actionlist->[$i+1], $token);
+  subst_string($subst_ref, $actionlist->[$i+2], $token);
+  subst_string($subst_ref, $actionlist->[$i+3], $token);
+  return 4;
+}
+
 sub subst_create_set_action {
 
   my($subst_ref) = $_[0];
@@ -8299,7 +8522,7 @@ sub process_rules {
 sub process_lists {
 
   my($key, $rule, $oper);
-  my($time, @time, $pevt, $event, @buffer);
+  my($time, @time, $pevt, $event, $context, @buffer);
   my($minute, $hour, $day, $month, $year, $weekday);
   my($lastdayofmonth, $shortyear);
 
@@ -8318,8 +8541,9 @@ sub process_lists {
     foreach $pevt (@pending_events) {
       if ($time >= $pevt->[0]) {
         $event = $pevt->[1];
+        $context = $pevt->[2];
         log_msg(LOG_DEBUG, "Creating event '$event'");
-        push @events, $event;
+        push @events, $event, $context;
       } else { push @buffer, $pevt; } 
     }  
 
@@ -8593,6 +8817,11 @@ sub actionlist2str {
       $i += 2;
     } 
 
+    elsif ($actionlist->[$i] == CSPAWN) { 
+      $result .= "cspawn " . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    } 
+
     elsif ($actionlist->[$i] == PIPE) {
       $result .= "pipe " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
       $i += 3;
@@ -8716,6 +8945,12 @@ sub actionlist2str {
     elsif ($actionlist->[$i] == TEVENT) { 
       $result .= "tevent " . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
       $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == CEVENT) { 
+      $result .= "cevent " . $actionlist->[$i+1] . " " 
+                 . $actionlist->[$i+2] . " " . $actionlist->[$i+3]; 
+      $i += 4;
     }
 
     elsif ($actionlist->[$i] == RESET) { 
@@ -9519,9 +9754,9 @@ sub dump_data {
 
   foreach $ref (@pending_events) { 
     print DUMPFILE "Event: ", $ref->[1], "\n";
-    print DUMPFILE "Will be created at: ", 
-                   scalar(localtime($ref->[0])), "\n";
-    print DUMPFILE "\n";
+    print DUMPFILE "Will be created at ", scalar(localtime($ref->[0]));
+    if ($intcontexts)  { print DUMPFILE " with context '", $ref->[2], "'"; }
+    print DUMPFILE "\n\n";
     ++$i;
   }
 
@@ -9613,6 +9848,12 @@ sub dump_data {
   while (($key, $ref) = each(%children)) { 
     print DUMPFILE "Child PID: ", $key, "\n";
     print DUMPFILE "Commandline started by child: ", $ref->{"cmd"}, "\n"; 
+    if ($ref->{"open"}) { 
+      print DUMPFILE "Connected to pipe input";
+      if ($intcontexts && exists($ref->{"context"})) 
+        { print DUMPFILE " with context '", $ref->{"context"}, "'"; }
+      print DUMPFILE "\n";
+    }
     print DUMPFILE '-' x 60, "\n";
     ++$i;
   }
@@ -9759,16 +10000,12 @@ sub internal_event {
   my($text) = $_[0];
   my($context, $conffile);
 
-  $context = "SEC_INTERNAL_EVENT";
+  $context = SECEVENT_INT_CONTEXT;
 
   log_msg(LOG_INFO, "Creating SEC internal context '$context'");
 
-  $context_list{$context} = { "Time" => time(), 
-                              "Window" => 0, 
-                              "Buffer" => [],
-                              "Action" => [],
-                              "Desc" => "SEC internal",
-                              "Aliases" => { $context => 1 } };
+  $int_context->{"Aliases"}->{$context} = 1;
+  $context_list{$context} = $int_context; 
 
   log_msg(LOG_INFO, "Creating SEC internal event '$text'");
 
@@ -9792,6 +10029,7 @@ sub internal_event {
   log_msg(LOG_INFO, "Deleting SEC internal context '$context'");
 
   delete $context_list{$context};
+  delete $int_context->{"Aliases"}->{$context};
 
 }
 
@@ -9879,9 +10117,8 @@ sub consume_pipe {
       $event = substr($children{$pid}->{"buffer"}, 0, $pos);
       substr($children{$pid}->{"buffer"}, 0, $pos + 1) = "";
 
-      log_msg(LOG_DEBUG, 
-              "Creating event '$event' (received from child $pid)");
-      push @events, $event;
+      log_msg(LOG_DEBUG, "Creating event '$event' (received from child $pid)");
+      push @events, $event, $children{$pid}->{"context"};
 
     }
 
@@ -9896,7 +10133,7 @@ sub consume_pipe {
 
     $event = $children{$pid}->{"buffer"};
     log_msg(LOG_DEBUG, "Creating event '$event' (received from child $pid)");
-    push @events, $event;
+    push @events, $event, $children{$pid}->{"context"};
 
   }
 
@@ -10242,7 +10479,7 @@ sub open_input_file {
 sub open_input {
 
   my($fpos) = $_[0];
-  my($softopen, $filepat, $pattern, $cmdline_context, $context);
+  my($softopen, $filepat, $pattern, $cmdline_context);
   my(%fcont, $inputfile, $time, $fh, $dev, $inode, $regfile, $i, $j, @buf);
 
   # Check if status data of already open input files must be retained
@@ -10283,8 +10520,8 @@ sub open_input {
     # definition will override previous ones)
 
     foreach $inputfile (glob($pattern)) {
-      $fcont{$inputfile} = 
-        defined($cmdline_context)?$cmdline_context:"_FILE_EVENT_$inputfile";
+      $fcont{$inputfile} = defined($cmdline_context)?$cmdline_context:
+                           (FILEVENT_INT_CONTEXT_PREF . $inputfile);
     }
 
   }
@@ -10360,38 +10597,6 @@ sub open_input {
     }
 
     @readbuffer = @buf;
-  }
-
-  # If -intcontexts option is active, set up internal contexts
-
-  if ($intcontexts) {
-
-    %int_contexts = ();
-
-    foreach $inputfile (@inputfiles) {
-
-      $context = $inputsrc{$inputfile}->{"context"};
-
-      if (exists($int_contexts{$context}))  { next; }
-
-      $int_contexts{$context} = { "Time" => $time,
-                                  "Window" => 0,
-                                  "Buffer" => [],
-                                  "Action" => [],
-                                  "Desc" => "SEC internal",
-                                  "Aliases" => { $context => 1 } };
-
-    }
-
-    $context = "_INTERNAL_EVENT";
-
-    $int_contexts{$context} = { "Time" => $time,
-                                "Window" => 0,
-                                "Buffer" => [],
-                                "Action" => [],
-                                "Desc" => "SEC internal",
-                                "Aliases" => { $context => 1 } };
-
   }
 
 }
@@ -11421,7 +11626,7 @@ sub read_options {
 
 sub main_loop {
 
-  my($line, $file, $ret);
+  my($line, $evcont, $file);
   my($context, $conffile);
 
   for (;;) {
@@ -11431,6 +11636,7 @@ sub main_loop {
 
     if (scalar(@events)) { 
       $line = shift @events;
+      $evcont = shift @events;
       $file = undef;
     } elsif (scalar(@readbuffer)) { 
       $line = shift @readbuffer;
@@ -11442,8 +11648,9 @@ sub main_loop {
     if (defined($line)) {
 
       if ($intcontexts) {
-        $context = defined($file)?$inputsrc{$file}->{"context"}:"_INTERNAL_EVENT";
-        $context_list{$context} = $int_contexts{$context};
+        $context = defined($file)?$inputsrc{$file}->{"context"}:$evcont;
+        $int_context->{"Aliases"}->{$context} = 1;
+        $context_list{$context} = $int_context;
       }
 
       # update input buffers (they are implemented as circular buffers, since
@@ -11475,7 +11682,10 @@ sub main_loop {
         if (process_rules($conffile)) { last; }
       }
 
-      if ($intcontexts)  { delete $context_list{$context}; }
+      if ($intcontexts) { 
+        delete $context_list{$context}; 
+        delete $int_context->{"Aliases"}->{$context};
+      }
 
       if (defined($file))  { ++$inputsrc{$file}->{"lines"}; }
       ++$processedlines;
@@ -11530,7 +11740,7 @@ sub main_loop {
 # ------------------------- MAIN PROGRAM -------------------------
 ##################################################################
 
-### Set function pointers
+### Set function pointers and create a template for internal contexts
 
 $matchfunc[SUBSTR] = \&match_substr;
 $matchfunc[REGEXP] = \&match_regexp;
@@ -11573,6 +11783,7 @@ $actioncopyfunc[UDPSOCK] = \&copy_three_elem_action;
 $actioncopyfunc[TCPSOCK] = \&copy_three_elem_action;
 $actioncopyfunc[SHELLCOMMAND] = \&copy_two_elem_action;
 $actioncopyfunc[SPAWN] = \&copy_two_elem_action;
+$actioncopyfunc[CSPAWN] = \&copy_three_elem_action;
 $actioncopyfunc[PIPE] = \&copy_three_elem_action;
 $actioncopyfunc[CREATECONTEXT] = \&copy_create_set_action;
 $actioncopyfunc[DELETECONTEXT] = \&copy_two_elem_action;
@@ -11596,6 +11807,7 @@ $actioncopyfunc[GETCTIME] = \&copy_three_elem_action;
 $actioncopyfunc[SETCTIME] = \&copy_three_elem_action;
 $actioncopyfunc[EVENT] = \&copy_three_elem_action;
 $actioncopyfunc[TEVENT] = \&copy_three_elem_action;
+$actioncopyfunc[CEVENT] = \&copy_four_elem_action;
 $actioncopyfunc[RESET] = \&copy_four_elem_action;
 $actioncopyfunc[GETWINPOS] = \&copy_five_elem_action;
 $actioncopyfunc[SETWINPOS] = \&copy_five_elem_action;
@@ -11620,6 +11832,7 @@ $actionsubstfunc[UDPSOCK] = \&subst_three_elem_action;
 $actionsubstfunc[TCPSOCK] = \&subst_three_elem_action;
 $actionsubstfunc[SHELLCOMMAND] = \&subst_two_elem_action;
 $actionsubstfunc[SPAWN] = \&subst_two_elem_action;
+$actionsubstfunc[CSPAWN] = \&subst_three_elem_action;
 $actionsubstfunc[PIPE] = \&subst_three_elem_action;
 $actionsubstfunc[CREATECONTEXT] = \&subst_create_set_action;
 $actionsubstfunc[DELETECONTEXT] = \&subst_two_elem_action;
@@ -11643,6 +11856,7 @@ $actionsubstfunc[GETCTIME] = \&subst_event_assign_etc_action;
 $actionsubstfunc[SETCTIME] = \&subst_three_elem_action;
 $actionsubstfunc[EVENT] = \&subst_event_assign_etc_action;
 $actionsubstfunc[TEVENT] = \&subst_three_elem_action;
+$actionsubstfunc[CEVENT] = \&subst_four_elem_action;
 $actionsubstfunc[RESET] = \&subst_reset_action;
 $actionsubstfunc[GETWINPOS] = \&subst_getwpos_action;
 $actionsubstfunc[SETWINPOS] = \&subst_setwpos_action;
@@ -11667,6 +11881,7 @@ $execactionfunc[UDPSOCK] = \&execute_udpsock_action;
 $execactionfunc[TCPSOCK] = \&execute_tcpsock_action;
 $execactionfunc[SHELLCOMMAND] = \&execute_shellcmd_action;
 $execactionfunc[SPAWN] = \&execute_spawn_action;
+$execactionfunc[CSPAWN] = \&execute_cspawn_action;
 $execactionfunc[PIPE] = \&execute_pipe_action;
 $execactionfunc[CREATECONTEXT] = \&execute_create_action;
 $execactionfunc[DELETECONTEXT] = \&execute_delete_action;
@@ -11690,6 +11905,7 @@ $execactionfunc[GETCTIME] = \&execute_getctime_action;
 $execactionfunc[SETCTIME] = \&execute_setctime_action;
 $execactionfunc[EVENT] = \&execute_event_action;
 $execactionfunc[TEVENT] = \&execute_tevent_action;
+$execactionfunc[CEVENT] = \&execute_cevent_action;
 $execactionfunc[RESET] = \&execute_reset_action;
 $execactionfunc[GETWINPOS] = \&execute_getwpos_action;
 $execactionfunc[SETWINPOS] = \&execute_setwpos_action;
@@ -11703,6 +11919,17 @@ $execactionfunc[IF] = \&execute_if_action;
 $execactionfunc[WHILE] = \&execute_while_action;
 $execactionfunc[BREAK] = \&execute_break_action;
 $execactionfunc[CONTINUE] = \&execute_continue_action;
+
+# create a template that is shared by all internal contexts; note that 
+# the Internal flag blocks actions that modify the internal context
+
+$int_context = { "Time" => time(),
+                 "Window" => 0,
+                 "Buffer" => [],
+                 "Action" => [],
+                 "Desc" => "SEC internal",
+                 "Internal" => 1,
+                 "Aliases" => { } };
 
 ### Read and process SEC options from command line and resource file
 

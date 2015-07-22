@@ -1,10 +1,11 @@
 [Unit]
-Description=sec is an simple event correlator
+Description=Simple Event Correlator script for event log monitoring
+After=syslog.target
 
 [Service]
-EnvironmentFile=-/etc/sysconfig/sec
-ExecStart=/usr/bin/sec ${SEC_OPTS}
-Type=simple
+Type=forking
+PIDFile=/run/sec.pid
+ExecStart=/bin/bash -c '[ -e /etc/sysconfig/sec ] && . /etc/sysconfig/sec; exec /usr/bin/sec -detach -pid=/run/sec.pid $${SEC_OPTS}
 
 [Install]
 WantedBy=multi-user.target

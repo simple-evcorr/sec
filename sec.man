@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.7.5 - sec.man
+.\" SEC (Simple Event Correlator) 2.7.6 - sec.man
 .\" Copyright (C) 2000-2014 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "January 2014" "SEC 2.7.5"
+.TH sec 1 "July 2014" "SEC 2.7.6"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -489,9 +489,10 @@ if the
 .B \-\-quoting
 option is specified, operation description strings that are supplied to 
 command lines of
-.I shellcmd
+.IR shellcmd ,
+.IR spawn ,
 and
-.I spawn
+.I cspawn
 actions will be put inside apostrophes. All apostrophes ' that strings 
 originally contain will be masked. This option prevents the shell from 
 interpreting special symbols that operation description strings might contain. 
@@ -1593,12 +1594,27 @@ action, except that each line from the standard output of <cmdline>
 becomes a synthetic event and will be treated like a line from input file 
 (see the
 .I event
-action for more information). 
+action for more information). If the
+.B \-\-intcontexts
+command line option is given, internal context _INTERNAL_EVENT is set
+up before each synthetic event is processed (see INTERNAL EVENTS AND
+CONTEXTS section for more information).
+.TP 
+.I cspawn <name> <cmdline>
+Similar to the
+.I spawn
+action, except that if the
+.B \-\-intcontexts
+command line option is given, internal context <name> is set up for each 
+synthetic event. 
 .TP 
 .I pipe '[<string>]' [<cmdline>]
 Fork a process for executing command line <cmdline>. The string <string> 
 with a terminating newline is written to the standard input of <cmdline> 
 (apostrophes are used for disambiguating <string> from <cmdline>).
+If <string> contains semicolons, <string> must be enclosed in parentheses
+(e.g.,
+.IR "pipe '($1;$2)' /bin/cat" ).
 Default value for <string> is %s.
 If <cmdline> is omitted, <string> is written to standard output.
 For additional information, see INTERPROCESS COMMUNICATION section.
@@ -1767,6 +1783,11 @@ If <string> is a multi-line string (i.e., it contains newlines), it is
 split into lines, and from each line a separate synthetic event is created.
 SEC will treat each synthetic event like a line from an input file -- 
 the event will be matched against rules and it might trigger further actions.
+If the
+.B \-\-intcontexts 
+command line option is given, internal context _INTERNAL_EVENT is set up
+for synthetic event(s) (see INTERNAL EVENTS AND CONTEXTS section for more 
+information).
 The <time> parameter is an integer constant. Specifying 0 for <time> or
 omitting the value means "now". Default value for <string> is %s.
 .TP 
@@ -1775,6 +1796,14 @@ Similar to the
 .I event
 action, except that the <time> parameter may contain variables and must 
 evaluate to an unsigned integer at runtime.
+.TP 
+.I cevent <name> <time> [<string>]
+Similar to the
+.I tevent
+action, except that if the
+.B \-\-intcontexts 
+command line option is given, internal context <name> is set up for
+synthetic event(s).
 .TP 
 .I reset [<offset>] [<string>]
 Terminate event correlation operation(s) with the operation description string
@@ -2699,7 +2728,10 @@ action list defined by the
 field, and consumes all further matching events without any action. If the
 rule has an optional action list defined with the
 .I action2
-field, the operation will execute it before finishing. Note that  a sliding 
+field, the operation will execute it before finishing, provided that the
+action list given with
+.I action
+has been previously executed by the operation. Note that  a sliding 
 window is employed for event counting -- if the operation has observed 
 less than N events by the end of its lifetime, it drops occurrence times which
 are older than T seconds, and extends its lifetime for T seconds from the
@@ -3024,6 +3056,10 @@ created.
 If the rule definition has an optional action list defined with the
 .I end
 field, the operation executes it immediately before the operation finishes.
+Note that this action list is *not* executed when the operation is
+terminated with the
+.I reset
+action.
 .PP
 If the rule definition has an optional action list defined with the
 .I slide
@@ -4181,10 +4217,14 @@ name explicitly set with
 the name of the internal context is <context>. If the line was read from 
 the input file <filename> for which there is no context name set, the name 
 of the internal context is _FILE_EVENT_<filename>. 
-For synthetic events, 
-the name of the internal context is _INTERNAL_EVENT. This allows for
-writing rules that match data from one particular input
-source only. E.g., the rule
+For synthetic events, the name of the internal context defaults 
+to _INTERNAL_EVENT, but 
+.I cspawn
+and
+.I cevent
+actions can be used for generating synthetic events with custom internal
+context names. This allows for writing rules that match data from one 
+particular input source only. For example, the rule
 .PP
 type=Suppress
 .br
@@ -4194,11 +4234,53 @@ pattern=TRUE
 .br
 context=[!_FILE_EVENT_/dev/logpipe]
 .PP
-passes only the lines that were read from /dev/logpipe.
+passes only the lines that were read from /dev/logpipe, and also synthetic
+events that were generated with the _FILE_EVENT_/dev/logpipe internal
+context (e.g., with the action
+.IR "cevent _FILE_EVENT_/dev/logpipe 0 This is a test event" ).
+As another example, if SEC has been started with the command line
+.PP
+/usr/bin/sec --intevents --intcontexts --conf=/etc/sec/my.conf \\
+             --input=/var/log/messages=MESSAGES \\
+             --input=/var/log/secure=SECURE \\
+             --input=/var/log/cron=CRON 
+.PP
+and the rule file /etc/sec/my.conf contains the following rules
+.PP
+type=Single
+.br
+ptype=RegExp
+.br
+pattern=^(?:SEC_STARTUP|SEC_RESTART)$
+.br
+context=[SEC_INTERNAL_EVENT]
+.br
+desc=listen on 10514/tcp for incoming events 
+.br
+action=cspawn MESSAGES /usr/bin/nc -l -k 10514
+.PP
+type=Single
+.br
+ptype=RegExp
+.br
+pattern=.
+.br
+context=[MESSAGES]
+.br
+desc=echo everything from 10514/tcp and /var/log/messages
+.br
+action=write - $0
+.PP
+then SEC will receive input lines from the log files /var/log/messages, 
+/var/log/secure, and /var/log/cron, and will also run /usr/bin/nc for
+receiving input lines from the port 10514/tcp. All input lines from
+/var/log/messages and 10514/tcp are matched by the second rule and
+written to standard output.
 .SH INTERPROCESS COMMUNICATION
 The SingleWithScript rule and
 .IR shellcmd ,
 .IR spawn ,
+.IR cspawn ,
 .IR pipe ,
 and
 .I report

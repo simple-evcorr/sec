@@ -1,3 +1,14 @@
+--- version 2.7.6
+
+* added support for the 'cspawn' and 'cevent' actions which allow
+  for generating synthetic events with custom internal contexts.
+
+* fixes for logging the execution of 'shift' and 'pop' actions.
+
+* starting from this version, warnings are produced for duplicate
+  keywords in rule definitions.
+
+
 --- version 2.7.5
 
 * starting from this version, continue* rule parameters accept 'EndMatch'
