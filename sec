@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.6.0 - sec
+# SEC (Simple Event Correlator) 2.6.1 - sec
 # Copyright (C) 2000-2011 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -98,6 +98,7 @@ use vars qw(
   $intcontexts
   $intevents
   %int_contexts
+  $keepopen
   $lastcleanuptime
   $lastconfigload
   $logfile
@@ -152,7 +153,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.6.0";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.6.1";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2011 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -160,11 +161,11 @@ $SEC_USAGE = qq!Usage: $0 [options]
 Options:
   --conf=<file pattern> ...
   --input=<file pattern>[=<context>] ...
-  --input_timeout=<input timeout> 
-  --timeout_script=<timeout script>
-  --reopen_timeout=<reopen timeout>
-  --check_timeout=<check timeout>
-  --poll_timeout=<poll timeout>
+  --input-timeout=<input timeout> 
+  --timeout-script=<timeout script>
+  --reopen-timeout=<reopen timeout>
+  --check-timeout=<check timeout>
+  --poll-timeout=<poll timeout>
   --blocksize=<io block size>
   --bufsize=<input buffer size>
   --evstoresize=<event store size>
@@ -178,6 +179,7 @@ Options:
   --tail, --notail
   --fromstart, --nofromstart
   --detach, --nodetach
+  --keepopen, --nokeepopen
   --intevents, --nointevents
   --intcontexts, --nointcontexts
   --testonly, --notestonly
@@ -5082,8 +5084,10 @@ sub match_regexp {
     # substring matches from the regular expression
     %{$subst_ref} = %+;
 
-    # create the $0 variable that equals to $line
+    # create the $0 and $+{_inputsrc} variables
     $subst_ref->{"0"} = $line;
+    $subst_ref->{"_inputsrc"} = join(" ", map(defined($_)?$_:"synthetic", 
+      @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
 
     # add the $<number> match variables to the variable hash
     $i = 1;
@@ -5121,14 +5125,16 @@ sub match_nregexp {
   my($linecount) = $_[0];
   my($regexp) = $_[1];
   my($subst_ref) = $_[2];
-  my($line);
+  my($line, $source);
 
   $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
   
   if ($line !~ /$regexp/) { 
-    # erase the previous content of the match variable hash and create
-    # the $0 variable that equals to $line
-    %{$subst_ref} = ( "0" => $line );
+    # erase the previous content of the match variable hash, and
+    # create the $0 and $+{_inputsrc} variables
+    $source = join(" ", map(defined($_)?$_:"synthetic",
+      @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+    %{$subst_ref} = ( "0" => $line, "_inputsrc" => $source );
     return 1; 
   } 
 
@@ -5152,10 +5158,9 @@ sub match_perlfunc {
   my($codeptr) = $_[1];
   my($subst_ref) = $_[2];
   my($varmap_ref) = $_[3];
-  my($line, @lines, @sources);
-  my($size, @matches, $match, $var, $i, $j, @celem);
+  my(@lines, @sources, $line, $source);
+  my(@matches, $match, $size, $var, $i, $j, @celem);
 
-  $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
   @lines = @input_buffer[$bufpos - $linecount + 1 .. $bufpos];
   @sources = @input_sources[$bufpos - $linecount + 1 .. $bufpos];
 
@@ -5173,9 +5178,12 @@ sub match_perlfunc {
   $size = scalar(@matches);
   if ($size == 0 || ($size == 1 && !$matches[0]))  { return 0; }
 
-  # erase the previous content of the match variable hash and create
-  # the $0 variable that equals to $line
-  %{$subst_ref} = ( "0" => $line );
+  # erase the previous content of the match variable hash, and
+  # create the $0 and $+{_inputsrc} variables
+  $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+  $source = join(" ", map(defined($_)?$_:"synthetic",
+    @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+  %{$subst_ref} = ( "0" => $line, "_inputsrc" => $source );
 
   # add function return values to the variable hash
   $i = 1;
@@ -5210,10 +5218,9 @@ sub match_nperlfunc {
   my($linecount) = $_[0];
   my($codeptr) = $_[1];
   my($subst_ref) = $_[2];
-  my($line, @lines, @sources);
-  my($size, @matches);
+  my(@lines, @sources, $line, $source);
+  my(@matches, $size);
 
-  $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
   @lines = @input_buffer[$bufpos - $linecount + 1 .. $bufpos];
   @sources = @input_sources[$bufpos - $linecount + 1 .. $bufpos];
 
@@ -5231,9 +5238,12 @@ sub match_nperlfunc {
   $size = scalar(@matches);
   if ($size > 1 || ($size == 1 && $matches[0]))  { return 0; }
 
-  # erase the previous content of the match variable hash and create
-  # the $0 variable that equals to $line
-  %{$subst_ref} = ( "0" => $line );
+  # erase the previous content of the match variable hash, and
+  # create the $0 and $+{_inputsrc} variables
+  $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+  $source = join(" ", map(defined($_)?$_:"synthetic",
+    @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+  %{$subst_ref} = ( "0" => $line, "_inputsrc" => $source );
 
   return 1; 
 }
@@ -7994,7 +8004,7 @@ sub dump_data {
     if (defined($input_sources[$i])) {
       print DUMPFILE $input_sources[$i], "\n";
     } else {
-      print DUMPFILE "SEC 'event' action\n";
+      print DUMPFILE "synthetic event\n";
     }
   }
 
@@ -8111,7 +8121,7 @@ sub dump_data {
   # print the values of user-defined variables
 
   $i = 0;
-  print DUMPFILE "User-defined variables:\n";
+  print DUMPFILE "Action list variables:\n";
   print DUMPFILE '=' x 60, "\n";
 
   foreach $key (sort(keys %variables)) {
@@ -8525,32 +8535,39 @@ sub open_input_file {
 
 
 # Parameters: par1 - file position
+#             par2 - flag (optional)
 # Action: evaluate the inputfile patterns given in commandline, form the 
 #         list of inputfiles and save it to global array @inputfiles. Each
 #         input file will then be opened and file position will be moved to
 #         position par1 (-1 means "seek EOF" and 0 means "don't seek at all").
 #         If -intcontexts option is active, also set up internal contexts.
+#         If flag par2 is set, input files which are already open will not
+#         be closed and reopened, and their status data will be retained.
 
 sub open_input {
 
   my($fpos) = $_[0];
-  my($filepat, $pattern, $cmdline_context, $context);
-  my($inputfile, @files, $time, $fh, $dev, $inode, $regfile);
+  my($softopen, $filepat, $pattern, $cmdline_context, $context);
+  my(%fcont, $inputfile, $time, $fh, $dev, $inode, $regfile, $i, $j, @buf);
 
-  # Initialize (or clean) global arrays %inputsrc and @inputfiles
-  # (the keys for %inputsrc are members of global array @inputfiles)
- 
-  %inputsrc = ();
-  @inputfiles = ();
+  # Check if status data of already open input files must be retained
+  # and files must be kept open (default is "no")
 
-  # Initialize (or clean) the read buffer
+  $softopen = defined($_[1])?$_[1]:0;
 
-  @readbuffer = ();
+  # In the case of full open, clean global arrays %inputsrc and @readbuffer 
+  # (the keys for %inputsrc are members of global array @inputfiles). 
+  # Note that dropping all data in %inputsrc will implicitly close all input 
+  # file handles.
 
-  # Form the list of configuration files, save it to global array
-  # @inputfiles, and open the files
+  if (!$softopen) {
+    %inputsrc = ();
+    @readbuffer = ();
+  }
 
-  $time = time();
+  # Find the input file names and file contexts
+
+  %fcont = ();
 
   foreach $filepat (@inputfilepat) { 
 
@@ -8566,44 +8583,92 @@ sub open_input {
       $cmdline_context = undef; 
     }
 
-    # interpret the pattern, and open the files that correspond to a pattern
+    # interpret the pattern and store file-context pairs into %fcont
+    # (if a file is given more than once in the command line, the last
+    # definition will override previous ones)
 
-    @files = glob($pattern);
-
-    foreach $inputfile (@files) {
-
-      ($fh, $dev, $inode, $regfile) = open_input_file($inputfile, $fpos);
-
-      if (defined($cmdline_context)) { 
-        $context = $cmdline_context;
-      } else  { 
-        $context = "_FILE_EVENT_$inputfile"; 
-      }
-
-      $inputsrc{$inputfile} = { "fh" => $fh,
-                                "open" => defined($fh),
-                                "dev" => $dev,
-                                "inode" => $inode,
-                                "regfile" => $regfile,
-                                "buffer" => "",
-                                "scriptexec" => 0,
-                                "checktime" => 0,
-                                "lastopen" => $time,
-                                "lastread" => $time,
-                                "lines" => 0,
-                                "context" => $context };
-
-      if (!defined($fh)  &&  $inputfile ne "-"  &&  ! -e $inputfile) {
-        $inputsrc{$inputfile}->{"read_from_start"} = 1;
-      }
-
+    foreach $inputfile (glob($pattern)) {
+      $fcont{$inputfile} = 
+        defined($cmdline_context)?$cmdline_context:"_FILE_EVENT_$inputfile";
     }
-
-    push @inputfiles, @files;
 
   }
 
-  # if -intcontexts option is active, set up internal contexts
+  # Open the input files
+
+  @inputfiles = sort keys %fcont;
+  $time = time();
+
+  foreach $inputfile (@inputfiles) {
+
+    log_msg(LOG_NOTICE, "Opening input file $inputfile");
+
+    # in the case of soft open, check if we already have status data
+    # for the input file in memory; if the file is open, update the file 
+    # context, but retain all other status data and skip the open
+
+    if ($softopen  &&  exists($inputsrc{$inputfile})  && 
+        $inputsrc{$inputfile}->{"open"}) {
+      log_msg(LOG_DEBUG, "Input file $inputfile already open");
+      $inputsrc{$inputfile}->{"context"} = $fcont{$inputfile};
+      next;
+    }
+
+    # in all other cases reopen the input file and (re)initialize its
+    # status data; note that if the file was previously open, recreating 
+    # its entry in %inputsrc will close the previous file handle implicitly,
+    # since it is no longer referenced
+
+    ($fh, $dev, $inode, $regfile) = open_input_file($inputfile, $fpos);
+
+    $inputsrc{$inputfile} = { "fh" => $fh,
+                              "open" => defined($fh),
+                              "dev" => $dev,
+                              "inode" => $inode,
+                              "regfile" => $regfile,
+                              "buffer" => "",
+                              "scriptexec" => 0,
+                              "checktime" => 0,
+                              "lastopen" => $time,
+                              "lastread" => $time,
+                              "lines" => 0,
+                              "context" => $fcont{$inputfile} };
+
+    # if the input file open failed because of the missing file, set the 
+    # "read_from_start" flag which enforces reading from the beginning
+    # when the file will appear and another open will be attempted
+
+    if (!defined($fh)  &&  $inputfile ne "-"  &&  ! -e $inputfile) {
+      $inputsrc{$inputfile}->{"read_from_start"} = 1;
+    }
+
+  }
+
+  # In the case of soft open, delete %inputsrc and @readbuffer entries for 
+  # past input files which no longer match any input file pattern. 
+  # This step does not need to be carried out for full open, since %inputsrc 
+  # and @readbuffer are cleared before open. Note that deleting entries for 
+  # past input files will implicitly close all open file handles for them.
+
+  if ($softopen) {
+
+    foreach $inputfile (keys %inputsrc) {
+      if (!exists($fcont{$inputfile}))  { delete $inputsrc{$inputfile}; }
+    }
+
+    @buf = ();
+    $j = scalar(@readbuffer);
+
+    for ($i = 0; $i < $j; $i += 2) {
+      if (!exists($fcont{$readbuffer[$i+1]}))  { next; }
+      push @buf, $readbuffer[$i];
+      push @buf, $readbuffer[$i+1];
+    }
+
+    @readbuffer = @buf;
+  }
+
+  # If -intcontexts option is active, set up internal contexts
 
   if ($intcontexts) {
 
@@ -9087,19 +9152,12 @@ sub check_signals {
 
     @pending_events = ();
 
-    # close input sources
-
-    foreach $file (@inputfiles) {
-      if ($inputsrc{$file}->{"open"})  { close($inputsrc{$file}->{"fh"}); }
-    }
-
     # close the logfile and connection to the system logger
 
     if ($logfile)  { close(LOGFILE); }
     if ($syslogf)  { eval { Sys::Syslog::closelog() }; }
 
-    # now the SEC internal state has been cleared, input sources and log 
-    # handles closed - re-read SEC command line and resource file options
+    # re-read SEC command line and resource file options
 
     read_options();
 
@@ -9112,7 +9170,7 @@ sub check_signals {
 
     read_config();
 
-    # open input sources and resize the input buffer
+    # (re)open all input sources and resize the input buffer
 
     open_input(-1);
     resize_input_buffer();
@@ -9133,18 +9191,11 @@ sub check_signals {
 
     log_msg(LOG_NOTICE, "SIGABRT received: soft restart of SEC");
 
-    # close input sources
-
-    foreach $file (@inputfiles) {
-      if ($inputsrc{$file}->{"open"})  { close($inputsrc{$file}->{"fh"}); }
-    }
-
     # close the logfile and connection to the system logger
 
     if ($logfile)  { close(LOGFILE); }
     if ($syslogf)  { eval { Sys::Syslog::closelog() }; }
 
-    # now input sources and log handles have been closed -  
     # re-read SEC command line and resource file options
 
     read_options();
@@ -9171,9 +9222,10 @@ sub check_signals {
       delete @corr_list{@keys};
     }
 
-    # open input sources and resize the input buffer
+    # if -keepopen flag was specified, close old and open new input sources, 
+    # otherwise (re)open all input sources; also, resize the input buffer
 
-    open_input(-1);
+    open_input(-1, $keepopen);
     resize_input_buffer();
 
     # if -intevents flag was specified, generate the SEC_SOFTRESTART event
@@ -9504,6 +9556,7 @@ sub read_options {
   $tail = 1;
   $fromstart = 0;
   $detach = 0;
+  $keepopen = 0;
   $intevents = 0;
   $intcontexts = 0;
   $testonly = 0;
@@ -9514,11 +9567,11 @@ sub read_options {
 
   GetOptions( "conf=s" => \@conffilepat,
               "input=s" => \@inputfilepat,
-              "input_timeout=i" => \$input_timeout,
-              "timeout_script=s" => \$timeout_script,
-              "reopen_timeout=i" => \$reopen_timeout,
-              "check_timeout=i" => \$check_timeout,
-              "poll_timeout=f" => \$poll_timeout,
+              "input-timeout|input_timeout=i" => \$input_timeout,
+              "timeout-script|timeout_script=s" => \$timeout_script,
+              "reopen-timeout|reopen_timeout=i" => \$reopen_timeout,
+              "check-timeout|check_timeout=i" => \$check_timeout,
+              "poll-timeout|poll_timeout=f" => \$poll_timeout,
               "blocksize=i" => \$blocksize,
               "bufsize=i" => \$bufsize,
               "evstoresize=i" => \$evstoresize,
@@ -9532,6 +9585,7 @@ sub read_options {
               "tail!" => \$tail,
               "fromstart!" => \$fromstart,
               "detach!" => \$detach,
+              "keepopen!" => \$keepopen,
               "intevents!" => \$intevents,
               "intcontexts!" => \$intcontexts,
               "testonly!" => \$testonly,
@@ -9768,7 +9822,7 @@ $execactionfunc[LCALL] = \&execute_lcall_action;
 
 ### Set various global variables
 
-$lastcleanuptime = $startuptime = time();
+$startuptime = time();
 $processedlines = 0;
 
 ### Initialize input buffer
@@ -9795,6 +9849,12 @@ $bufpos = $bufsize - 1;
 ### If -intevents flag was specified, create generate the SEC_STARTUP event
 
 if ($intevents)  { internal_event("SEC_STARTUP"); }
+
+### search lists for accomplishing timed tasks and removing obsolete elements
+### (triggers Calendar rules, must be done between SEC_STARTUP and main loop)
+
+process_lists();
+$lastcleanuptime = time();
 
 ### The main loop - read lines from input stream and process them
 
@@ -9880,8 +9940,7 @@ for (;;) {
 
   }
 
-  # search all lists, performing timed tasks associated with elements
-  # and removing obsolete elements
+  # search lists for accomplishing timed tasks and removing obsolete elements
 
   if (time() - $lastcleanuptime >= $cleantime) {
     process_lists();

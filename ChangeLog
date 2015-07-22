@@ -1,3 +1,14 @@
+--- version 2.6.1
+
+* added support for the $+{_inputsrc} match variable.
+
+* added support for the --keepopen and --nokeepopen command line options;
+  also, dashes can be used instead of underscores in all option names.
+
+* starting from this version, Calendar rules are processed immediately
+  after SEC startup procedures.
+
+
 --- version 2.6.0
 
 * added support for the EventGroup rule.

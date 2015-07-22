@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.6.0 - sec.man
+.\" SEC (Simple Event Correlator) 2.6.1 - sec.man
 .\" Copyright (C) 2000-2011 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "March 2011" "SEC 2.6.0"
+.TH sec 1 "September 2011" "SEC 2.6.1"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -26,15 +26,15 @@ sec \- simple event correlator
 .br
 [--input=<file pattern>[=<context>] ...]
 .br
-[--input_timeout=<input timeout>]
+[--input-timeout=<input timeout>]
 .br
-[--timeout_script=<timeout script>]
+[--timeout-script=<timeout script>]
 .br
-[--reopen_timeout=<reopen timeout>]
+[--reopen-timeout=<reopen timeout>]
 .br
-[--check_timeout=<check timeout>]
+[--check-timeout=<check timeout>]
 .br
-[--poll_timeout=<poll timeout>]
+[--poll-timeout=<poll timeout>]
 .br
 [--blocksize=<io block size>]
 .br
@@ -61,6 +61,8 @@ sec \- simple event correlator
 [--fromstart | --nofromstart]
 .br
 [--detach | --nodetach]
+.br
+[--keepopen | --nokeepopen]
 .br
 [--intevents | --nointevents]
 .br
@@ -257,83 +259,106 @@ in a very brief fashion.
 The following sections will provide an in-depth  discussion of SEC features.
 .SH OPTIONS
 .TP
-.B --conf=<file pattern>
-expand <file pattern> to filenames (with the Perl 
+.B \-\-conf=<file_pattern>
+expand <file_pattern> to filenames (with the Perl 
 .BR glob () 
 function) and read event correlation rules from every file. Multiple
-.B --conf
+.B \-\-conf
 options can be specified at command line. Each time SEC receives a signal
-that forces a configuration reload, <file pattern> is re-evaluated. See also
+that forces a configuration reload, <file_pattern> is re-evaluated. See also
 TIMING section for a discussion on rule processing order for
 multiple configuration files.
 .TP 
-.B --input=<file pattern>[=<context>]
-expand <file pattern> to filenames (with the Perl
+.B \-\-input=<file_pattern>[=<context>]
+expand <file_pattern> to filenames (with the Perl
 .BR glob ()
 function) and use the files as input sources. An input file can be a regular 
 file, named pipe, or standard input if 
-.B -
+.B \-
 was specified. Multiple
-.B --input
-options can be specified at command line. Each time SEC receives a signal
-that forces it to reopen its input files, <file pattern> is re-evaluated.
+.B \-\-input
+options can be specified at command line. Each time SEC receives the 
+.B SIGHUP
+or
+.B SIGABRT
+signal, <file_pattern> is re-evaluated.
 If SEC experiences a system error when reading from an input file, it will
 close the file (use the
-.B --reopen_timeout
+.B \-\-reopen\-timeout
 option for reopening the file). If <context> is given, SEC will set up the 
 context <context> each time it reads a line from input files that correspond
-to <file pattern>. This will help the user to write rules that match data from
+to <file_pattern>. This will help the user to write rules that match data from
 particular input source(s) only. When there is an
-.B --input
+.B \-\-input
 option with <context> specified, it will automatically enable the
-.B --intcontexts
+.B \-\-intcontexts
 option. See INTERNAL EVENTS AND CONTEXTS section for more information.
 .TP 
-.BR --input_timeout=<input_timeout> ", " --timeout_script=<timeout_script>
+.BR \-\-input\-timeout=<input_timeout> ", " \-\-timeout\-script=<timeout_script>
 if SEC has not observed new data in an input file during <input_timeout>
 seconds (or the file was closed <input_timeout> seconds ago), <timeout_script> 
 will be executed with command line parameters 1 and <the name of the input 
 file>. If fresh data become available again, <timeout_script> will be executed
-with command line parameters 0 and <the name of the input file>.
+with command line parameters 0 and <the name of the input file>. Note that
+.B \-\-input_timeout 
+and 
+.B \-\-timeout_script
+options can be used as synonyms for 
+.B \-\-input\-timeout 
+and 
+.BR \-\-timeout\-script ,
+respectively.
 .TP 
-.B --reopen_timeout=<reopen_timeout>
-if an input file is in closed state (e.g., because SEC has failed to open it
-at startup), SEC will attempt to reopen the file after every
-<reopen_timeout> seconds until open succeeds.
+.B \-\-reopen\-timeout=<reopen_timeout> 
+if an input file is in the closed state (e.g., because SEC has failed to open 
+it at startup), SEC will attempt to reopen the file after every
+<reopen_timeout> seconds until open succeeds. 
+Note that 
+.B \-\-reopen_timeout
+is a synonym for
+.BR \-\-reopen\-timeout .
 .TP
-.B --check_timeout=<check_timeout>
+.B \-\-check\-timeout=<check_timeout>
 if SEC has not observed new data in an input file, the file will not be polled
 (both for status and data) during the next <check_timeout> seconds.
+Note that 
+.B \-\-check_timeout
+is a synonym for
+.BR \-\-check\-timeout .
 .TP
-.B --poll_timeout=<poll_timeout>
+.B \-\-poll\-timeout=<poll_timeout>
 a real number that specifies how many seconds SEC will sleep when no new data 
 were read from input files. Default is 0.1 seconds.
+Note that 
+.B \-\-poll_timeout
+is a synonym for
+.BR \-\-poll\-timeout .
 .TP
-.B --blocksize=<io_block_size>
+.B \-\-blocksize=<io_block_size>
 the number of bytes SEC will attempt to read at once from an input file. 
 Default is 1024 (i.e., read from input files by 1KB blocks).
 .TP 
-.B --bufsize=<input_buffer_size>
+.B \-\-bufsize=<input_buffer_size>
 set input buffer to hold last <input_buffer_size> lines that have been read 
 from input files. The content of input buffer will be compared with patterns 
 that are part of rule definitions (i.e., no more than <input_buffer_size> 
 lines can be matched by a pattern at a time). Default buffer size is 10 lines.
 .TP
-.B --evstoresize=<event_store_size>
+.B \-\-evstoresize=<event_store_size>
 set an upper limit to the number of events in context event stores. 
 .TP 
-.B --cleantime=<clean_time>
+.B \-\-cleantime=<clean_time>
 time interval in seconds that specifies how often internal event correlation
 and context lists are processed, in order to accomplish time-related tasks
 and to remove obsolete elements. See TIMING section for more information.
 Default is 1 second.
 .TP 
-.B --log=<logfile>
+.B \-\-log=<logfile>
 use <logfile> for logging SEC activities. Note that if the SEC standard error
 is connected to a terminal, messages will also be logged there, in order to
 facilitate debugging.
 .TP
-.B --syslog=<facility>
+.B \-\-syslog=<facility>
 use syslog for logging SEC activities. All messages will be logged with the 
 facility <facility>, e.g., 
 .I local0
@@ -343,7 +368,7 @@ for possible facility values). Warning: be careful with using this option if
 SEC is employed for monitoring syslog logfiles, because message loops might
 occur.
 .TP
-.B --debug=<debuglevel>
+.B \-\-debug=<debuglevel>
 set logging verbosity for SEC. Setting debuglevel to <debuglevel> 
 means that all messages of level <debuglevel> and lower are logged (e.g.,
 if <debuglevel> is 3, messages from levels 1-3 are logged). The
@@ -369,16 +394,16 @@ from SEC)
 Default <debuglevel> is 6 (i.e., log everything). See SIGNALS section
 for information on how to change <debuglevel> at runtime.
 .TP 
-.B --pid=<pidfile>
+.B \-\-pid=<pidfile>
 SEC will store its process ID to <pidfile> at startup.
 .TP
-.B --dump=<dumpfile>
+.B \-\-dump=<dumpfile>
 SEC will use <dumpfile> as its dumpfile. See SIGNALS section for more 
 information. Default is /tmp/sec.dump.
 .TP
-.BR --quoting ", " --noquoting 
+.BR \-\-quoting ", " \-\-noquoting 
 if the
-.B --quoting
+.B \-\-quoting
 option is specified, operation description strings that are supplied to 
 command lines of
 .I shellcmd
@@ -388,17 +413,17 @@ actions will be put inside apostrophes. All apostrophes ' that strings
 originally contain will be masked. This option prevents the shell from 
 interpreting special symbols that operation description strings might contain. 
 Default is
-.BR --noquoting .
+.BR \-\-noquoting .
 .TP 
-.BR --tail ", " --notail
+.BR \-\-tail ", " \-\-notail
 if the
-.B --notail
+.B \-\-notail
 option is specified, SEC will process all data that are currently available 
 in input files and exit after reaching all EOFs. Default is
-.B --tail
+.B \-\-tail
 -- SEC will jump to the end of input files and wait for new lines to arrive.
 With the
-.B --tail
+.B \-\-tail
 option, SEC follows an input file both by its name and i-node, and thus
 handles input file rotations seamlessly.
 If the input file is recreated or truncated, SEC will reopen it and process 
@@ -406,63 +431,77 @@ its content from the beginning. If the input file is removed (i.e., there is
 just an i-node left without a name), SEC will keep the i-node open and wait 
 for the input file recreation. 
 .TP 
-.BR --fromstart ", " --nofromstart
+.BR \-\-fromstart ", " \-\-nofromstart
 these flags have no meaning when the
-.B --notail
+.B \-\-notail
 option is also specified. When used in combination with
-.B --tail
+.B \-\-tail
 (or alone, since
-.B --tail
+.B \-\-tail
 is enabled by default),
-.B --fromstart
+.B \-\-fromstart
 will force SEC to read and process input files from the beginning to 
 the end, before the 'tail' mode is entered. Default is 
-.BR --nofromstart .
+.BR \-\-nofromstart .
 .TP 
-.BR --detach ", " --nodetach
+.BR \-\-detach ", " \-\-nodetach
 if the
-.B --detach
+.B \-\-detach
 option is specified, SEC will disassociate itself from the controlling
 terminal and become a daemon at startup (note that SEC will close its standard 
 input, standard output, and standard error, and change its working directory
 to the root directory). Default is 
-.BR --nodetach .
+.BR \-\-nodetach .
 .TP
-.BR --intevents ", " --nointevents
+.BR \-\-keepopen ", " \-\-nokeepopen
+if the
+.B \-\-keepopen
+option is specified, SEC will keep input files open across soft restarts.
+When the
+.B SIGABRT
+signal is received, SEC will not reopen input files which have been opened
+previously, but will only open input files which are in the closed state.
+The 
+.B \-\-nokeepopen 
+option forces SEC to close and (re)open all input files during soft restarts.
+Default is
+.BR \-\-nokeepopen .
+.TP
+.BR \-\-intevents ", " \-\-nointevents
 SEC will generate internal events when it starts up, when it receives
 certain signals, and when it terminates gracefully. Specific rules can be 
 written to match those internal events, in order to accomplish special
 tasks at SEC startup, restart, and shutdown. 
 See INTERNAL EVENTS AND CONTEXTS section for more information. Default is
-.BR --nointevents .
+.BR \-\-nointevents .
 .TP
-.BR --intcontexts ", " --nointcontexts
+.BR \-\-intcontexts ", " \-\-nointcontexts
 SEC will create an internal context when it reads a line from an input file.
 This will help the user to write rules that match data from particular input 
 source only. See INTERNAL EVENTS AND CONTEXTS section for more information. 
 Default is
-.BR --nointcontexts .
+.BR \-\-nointcontexts .
 .TP
-.BR --testonly ", " --notestonly
+.BR \-\-testonly ", " \-\-notestonly
 if the
-.B --testonly
+.B \-\-testonly
 option is specified, SEC will exit immediately after parsing the configuration 
 file(s). If the configuration file(s) contained no faulty rules, SEC will exit 
 with 0, otherwise with 1. Default is
-.BR --notestonly .
+.BR \-\-notestonly .
 .TP
-.BR --help ", " -?
+.BR \-\-help ", " \-?
 SEC will output usage information and exit.
 .TP
-.B --version
+.B \-\-version
 SEC will output version information and exit.
 .PP
 Note that options can be introduced both with the single dash (-) and double
 dash (--), and both the equal sign (=) and whitespace can be used for 
 separating the option name from the option value. For example,
-.B -conf=<file pattern>
+.B \-conf=<file_pattern>
 and
-.B --conf <file pattern>
+.B \-\-conf <file_pattern>
 options are equivalent.
 .SH CONFIGURATION FILE
 The SEC configuration file consists of rule definitions which are separated 
@@ -550,9 +589,12 @@ match variables can be used in other parts of the rule definition.
 .sp
 In addition to numbered match variables ($1, $2, etc.), SEC supports named
 match variables $+{name} and the $0 variable. The $0 variable holds the entire 
-string that the regular expression has matched. Named match variables can
-be created in newer versions of Perl regular expression language, e.g., 
-(?'myvar'AB|CD) sets $+{myvar} to AB or CD. 
+string of last N input lines that the regular expression has matched. 
+Named match variables can be created in newer versions of Perl regular 
+expression language, e.g., 
+(?'myvar'AB|CD) sets $+{myvar} to AB or CD. The special named match variable
+$+{_inputsrc} is created by SEC and holds input file name(s)
+where matching line(s) came from.
 .sp
 Also, SEC allows for match caching and for the creation of additional named 
 match variables through variable maps which are defined with the
@@ -599,18 +641,22 @@ varmap=printer_toner_or_ink_low; message=0; hostname=1
 The pattern matches "printer: toner/ink low" messages in a case insensitive
 manner from printers belonging to .mydomain. Note that the printer hostname
 is assigned to $1 and $+{hostname}, while the whole message line is assigned 
-to $0 and $+{message}. Also, these variables and their values are stored to 
+to $0 and $+{message}. The name of the file where message line came from is
+assigned to $+{_inputsrc}. Also, these variables and their values are stored to 
 the pattern match cache under the name "printer_toner_or_ink_low".
 .sp
 The following pattern definition produces a match if the last two input lines
-are AAA and BBB, sets $0 to "AAA<NEWLINE>BBB", and caches it under the name
-"aaa_bbb":
+are AAA and BBB:
 .sp
 ptype=regexp2
 .br
 pattern=^AAA\\nBBB$
 .br
 varmap=aaa_bbb
+.sp
+In the case of a match, $0 is set to "AAA<NEWLINE>BBB" and $+{_inputsrc} to 
+file names for matching lines. Also, these variable-value pairs are cached 
+under the name "aaa_bbb".
 .TP
 .I PerlFunc[N]
 pattern is a Perl function for matching the last N input lines
@@ -633,7 +679,8 @@ to 'undef'.
 If the function returns several values or a single value that is TRUE in 
 boolean context, the pattern matches. If the pattern matches, return values 
 will be assigned to numbered match variables ($1, $2, etc.). 
-Like with RegExp patterns, the $0 variable is set to matching input line(s)
+Like with RegExp patterns, the $0 variable is set to matching input line(s),
+the $+{_inputsrc} variable is set to input file name(s),
 and named match variables can be created from variable maps.
 For example, consider the following pattern definition:
 .sp
@@ -645,18 +692,19 @@ The pattern compares last two input lines in a stringwise manner ($_[1]
 holds the last line and $_[0] the preceding one), and matches if the lines
 are different. Note that the result of the comparison is assigned to $1,
 while two matching lines are concatenated (with the newline character
-between them) and assigned to $0. 
+between them) and assigned to $0. The file names for matching lines are 
+assigned to $+{_inputsrc}.
 .sp
-The following pattern definition produces a match if the input line contains
-either the string "abc" or "def", and sets $0 to the matching line. Both 
-$1 and $+{file} are set to the name of the input file; if the input line
-was a synthetic event, $1 and $+{file} are set to "SEC".
+The following pattern definition produces a match if the input line is not
+a synthetic event and contains either the string "abc" or "def". The $0 
+variable is set to the matching line, while $1, $+{file} and $+{_inputsrc}
+are set to the name of the input file: 
 .sp
 ptype=perlfunc
 .br
-pattern=sub { if ($_[0] =~ /(?:abc|def)/) { \\
+pattern=sub { if (defined($_[1]) && $_[0] =~ /(?:abc|def)/) \\
 .br
-return defined($_[1]) ? $_[1] : "SEC"; } return 0; }
+{ return $_[1]; } return 0; }
 .br
 varmap= file=1
 .TP
@@ -670,9 +718,9 @@ For example, if the input line matches the following pattern
 .sp
 ptype=perlfunc
 .br
-pattern=sub { if ($_[0] =~ /(?:abc|def)/) { \\
+pattern=sub { if (defined($_[1]) && $_[0] =~ /(?:abc|def)/) \\
 .br
-return defined($_[1]) ? $_[1] : "SEC"; } return 0; }
+{ return $_[1]; } return 0; }
 .br
 varmap=abc_or_def_found; file=1
 .sp
@@ -683,8 +731,8 @@ ptype=cached
 .br
 pattern=abc_or_def_found
 .sp
-will also produce a match for this input line, and set the $0, $1 
-and $+{file} variables to values from the previous match.
+will also produce a match for this input line, and set the $0, $1, $+{file}, 
+and $+{_inputsrc} variables to values from the previous match.
 .TP
 .I NSubStr[N]
 like
@@ -695,13 +743,15 @@ except that the result of the match is negated.
 like
 .IR RegExp[N] ,
 except that the result of the match is negated and variable maps are not 
-supported. Note that the only match variable set by the pattern is $0.
+supported. Note that the only match variables set by the pattern are $0
+and $+{_inputsrc}.
 .TP
 .I NPerlFunc[N]
 like
 .IR PerlFunc[N] ,
 except that the result of the match is negated and variable maps are not
-supported. Note that the only match variable set by the pattern is $0.
+supported. Note that the only match variables set by the pattern are $0
+and $+{_inputsrc}.
 .TP
 .I NCached
 like
@@ -931,11 +981,11 @@ No action.
 .TP 
 .I logonly [<string>]
 Message <string> is logged to destinations given with the
-.B --log
+.B \-\-log
 and
-.B --syslog
+.B \-\-syslog
 options. The level of the log message is set to 4 (see the
-.B --debug
+.B \-\-debug
 option for more information on log message levels). Default value
 for <string> is %s.
 .TP 
@@ -943,14 +993,14 @@ for <string> is %s.
 String <string> with a terminating newline is written to the file 
 <filename> (<filename> may not contain whitespace). File may be a regular 
 file, named pipe, or standard output (denoted by
-.BR - ).
+.BR \- ).
 If the file is a regular file, <string> is appended to the end of the file. 
 If the file does not exist, it is created as a regular file before writing.
 Default value for <string> is %s.
 .TP 
 .I shellcmd <cmdline>
 Fork a process for executing command line <cmdline>. If the
-.B --quoting
+.B \-\-quoting
 option was specified and <cmdline> contains %s variables, the value of %s
 is quoted with apostrophes before substituting it into <cmdline>;
 note if the value of %s contains apostrophes, they are masked with backslashes
@@ -1174,7 +1224,7 @@ to %<var>. If no value is returned, the function encounters a fatal runtime
 error, or %<ref> is not a code reference, the value of %<var> does not change.
 For additional information, see PERL INTEGRATION section.
 .TP 
-.I lcall %<var> [<paramlist>] -> <code>
+.I lcall %<var> [<paramlist>] \-> <code>
 Call the precompiled Perl function <code> and assign the result to the action
 list variable %<var>.
 The <code> parameter must be a valid Perl function definition that is compiled
@@ -2603,10 +2653,10 @@ cfset=sshd-rules auth-rules
 .PP
 When an sshd syslog message appears in input, rules from configuration files
 of the set
-.B sshd-rules
+.B sshd\-rules
 are first used for matching the message, and then rules from the configuration
 file set
-.B auth-rules
+.B auth\-rules
 are tried.
 .SS "OPTIONS RULE"
 The
@@ -2647,7 +2697,7 @@ remarks and comments.
 .B Examples:
 .PP
 The following rule adds the current configuration file to the set
-.B sshd-rules
+.B sshd\-rules
 which is used for matching input from Jump rules only:
 .PP
 type=Options
@@ -2752,7 +2802,7 @@ When new data appear in SEC input files, only one line is read at a time
 (even when more lines are available) and the input buffer is updated 
 with this line. Input buffer contains the last N lines from 
 the SEC input, in the order they were read (the value of N can be set with the
-.B --bufsize
+.B \-\-bufsize
 option). Updating the input buffer means that the new line becomes the first
 element of the buffer, while the last element (the oldest line) is removed 
 from the end of the buffer. Note that when both synthetic events and regular 
@@ -2791,7 +2841,7 @@ For example, if the Perl
 function returns filenames in ascending ASCII order, and configuration
 files /home/risto/A.conf, /home/risto/B.conf2, and /home/risto/C.conf
 are specified with
-.B --conf=/home/risto/*.conf --conf=/home/risto/*.conf2
+.B \-\-conf=/home/risto/*.conf \-\-conf=/home/risto/*.conf2
 in SEC command line,
 then SEC first matches the input against the rule sequence from A.conf, then
 from C.conf, and finally from B.conf2.
@@ -2843,22 +2893,22 @@ After the input buffer has been updated and its content has been matched
 by the rules, SEC handles caught signals 
 and checks the status of child processes.
 When the timeout specified with the
-.B --cleantime
+.B \-\-cleantime
 option has expired, SEC also checks the status of contexts and event 
 correlation operations. Therefore, relatively small values should be
 specified with the 
-.B --cleantime
+.B \-\-cleantime
 option, in order to retain the accuracy of the event correlation process.
 If the 
-.B --cleantime
+.B \-\-cleantime
 option is set to 0, SEC checks event correlation operations and contexts
 after processing every input line, but this consumes more CPU time.
 If the
-.B --poll_timeout
+.B \-\-poll\-timeout
 option value exceeds the value given with
-.BR --cleantime ,
+.BR \-\-cleantime ,
 the 
-.B --poll_timeout
+.B \-\-poll\-timeout
 option value takes precedence (i.e., sleeps after unsuccessful polls will 
 not be shortened).
 .PP
@@ -2892,7 +2942,7 @@ However, replacing the first action with
 will produce the correct result.
 .PP
 If the
-.B --intevents
+.B \-\-intevents
 command line option is given, SEC will generate internal events when
 it is started up, when it receives certain signals, and when it terminates
 normally. Inside SEC, internal event is treated as if it was a line that 
@@ -2920,7 +2970,7 @@ SEC_SHUTDOWN - generated when SEC receives the
 .B SIGTERM
 signal, or when SEC reaches all EOFs of input files after being started with 
 the
-.B --notail
+.B \-\-notail
 option. After generating SEC_SHUTDOWN event, SEC sleeps for 3 seconds 
 before sending SIGTERM to its child processes (if a child process was created
 immediately before SEC_SHUTDOWN, this delay leaves the process enough 
@@ -2933,15 +2983,15 @@ The SEC_INTERNAL_EVENT context is deleted immediately after the
 internal event has been matched against all rules.
 .PP
 If the
-.B --intcontexts
+.B \-\-intcontexts
 command line option is given, or there is an
-.B --input
+.B \-\-input
 option with a context specified, SEC creates an internal context each time
 it reads a line from an input file or a synthetic event.
 The internal context is deleted immediately after the line has
 been matched against all rules. For all input files that have the context
 name explicitly set with
-.BR "--input=<file pattern>=<context>" ,
+.BR \-\-input=<file_pattern>=<context> ,
 the name of the internal context is <context>. If the line was read from 
 the input file <filename> for which there is no context name set, the name 
 of the internal context is _FILE_EVENT_<filename>. 
@@ -3293,23 +3343,24 @@ Here is a simple resource file example:
 .br
 /etc/sec/test.conf
 .PP
-Note that although SEC re-reads its resource file at the
+Note that although SEC rereads its resource file at the
 reception of the
 .B SIGHUP
 or
 .B SIGABRT
 signal, adding an option that specifies a certain 
 startup procedure (e.g.,
-.B --pid
+.B \-\-pid
 or
-.BR --detach )
+.BR \-\-detach )
 will not produce the desired effect at runtime. Also note that the resource
 file content is *not* parsed by shell, therefore shell metacharacters are 
 passed to SEC as-is.
 .SH SIGNALS
 .TP 
 .B SIGHUP
-SEC will reopen its log and input files, reload its configuration, and 
+full restart -- SEC will reinterpret its command line and resource file 
+options, reopen its log and input files, reload its configuration, and 
 drop *all* event correlation state (all event correlation operations
 will be terminated, all contexts will be deleted, all action list variables 
 will be erased, etc.).
@@ -3318,13 +3369,20 @@ SEC will also send the
 signal to its child processes.
 .TP
 .B SIGABRT
-SEC will reopen its log and input files, and load its configuration from
-rule files which have been modified (file modification time returned by
+soft restart -- SEC will reinterpret its command line and resource file 
+options, and reopen its log file. If the 
+.B \-\-keepopen
+option is specified,
+previously opened input files will remain open across soft restart,
+otherwise all input files will be reopened.
+SEC will (re)load configuration from rule files which have been modified 
+(file modification time returned by
 .BR stat (2)
-has changed) or created after the previous configuration load.
+has changed) or created after the previous configuration load. 
 SEC will also terminate event correlation operations started from rule files
 that have been modified or removed after the previous configuration load.
-Other operations will remain intact.
+Other operations and previously loaded configuration from unmodified rule 
+files will remain intact.
 Note that on some systems
 .B SIGIOT
 is used in place of
