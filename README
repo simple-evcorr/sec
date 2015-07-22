@@ -1,4 +1,4 @@
-SEC (Simple Event Correlator) 2.7.0
+SEC (Simple Event Correlator) 2.7.1
 
 Introduction:
 -------------
@@ -23,8 +23,8 @@ work on other OS platforms.
 Because SEC is not tested against ancient Perl releases, it is recommended 
 to run SEC with at least Perl 5.8 (see http://www.perl.org for the latest 
 stable release). 
-SEC uses Perl Getopt, POSIX, Fcntl, IO::Handle, and Sys::Syslog modules
-which are included in the standard Perl installation.
+SEC uses Perl Getopt, POSIX, Fcntl, Socket, IO::Handle, and Sys::Syslog 
+modules which are included in the standard Perl installation.
 
 Files in this package:
 ----------------------

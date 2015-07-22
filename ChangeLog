@@ -1,3 +1,13 @@
+--- version 2.7.1
+
+* added support for the 'udgram', 'ustream', 'udpsock' and 'tcpsock' actions.
+
+* changed the behavior of the 'write' action -- instead of opening and closing
+  the file on each access, 'write' now keeps the file open across writes.
+
+* added support for the --socket-timeout command line option.
+
+
 --- version 2.7.0
 
 * added support for the 'if', 'while', 'break', 'continue', 'prepend', 

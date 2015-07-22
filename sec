@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.0 - sec
+# SEC (Simple Event Correlator) 2.7.1 - sec
 # Copyright (C) 2000-2013 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -109,6 +109,12 @@ use vars qw(
   @matchfunc
   @matchrulefunc
   $openlog
+  %output_files
+  %output_tcpconn
+  %output_tcpsock
+  %output_udgram
+  %output_udpsock
+  %output_ustream
   @pending_events
   $pidfile
   %pmatch_cache
@@ -127,6 +133,7 @@ use vars qw(
   $SYSLOGAVAIL
   $sec_options
   $sigreceived
+  $socket_timeout
   $softrefresh
   $startuptime
   $syslogf
@@ -145,6 +152,7 @@ use vars qw(
 use Getopt::Long;
 use POSIX qw(:errno_h :sys_wait_h SEEK_SET SEEK_CUR SEEK_END setsid);
 use Fcntl;
+use Socket;
 use IO::Handle;
 
 # check if Sys::Syslog is available
@@ -157,7 +165,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.0";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.1";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2013 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -170,6 +178,7 @@ Options:
   --reopen-timeout=<reopen timeout>
   --check-timeout=<check timeout>
   --poll-timeout=<poll timeout>
+  --socket-timeout=<socket timeout>
   --blocksize=<io block size>
   --bufsize=<input buffer size>
   --evstoresize=<event store size>
@@ -242,40 +251,44 @@ use constant GOTO		=> 2;
 use constant NONE		=> 0;
 use constant LOGONLY		=> 1;
 use constant WRITE		=> 2;
-use constant SHELLCOMMAND	=> 3;
-use constant SPAWN		=> 4;
-use constant PIPE		=> 5;
-use constant CREATECONTEXT	=> 6;
-use constant DELETECONTEXT	=> 7;
-use constant OBSOLETECONTEXT	=> 8;
-use constant SETCONTEXT		=> 9;
-use constant ALIAS		=> 10;
-use constant UNALIAS		=> 11;
-use constant ADD		=> 12;
-use constant PREPEND		=> 13;
-use constant FILL		=> 14;
-use constant REPORT		=> 15;
-use constant COPYCONTEXT	=> 16;
-use constant EMPTYCONTEXT	=> 17;
-use constant POP		=> 18;
-use constant SHIFT		=> 19;
-use constant EXISTS		=> 20;
-use constant GETSIZE		=> 21;
-use constant GETALIASES		=> 22;
-use constant GETLIFETIME	=> 23;
-use constant GETCTIME		=> 24;
-use constant SETCTIME		=> 25;
-use constant EVENT		=> 26;
-use constant TEVENT		=> 27;
-use constant RESET		=> 28;
-use constant GETWINPOS		=> 29;
-use constant SETWINPOS		=> 30;
-use constant ASSIGN		=> 31;
-use constant FREE		=> 32;
-use constant EVAL		=> 33;
-use constant CALL		=> 34;
-use constant LCALL		=> 35;
-use constant REWRITE		=> 36;
+use constant UDGRAM		=> 3;
+use constant USTREAM		=> 4;
+use constant UDPSOCK		=> 5;
+use constant TCPSOCK		=> 6;
+use constant SHELLCOMMAND	=> 7;
+use constant SPAWN		=> 8;
+use constant PIPE		=> 9;
+use constant CREATECONTEXT	=> 10;
+use constant DELETECONTEXT	=> 11;
+use constant OBSOLETECONTEXT	=> 12;
+use constant SETCONTEXT		=> 13;
+use constant ALIAS		=> 14;
+use constant UNALIAS		=> 15;
+use constant ADD		=> 16;
+use constant PREPEND		=> 17;
+use constant FILL		=> 18;
+use constant REPORT		=> 19;
+use constant COPYCONTEXT	=> 20;
+use constant EMPTYCONTEXT	=> 21;
+use constant POP		=> 22;
+use constant SHIFT		=> 23;
+use constant EXISTS		=> 24;
+use constant GETSIZE		=> 25;
+use constant GETALIASES		=> 26;
+use constant GETLIFETIME	=> 27;
+use constant GETCTIME		=> 28;
+use constant SETCTIME		=> 29;
+use constant EVENT		=> 30;
+use constant TEVENT		=> 31;
+use constant RESET		=> 32;
+use constant GETWINPOS		=> 33;
+use constant SETWINPOS		=> 34;
+use constant ASSIGN		=> 35;
+use constant FREE		=> 36;
+use constant EVAL		=> 37;
+use constant CALL		=> 38;
+use constant LCALL		=> 39;
+use constant REWRITE		=> 40;
 use constant IF			=> 100;
 use constant WHILE		=> 101;
 use constant BREAK		=> 102;
@@ -833,7 +846,7 @@ sub analyze_action {
   my($ruleid) = $_[3];
   my($action2) = $_[4];
   my($list) = $_[5];
-  my($keyword, $file, $cmdline);
+  my($keyword, $file, $peer, $cmdline);
   my($sign, $rule, $count);
   my($actionlist, @action);
   my($actionlist2, @action2);
@@ -852,21 +865,50 @@ sub analyze_action {
     return (LOGONLY, $event); 
   }
 
-  elsif ($action =~ /^write\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^(write|udgram|ustream)\s+(\S+)\s*(.*)/i) {
 
-    $file = $1;
-    $event = $2;
+    $keyword = lc($1);
+    $file = $2;
+    $event = $3;
+
+    if ($WIN32 && $keyword ne "write") {
+      log_msg(LOG_ERR, "'$keyword' action is not supported on Win32");
+      return INVALIDVALUE;
+    }
+
     process_action_parens($file, $event);
 
     if (!length($file)) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Empty filename given for write action");
+              "Empty filename given for $keyword action");
       return INVALIDVALUE;
     }
 
     if (!length($event))  { $event = "%s"; }
 
-    return (WRITE, $file, $event); 
+    if ($keyword eq "write") { return (WRITE, $file, $event); }
+    elsif ($keyword eq "udgram") { return (UDGRAM, $file, $event); }
+    else { return (USTREAM, $file, $event); }
+  }
+
+  elsif ($action =~ /^(udpsock|tcpsock)\s+(\S+)\s*(.*)/i) {
+
+    $keyword = lc($1);
+    $peer = $2;
+    $event = $3;
+
+    process_action_parens($peer, $event);
+
+    if (!length($peer)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty peername given for $keyword action");
+      return INVALIDVALUE;
+    }
+
+    if (!length($event))  { $event = "%s"; }
+
+    if ($keyword eq "udpsock") { return (UDPSOCK, $peer, $event); }
+    else { return (TCPSOCK, $peer, $event); }
   }
 
   elsif ($action =~ /^shellcmd\s+(.*\S)/i) { 
@@ -3684,14 +3726,11 @@ sub shell_cmd {
 
   my($cmd) = $_[0];
   my($collect_output) = $_[1];
-  my($pid);
-  local *READ_FH;   # we need to use 'local *', since each time we enter
-                    # this procedure a new filehandle must be created that
-                    # will be returned from this procedure for external use
+  my($pid, $read, $write);
 
   # set up a pipe before calling fork()
 
-  if ($collect_output && !pipe(READ_FH, WRITE_FH)) {
+  if ($collect_output && !pipe($read, $write)) {
     log_msg(LOG_ERR, "Could not create pipe for command '$cmd' ($!)");
     return undef; 
   }
@@ -3705,8 +3744,8 @@ sub shell_cmd {
   if (!defined($pid)) { 
 
     if ($collect_output) { 
-      close(READ_FH); 
-      close(WRITE_FH); 
+      close($read); 
+      close($write); 
     }
 
     log_msg(LOG_ERR, "Could not fork command '$cmd' ($!)");
@@ -3723,8 +3762,8 @@ sub shell_cmd {
                         "Action2" => undef };
 
     if ($collect_output) {
-      close(WRITE_FH);
-      $children{$pid}->{"fh"} = *READ_FH;
+      close($write);
+      $children{$pid}->{"fh"} = $read;
       $children{$pid}->{"open"} = 1;
     }
 
@@ -3740,13 +3779,13 @@ sub shell_cmd {
     # connect the standard output of the child process to the pipe
     # and make the standard output unbuffered
 
-    close(READ_FH);
+    close($read);
 
-    if (!open(STDOUT, ">&WRITE_FH"))  { exit(1); }
+    if (!open(STDOUT, ">&", $write))  { exit(1); }
     select(STDOUT); 
     $| = 1;
 
-    close(WRITE_FH);
+    close($write);
 
   }
 
@@ -3885,7 +3924,7 @@ sub execute_write_action {
   my($actionlist) = $_[0];
   my($text) = $_[1];
   my($i) = $_[2];
-  my($file, $event, $nbytes);
+  my($file, $event, $handle, $nbytes);
 
   $file = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -3895,44 +3934,334 @@ sub execute_write_action {
 
   log_msg(LOG_DEBUG, "Writing event '$event' to file $file");
 
-  if ($file eq "-") {
+  if (!exists($output_files{$file})) {
 
-    select(STDOUT); 
-    $| = 1;
-    print STDOUT "$event\n";
+    if ($file eq "-") {
 
-  } elsif (-e $file  &&  ! -f $file  &&  ! -p $file) {
-
-    log_msg(LOG_WARN, "Can't write event '$event' to file $file!", 
-            "(not a regular file or pipe)");
-
-  } elsif (-p $file) {
-
-    if (sysopen(WRITEFILE, $file, O_WRONLY | O_NONBLOCK)) {
-
-      $nbytes = syswrite(WRITEFILE, "$event\n");
-      close(WRITEFILE);
-
-      if (!defined($nbytes)  ||  $nbytes != length($event) + 1) {
+      if (!open($handle, ">&STDOUT")) {
         log_msg(LOG_WARN,
-                "Error when writing event '$event' to pipe $file!");
+                "Can't dup stdout for writing event '$event' ($!)");
+        return 3;
       }
+      $output_files{$file} = $handle;
+
+    } elsif (-e $file  &&  ! -f $file  &&  ! -p $file) {
+
+      log_msg(LOG_WARN, "Can't write event '$event' to file $file", 
+              "(not a regular file or pipe)");
+      return 3;
+
+    } elsif (-p $file) {
+
+      if (!sysopen($handle, $file, O_WRONLY | O_NONBLOCK)) {
+        log_msg(LOG_WARN,
+                "Can't open $file for writing event '$event' ($!)");
+        return 3;
+      }
+      $output_files{$file} = $handle;
 
     } else {
-      log_msg(LOG_WARN,
-              "Can't open pipe $file for writing event '$event'!");
+
+      if (!sysopen($handle, $file, O_WRONLY | O_CREAT | O_APPEND)) {
+        log_msg(LOG_WARN,
+                "Can't open $file for writing event '$event' ($!)");
+        return 3;
+      }
+      $output_files{$file} = $handle;
+
     }
 
-  } else {
+  }
 
-    if (open(WRITEFILE, ">>$file")) {
-      print WRITEFILE "$event\n";
-      close(WRITEFILE);
-    } else {
-      log_msg(LOG_WARN,
-              "Can't open file $file for writing event '$event'!");
+  $nbytes = syswrite($output_files{$file}, "$event\n");
+
+  if (!defined($nbytes)) {
+    log_msg(LOG_WARN, "Error when writing event '$event' to $file ($!)");
+    delete $output_files{$file};
+  } elsif ($nbytes != length($event) + 1) {
+    log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+  }
+
+  return 3;
+}
+
+sub execute_udgram_action {
+
+  local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($file, $event, $handle, $nbytes);
+
+  $file = $actionlist->[$i+1];
+  $event = $actionlist->[$i+2];
+
+  substitute_var($file, $text);
+  substitute_var($event, $text);
+
+  log_msg(LOG_DEBUG, "Writing event '$event' to unix datagram socket $file");
+
+  if (!exists($output_udgram{$file})) {
+
+    if (! -S $file) {
+      log_msg(LOG_WARN, "Can't write event '$event' to socket $file", 
+              "(socket does not exist)");
+      return 3;
     }
 
+    if (!socket($handle, PF_UNIX, SOCK_DGRAM, 0)) {
+      log_msg(LOG_WARN,
+              "Can't create socket for writing event '$event' ($!)");
+      return 3;
+    }
+
+    if (!connect($handle, sockaddr_un($file))) {
+      log_msg(LOG_WARN,
+              "Can't connect to socket $file for writing event '$event' ($!)");
+      return 3;
+    }
+
+    $handle->blocking(0);
+    $output_udgram{$file} = $handle;
+  }
+
+  $nbytes = send($output_udgram{$file}, $event, 0);
+
+  if (!defined($nbytes)) {
+    log_msg(LOG_WARN, "Error when writing event '$event' to $file ($!)");
+    delete $output_udgram{$file};
+  } elsif ($nbytes != length($event)) {
+    log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+  }
+
+  return 3;
+}
+
+sub execute_ustream_action {
+
+  local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($file, $event, $handle, $nbytes);
+
+  $file = $actionlist->[$i+1];
+  $event = $actionlist->[$i+2];
+
+  substitute_var($file, $text);
+  substitute_var($event, $text);
+
+  log_msg(LOG_DEBUG, "Writing event '$event' to unix stream socket $file");
+
+  if (!exists($output_ustream{$file})) {
+
+    if (! -S $file) {
+      log_msg(LOG_WARN, "Can't write event '$event' to socket $file", 
+              "(socket does not exist)");
+      return 3;
+    }
+
+    if (!socket($handle, PF_UNIX, SOCK_STREAM, 0)) {
+      log_msg(LOG_WARN,
+              "Can't create socket for writing event '$event' ($!)");
+      return 3;
+    }
+
+    if (!connect($handle, sockaddr_un($file))) {
+      log_msg(LOG_WARN,
+              "Can't connect to socket $file for writing event '$event' ($!)");
+      return 3;
+    }
+
+    $handle->blocking(0);
+    $output_ustream{$file} = $handle;
+  }
+
+  $nbytes = send($output_ustream{$file}, $event, 0);
+
+  if (!defined($nbytes)) {
+    log_msg(LOG_WARN, "Error when writing event '$event' to $file ($!)");
+    delete $output_ustream{$file};
+  } elsif ($nbytes != length($event)) {
+    log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+  }
+
+  return 3;
+}
+
+sub execute_udpsock_action {
+
+  local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($peer, $handle, $event, $nbytes);
+  my($host, $port, $iaddr, $paddr);
+
+  $peer = $actionlist->[$i+1];
+  $event = $actionlist->[$i+2];
+
+  substitute_var($peer, $text);
+  substitute_var($event, $text);
+
+  log_msg(LOG_DEBUG, "Sending event '$event' to UDP peer $peer");
+
+  if (!exists($output_udpsock{$peer})) {
+
+    if ($peer !~ /^(.+):(\d+)$/) {
+      log_msg(LOG_WARN,
+      "Can't connect to UDP peer $peer for sending event '$event'",
+      "(peer not in host:portnumber format)");
+      return 3;
+    }
+
+    $host = $1;
+    $port = $2;
+
+    $iaddr = inet_aton($host);
+
+    if (!defined($iaddr)) {
+      log_msg(LOG_WARN,
+      "Can't connect to UDP peer $peer for sending event '$event'",
+      "(unable to convert $host to Internet address)");
+      return 3;
+    }
+
+    $paddr = sockaddr_in($port, $iaddr);
+
+    if (!socket($handle, PF_INET, SOCK_DGRAM, getprotobyname('udp'))) {
+      log_msg(LOG_WARN,
+              "Can't create socket for sending event '$event' ($!)");
+      return 3;
+    }
+
+    if (!connect($handle, $paddr)) {
+      log_msg(LOG_WARN,
+      "Can't connect to UDP peer $peer for sending event '$event' ($!)");
+      return 3;
+    }
+
+    $handle->blocking(0);
+    $output_udpsock{$peer} = $handle;
+  } 
+
+  $nbytes = send($output_udpsock{$peer}, $event, 0);
+
+  if (!defined($nbytes)) {
+    log_msg(LOG_WARN, 
+            "Error when sending event '$event' to UDP peer $peer ($!)");
+    delete $output_udpsock{$peer};
+  } elsif ($nbytes != length($event)) {
+    log_msg(LOG_WARN, "$nbytes bytes of '$event' sent to UDP peer $peer");
+  }
+
+  return 3;
+}
+
+sub execute_tcpsock_action {
+
+  local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($peer, $handle, $event, $nbytes);
+  my($host, $port, $iaddr, $paddr, $win, $ret, $elem);
+
+  $peer = $actionlist->[$i+1];
+  $event = $actionlist->[$i+2];
+
+  substitute_var($peer, $text);
+  substitute_var($event, $text);
+
+  log_msg(LOG_DEBUG, "Sending event '$event' to TCP peer $peer");
+
+  if (exists($output_tcpconn{$peer})) {
+
+    $win = '';
+    vec($win, fileno($output_tcpconn{$peer}->{"socket"}), 1) = 1;
+    $ret = select(undef, $win, undef, 0);
+
+    if (!defined($ret) || $ret <= 0) {
+      if (time() - $output_tcpconn{$peer}->{"time"} > $socket_timeout) {
+        log_msg(LOG_WARN,
+        "Can't connect to TCP peer $peer for sending event '$event'",
+        "(connection timed out)");
+        delete $output_tcpconn{$peer};
+      } else {
+        push @{$output_tcpconn{$peer}->{"buffer"}}, $event;
+      }
+      return 3;
+    }
+
+    foreach $elem (@{$output_tcpconn{$peer}->{"buffer"}}) {
+      $nbytes = send($output_tcpconn{$peer}->{"socket"}, $elem, 0);
+      if (!defined($nbytes)) {
+        log_msg(LOG_WARN, 
+                "Error when sending event '$elem' to TCP peer $peer ($!)");
+        delete $output_tcpconn{$peer};
+        return 3;
+      } elsif ($nbytes != length($elem)) {
+        log_msg(LOG_WARN, "$nbytes bytes of '$elem' sent to TCP peer $peer");
+      }
+    }
+
+    $output_tcpsock{$peer} = $output_tcpconn{$peer}->{"socket"};
+    delete $output_tcpconn{$peer};
+
+  } elsif (!exists($output_tcpsock{$peer})) {
+
+    if ($peer !~ /^(.+):(\d+)$/) {
+      log_msg(LOG_WARN,
+      "Can't connect to TCP peer $peer for sending event '$event'",
+      "(peer not in host:portnumber format)");
+      return 3;
+    }
+
+    $host = $1;
+    $port = $2;
+
+    $iaddr = inet_aton($host);
+
+    if (!defined($iaddr)) {
+      log_msg(LOG_WARN,
+      "Can't connect to TCP peer $peer for sending event '$event'",
+      "(unable to convert $host to Internet address)");
+      return 3;
+    }
+
+    $paddr = sockaddr_in($port, $iaddr);
+
+    if (!socket($handle, PF_INET, SOCK_STREAM, getprotobyname('tcp'))) {
+      log_msg(LOG_WARN,
+              "Can't create socket for sending event '$event' ($!)");
+      return 3;
+    }
+
+    $handle->blocking(0);
+
+    if (!connect($handle, $paddr)) {
+      if ($! == EINPROGRESS) {
+        $output_tcpconn{$peer} = { "socket" => $handle, 
+                                   "buffer" => [ $event ],
+                                   "time" => time() };
+      } else {
+        log_msg(LOG_WARN,
+        "Can't connect to TCP peer $peer for sending event '$event' ($!)");
+      }
+      return 3;
+    }
+
+    $output_tcpsock{$peer} = $handle;
+  } 
+
+  $nbytes = send($output_tcpsock{$peer}, $event, 0);
+
+  if (!defined($nbytes)) {
+    log_msg(LOG_WARN, 
+            "Error when sending event '$event' to TCP peer $peer ($!)");
+    delete $output_tcpsock{$peer};
+  } elsif ($nbytes != length($event)) {
+    log_msg(LOG_WARN, "$nbytes bytes of '$event' sent to TCP peer $peer");
   }
 
   return 3;
@@ -7733,6 +8062,10 @@ sub process_lists {
     @pending_events = @buffer;
   }
 
+  # check the status of TCP connections which are not yet established
+
+  if (scalar(%output_tcpconn))  { check_tcp_conn(); }
+
   # process CALENDAR rules
 
   @time = localtime(time());
@@ -7953,6 +8286,26 @@ sub actionlist2str {
 
     elsif ($actionlist->[$i] == WRITE) {
       $result .= "write " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == UDGRAM) {
+      $result .= "udgram " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == USTREAM) {
+      $result .= "ustream " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == UDPSOCK) {
+      $result .= "udpsock " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == TCPSOCK) {
+      $result .= "tcpsock " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
       $i += 3;
     }
 
@@ -9013,9 +9366,9 @@ sub dump_data {
 }
 
 
-#################################################################
-# Functions related to input handling and input buffer management
-#################################################################
+##############################################################
+# Functions related to IO handling and input buffer management
+##############################################################
 
 
 # Parameters: par1 - reference to input buffer
@@ -9347,6 +9700,57 @@ sub check_children {
 }
 
 
+# Parameters: -
+# Action: check the status of TCP connections which are not yet established
+
+sub check_tcp_conn {
+
+  local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
+  my($time, $peer, $win, $ret, $event, $nbytes, $sockok);
+
+  $time = time();
+
+  foreach $peer (keys %output_tcpconn) {
+
+    $win = '';
+    vec($win, fileno($output_tcpconn{$peer}->{"socket"}), 1) = 1;
+    $ret = select(undef, $win, undef, 0);
+
+    if (defined($ret) && $ret > 0) {
+
+      $sockok = 1;
+
+      foreach $event (@{$output_tcpconn{$peer}->{"buffer"}}) {
+        $nbytes = send($output_tcpconn{$peer}->{"socket"}, $event, 0);
+        if (!defined($nbytes)) {
+          log_msg(LOG_WARN, 
+                  "Error when sending event '$event' to TCP peer $peer ($!)");
+          $sockok = 0;
+          last;
+        } elsif ($nbytes != length($event)) {
+          log_msg(LOG_WARN, 
+                  "$nbytes bytes of '$event' sent to TCP peer $peer");
+        }
+      }
+
+      if ($sockok) {
+        $output_tcpsock{$peer} = $output_tcpconn{$peer}->{"socket"};
+      }
+
+      delete $output_tcpconn{$peer};
+
+    } else {
+      if ($time - $output_tcpconn{$peer}->{"time"} > $socket_timeout) {
+        log_msg(LOG_WARN,
+                "Can't connect to TCP peer $peer (connection timed out)");
+        delete $output_tcpconn{$peer};
+      } 
+    }
+
+  }
+}
+
+
 # Parameters: par1 - name of the input file
 #             par2 - file position
 # Action: Input file will be opened and file position will be moved to 
@@ -9358,10 +9762,7 @@ sub open_input_file {
 
   my($file) = $_[0];
   my($fpos) = $_[1];
-  my(@stat, $regfile);
-  local *INPUT;   # we need to use 'local *', since each time we enter
-                  # this procedure a new filehandle must be created, that
-                  # will be returned from this procedure for external use
+  my($input, $regfile, @stat);
 
   # if input is stdin, duplicate it
 
@@ -9372,7 +9773,7 @@ sub open_input_file {
       return undef;
     }
 
-    while (!open(INPUT, "<&STDIN")) {
+    while (!open($input, "<&STDIN")) {
       if ($! == EINTR)  { next; }
       log_msg(LOG_ERR, "Can't dup stdin ($!)"); 
       return undef;
@@ -9384,7 +9785,7 @@ sub open_input_file {
 
   elsif (-f $file) {
 
-    while (!sysopen(INPUT, $file, O_RDONLY)) {
+    while (!sysopen($input, $file, O_RDONLY)) {
       if ($! == EINTR)  { next; }
       log_msg(LOG_ERR, "Can't open input file $file ($!)"); 
       return undef;
@@ -9403,7 +9804,7 @@ sub open_input_file {
       return undef;
     }
 
-    while (!sysopen(INPUT, $file, O_RDWR)) {
+    while (!sysopen($input, $file, O_RDWR)) {
       if ($! == EINTR)  { next; }
       log_msg(LOG_ERR, "Can't open input file $file ($!)"); 
       return undef;
@@ -9439,37 +9840,37 @@ sub open_input_file {
   if ($file ne "-") {
 
     for (;;) {
-      @stat = stat(INPUT);
+      @stat = stat($input);
       if (scalar(@stat))  { last; }
       if ($! == EINTR)  { next; }
       log_msg(LOG_ERR, "Can't stat input file $file through filehandle ($!)"); 
-      close(INPUT);
+      close($input);
       return undef;
     }
 
   } else { @stat = ("-", "-"); }
 
-  # if INPUT filehandle is connected to a regular file, set the file type
+  # if input filehandle is connected to a regular file, set the file type
   # flag to 1; also, if $fpos == -1 or $fpos > 0, seek the given position 
   # in the file
 
-  if (-f INPUT) {
+  if (-f $input) {
 
     if ($fpos == -1) {
 
-      while (!sysseek(INPUT, 0, SEEK_END)) {
+      while (!sysseek($input, 0, SEEK_END)) {
         if ($! == EINTR)  { next; }
         log_msg(LOG_ERR, "Can't seek EOF in input file $file ($!)");
-        close(INPUT);
+        close($input);
         return undef;
       }
 
     } elsif ($fpos > 0) {
 
-      while (!sysseek(INPUT, $fpos, SEEK_SET)) {
+      while (!sysseek($input, $fpos, SEEK_SET)) {
         if ($! == EINTR)  { next; }
         log_msg(LOG_ERR, "Can't seek position $fpos in input file $file ($!)");
-        close(INPUT);
+        close($input);
         return undef;
       }
 
@@ -9479,7 +9880,7 @@ sub open_input_file {
 
   } else { $regfile = 0; }
 
-  return (*INPUT, $stat[0], $stat[1], $regfile);
+  return ($input, $stat[0], $stat[1], $regfile);
 
 }
 
@@ -10100,6 +10501,16 @@ sub check_signals {
 
     @pending_events = ();
 
+    # close all output files and sockets (dropping all filehandles from
+    # memory closes them implicitly)
+
+    %output_files = ();
+    %output_udgram = ();
+    %output_ustream = ();
+    %output_tcpconn = ();
+    %output_tcpsock = ();
+    %output_udpsock = ();
+
     # close the logfile and connection to the system logger
 
     if ($logfile)  { close(LOGFILE); }
@@ -10138,6 +10549,16 @@ sub check_signals {
   if ($softrefresh) {
 
     log_msg(LOG_NOTICE, "SIGABRT received: soft restart of SEC");
+
+    # close all output files and sockets (dropping all filehandles from
+    # memory closes them implicitly)
+
+    %output_files = ();
+    %output_udgram = ();
+    %output_ustream = ();
+    %output_tcpconn = ();
+    %output_tcpsock = ();
+    %output_udpsock = ();
 
     # close the logfile and connection to the system logger
 
@@ -10206,7 +10627,18 @@ sub check_signals {
 
   if ($openlog) {
 
-    log_msg(LOG_NOTICE, "SIGUSR2 received: restarting logging");
+    log_msg(LOG_NOTICE, 
+            "SIGUSR2 received: closing outputs and restarting logging");
+
+    # close all output files and sockets (dropping all filehandles from
+    # memory closes them implicitly)
+
+    %output_files = ();
+    %output_udgram = ();
+    %output_ustream = ();
+    %output_tcpconn = ();
+    %output_tcpsock = ();
+    %output_udpsock = ();
 
     # reopen the logfile and connection to the system logger
 
@@ -10490,6 +10922,7 @@ sub read_options {
   $reopen_timeout = 0;
   $check_timeout = 0;
   $poll_timeout = 0.1;
+  $socket_timeout = 60;
   $blocksize = 1024;
   $bufsize = 10;
   $evstoresize = 0;
@@ -10520,6 +10953,7 @@ sub read_options {
               "reopen-timeout|reopen_timeout=i" => \$reopen_timeout,
               "check-timeout|check_timeout=i" => \$check_timeout,
               "poll-timeout|poll_timeout=f" => \$poll_timeout,
+              "socket-timeout|socket_timeout=i" => \$socket_timeout,
               "blocksize=i" => \$blocksize,
               "bufsize=i" => \$bufsize,
               "evstoresize=i" => \$evstoresize,
@@ -10548,6 +10982,7 @@ sub read_options {
   if ($reopen_timeout < 0)  { $reopen_timeout = 0; }
   if ($check_timeout < 0)  { $check_timeout = 0; }
   if ($poll_timeout < 0)  { $poll_timeout = 0.1; }
+  if ($socket_timeout <= 0)  { $socket_timeout = 60; }
   if ($blocksize <= 0)  { $blocksize = 1024; }
   if ($bufsize <= 0)  { $bufsize = 10; }
   if ($evstoresize < 0)  { $evstoresize = 0; }
@@ -10725,6 +11160,10 @@ $processrulefunc[JUMP] = \&process_jump_rule;
 $actioncopyfunc[NONE] = \&copy_one_elem_action;
 $actioncopyfunc[LOGONLY] = \&copy_two_elem_action;
 $actioncopyfunc[WRITE] = \&copy_three_elem_action;
+$actioncopyfunc[UDGRAM] = \&copy_three_elem_action;
+$actioncopyfunc[USTREAM] = \&copy_three_elem_action;
+$actioncopyfunc[UDPSOCK] = \&copy_three_elem_action;
+$actioncopyfunc[TCPSOCK] = \&copy_three_elem_action;
 $actioncopyfunc[SHELLCOMMAND] = \&copy_two_elem_action;
 $actioncopyfunc[SPAWN] = \&copy_two_elem_action;
 $actioncopyfunc[PIPE] = \&copy_three_elem_action;
@@ -10767,6 +11206,10 @@ $actioncopyfunc[CONTINUE] = \&copy_one_elem_action;
 $actionsubstfunc[NONE] = \&subst_none_break_continue;
 $actionsubstfunc[LOGONLY] = \&subst_two_elem_action;
 $actionsubstfunc[WRITE] = \&subst_three_elem_action;
+$actionsubstfunc[UDGRAM] = \&subst_three_elem_action;
+$actionsubstfunc[USTREAM] = \&subst_three_elem_action;
+$actionsubstfunc[UDPSOCK] = \&subst_three_elem_action;
+$actionsubstfunc[TCPSOCK] = \&subst_three_elem_action;
 $actionsubstfunc[SHELLCOMMAND] = \&subst_two_elem_action;
 $actionsubstfunc[SPAWN] = \&subst_two_elem_action;
 $actionsubstfunc[PIPE] = \&subst_three_elem_action;
@@ -10809,6 +11252,10 @@ $actionsubstfunc[CONTINUE] = \&subst_none_break_continue;
 $execactionfunc[NONE] = \&execute_none_action;
 $execactionfunc[LOGONLY] = \&execute_logonly_action;
 $execactionfunc[WRITE] = \&execute_write_action;
+$execactionfunc[UDGRAM] = \&execute_udgram_action;
+$execactionfunc[USTREAM] = \&execute_ustream_action;
+$execactionfunc[UDPSOCK] = \&execute_udpsock_action;
+$execactionfunc[TCPSOCK] = \&execute_tcpsock_action;
 $execactionfunc[SHELLCOMMAND] = \&execute_shellcmd_action;
 $execactionfunc[SPAWN] = \&execute_spawn_action;
 $execactionfunc[PIPE] = \&execute_pipe_action;

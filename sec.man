@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.7.0 - sec.man
+.\" SEC (Simple Event Correlator) 2.7.1 - sec.man
 .\" Copyright (C) 2000-2013 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "January 2013" "SEC 2.7.0"
+.TH sec 1 "March 2013" "SEC 2.7.1"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -35,6 +35,8 @@ sec \- simple event correlator
 [--check-timeout=<check timeout>]
 .br
 [--poll-timeout=<poll timeout>]
+.br
+[--socket-timeout=<socket timeout>]
 .br
 [--blocksize=<io block size>]
 .br
@@ -349,6 +351,14 @@ Note that
 .B \-\-poll_timeout
 is a synonym for
 .BR \-\-poll\-timeout .
+.TP
+.B \-\-socket\-timeout=<socket_timeout>
+if a network connection to a remote peer can't be established within 
+<socket_timeout> seconds, give up. Default is 60 seconds.
+Note that 
+.B \-\-socket_timeout
+is a synonym for
+.BR \-\-socket\-timeout .
 .TP
 .B \-\-blocksize=<io_block_size>
 the number of bytes SEC will attempt to read at once from an input file. 
@@ -1154,6 +1164,58 @@ file, named pipe, or standard output (denoted by
 .BR \- ).
 If the file is a regular file, <string> is appended to the end of the file. 
 If the file does not exist, it is created as a regular file before writing.
+Note that the file will not be closed after the action completes, and
+the following 
+.I write
+actions will access an already open file. 
+However, several signals cause the file to be closed and reopened
+(see SIGNALS section for more information).
+Default value for <string> is %s.
+.TP 
+.I udgram <filename> [<string>]
+String <string> is written to the UNIX datagram socket <filename> 
+(<filename> may not contain whitespace). 
+Note that the socket will not be closed after the action completes, and
+the following 
+.I udgram
+actions will access an already open socket. 
+However, several signals cause the socket to be closed and reopened
+(see SIGNALS section for more information).
+Default value for <string> is %s.
+.TP 
+.I ustream <filename> [<string>]
+String <string> is written to the UNIX stream socket <filename> 
+(<filename> may not contain whitespace).
+Note that the socket will not be closed after the action completes, and
+the following 
+.I ustream
+actions will access an already open socket.
+However, several signals cause the socket to be closed and reopened
+(see SIGNALS section for more information).
+Default value for <string> is %s.
+.TP 
+.I udpsock <host>:<port> [<string>]
+String <string> is sent to the UDP port <port> of the host <host>.
+Note that the UDP socket which is used for communication will not be closed 
+after the action completes, and the following 
+.I udpsock
+actions for the same remote peer will use an already existing socket.
+However, several signals cause the socket to be closed and recreated
+(see SIGNALS section for more information).
+Default value for <string> is %s.
+.TP 
+.I tcpsock <host>:<port> [<string>]
+String <string> is sent to the TCP port <port> of the host <host>.
+The timeout value given with the
+.B \-\-socket\-timeout
+option determines for how many seconds SEC will attempt to establish 
+a connection to the remote peer. 
+Note that the relevant TCP socket will not be closed after the action 
+completes, and the following 
+.I tcpsock
+actions for the same peer will use an already existing socket.
+However, several signals cause the socket to be closed and recreated
+(see SIGNALS section for more information).
 Default value for <string> is %s.
 .TP 
 .I shellcmd <cmdline>
@@ -3659,7 +3721,8 @@ passed to SEC as-is.
 .TP 
 .B SIGHUP
 full restart -- SEC will reinterpret its command line and resource file 
-options, reopen its log and input files, reload its configuration, and 
+options, reopen its log and input files, close its output files and sockets
+(these will be reopened on demand), reload its configuration, and 
 drop *all* event correlation state (all event correlation operations
 will be terminated, all contexts will be deleted, all action list variables 
 will be erased, etc.).
@@ -3669,7 +3732,8 @@ signal to its child processes.
 .TP
 .B SIGABRT
 soft restart -- SEC will reinterpret its command line and resource file 
-options, and reopen its log file. If the 
+options, reopen its log file, and close its output files and sockets
+(these will be reopened on demand). If the 
 .B \-\-keepopen
 option is specified,
 previously opened input files will remain open across soft restart,
@@ -3694,7 +3758,8 @@ created contexts, etc.) will be written
 to the SEC dumpfile.
 .TP 
 .B SIGUSR2
-SEC will reopen its logfile (useful for logfile rotation). 
+SEC will reopen its logfile (useful for logfile rotation), and also close
+its output files and sockets which will be reopened on demand.
 .TP
 .B SIGINT
 SEC will increase its logging level by one; if the current level is 6,
