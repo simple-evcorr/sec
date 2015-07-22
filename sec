@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.1 - sec
+# SEC (Simple Event Correlator) 2.7.2 - sec
 # Copyright (C) 2000-2013 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -165,7 +165,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.1";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.2";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2013 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -1384,7 +1384,7 @@ sub analyze_action {
     $event = $2;
     process_action_parens($count, $event);
 
-    if (!length($timestamp)) {
+    if (!length($count)) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Empty linecount given for rewrite action");
       return INVALIDVALUE;

@@ -1,3 +1,8 @@
+--- version 2.7.2
+
+* fixed a bug in the parsing of the 'rewrite' action.
+
+
 --- version 2.7.1
 
 * added support for the 'udgram', 'ustream', 'udpsock' and 'tcpsock' actions.
