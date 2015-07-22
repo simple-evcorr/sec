@@ -1,3 +1,14 @@
+--- version 2.7.3
+
+* improvements to 'spawn', 'write', 'udgram', 'ustream', 'udpsock' and 
+  'tcpsock' actions.
+
+* starting from this version, process interactivity check is accomplished
+  with  POSIX getpgrp() and tcgetpgrp() functions.
+
+* fixed a bug in substituting ${number} match variables.
+
+
 --- version 2.7.2
 
 * fixed a bug in the parsing of the 'rewrite' action.

@@ -1,4 +1,4 @@
-SEC (Simple Event Correlator) 2.7.2
+SEC (Simple Event Correlator) 2.7.3
 
 Introduction:
 -------------
@@ -39,9 +39,13 @@ Author:
 -------
 Risto Vaarandi (ristov at users d0t s0urcef0rge d0t net)
 
-Acknowledgements:
------------------
+Acknowledgments:
+----------------
 This work is supported by SEB.
-The author thanks the following people for supplying software patches and 
-documentation fixes: Al Sorrell, James Brown, John P. Rouillard, Jon Frazier,
-Mark D. Nagel, Rick Casey, and William Gertz.
+The author thanks the following people for supplying software patches,
+documentation fixes, and suggesting new features:
+Al Sorrell, David Lang, James Brown, Jon Frazier, Mark D. Nagel, Peter Eckel,
+Rick Casey, and William Gertz.
+Last but not least, the author expresses his profound gratitute to
+John P. Rouillard for many great ideas and creative discussions that have
+helped to develop SEC.

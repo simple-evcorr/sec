@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.2 - sec
+# SEC (Simple Event Correlator) 2.7.3 - sec
 # Copyright (C) 2000-2013 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -149,8 +149,9 @@ use vars qw(
 
 ##### Load modules and set some global variables ##### 
 
+use POSIX qw(:errno_h :sys_wait_h SEEK_SET SEEK_CUR SEEK_END 
+             setsid ctermid getpgrp tcgetpgrp);
 use Getopt::Long;
-use POSIX qw(:errno_h :sys_wait_h SEEK_SET SEEK_CUR SEEK_END setsid);
 use Fcntl;
 use Socket;
 use IO::Handle;
@@ -165,7 +166,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.2";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.3";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2013 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -327,6 +328,7 @@ use constant SYSLOG_LEVELS => {
 use constant SEPARATOR		=> " | ";
 
 use constant TERMTIMEOUT	=> 3;
+use constant BATCHREADLIMIT	=> 8192;
 
 
 ###############################################################
@@ -3938,7 +3940,8 @@ sub execute_write_action {
 
     if ($file eq "-") {
 
-      if (!open($handle, ">&STDOUT")) {
+      while (!open($handle, ">&STDOUT")) {
+        if ($! == EINTR)  { next; }
         log_msg(LOG_WARN,
                 "Can't dup stdout for writing event '$event' ($!)");
         return 3;
@@ -3953,7 +3956,8 @@ sub execute_write_action {
 
     } elsif (-p $file) {
 
-      if (!sysopen($handle, $file, O_WRONLY | O_NONBLOCK)) {
+      while (!sysopen($handle, $file, O_WRONLY | O_NONBLOCK)) {
+        if ($! == EINTR)  { next; }
         log_msg(LOG_WARN,
                 "Can't open $file for writing event '$event' ($!)");
         return 3;
@@ -3962,7 +3966,8 @@ sub execute_write_action {
 
     } else {
 
-      if (!sysopen($handle, $file, O_WRONLY | O_CREAT | O_APPEND)) {
+      while (!sysopen($handle, $file, O_WRONLY | O_CREAT | O_APPEND)) {
+        if ($! == EINTR)  { next; }
         log_msg(LOG_WARN,
                 "Can't open $file for writing event '$event' ($!)");
         return 3;
@@ -3970,19 +3975,22 @@ sub execute_write_action {
       $output_files{$file} = $handle;
 
     }
-
   }
 
-  $nbytes = syswrite($output_files{$file}, "$event\n");
+  for (;;) {
 
-  if (!defined($nbytes)) {
-    log_msg(LOG_WARN, "Error when writing event '$event' to $file ($!)");
-    delete $output_files{$file};
-  } elsif ($nbytes != length($event) + 1) {
-    log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+    $nbytes = syswrite($output_files{$file}, "$event\n");
+    
+    if (!defined($nbytes)) {
+      if ($! == EINTR)  { next; }
+      log_msg(LOG_WARN, "Error when writing event '$event' to $file ($!)");
+      delete $output_files{$file};
+    } elsif ($nbytes != length($event) + 1) {
+      log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+    }
+
+    return 3;
   }
-
-  return 3;
 }
 
 sub execute_udgram_action {
@@ -4001,40 +4009,68 @@ sub execute_udgram_action {
 
   log_msg(LOG_DEBUG, "Writing event '$event' to unix datagram socket $file");
 
-  if (!exists($output_udgram{$file})) {
+  # if the socket already exists, use it for transmitting data; if the
+  # transmission fails (e.g., the server has been restarted and the socket
+  # file has been recreated), recreate the socket and attempt retransmission
 
-    if (! -S $file) {
-      log_msg(LOG_WARN, "Can't write event '$event' to socket $file", 
-              "(socket does not exist)");
-      return 3;
+  if (exists($output_udgram{$file})) {
+
+    for (;;) {
+
+      $nbytes = send($output_udgram{$file}, $event, 0);
+  
+      if (!defined($nbytes)) {
+        if ($! == EINTR)  { next; }
+        log_msg(LOG_DEBUG, 
+                "Could not write event '$event' to $file ($!), retrying");
+        delete $output_udgram{$file};
+        last;
+      } elsif ($nbytes != length($event)) {
+        log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+        return 3;
+      } else {
+        return 3;
+      }
+
     }
-
-    if (!socket($handle, PF_UNIX, SOCK_DGRAM, 0)) {
-      log_msg(LOG_WARN,
-              "Can't create socket for writing event '$event' ($!)");
-      return 3;
-    }
-
-    if (!connect($handle, sockaddr_un($file))) {
-      log_msg(LOG_WARN,
-              "Can't connect to socket $file for writing event '$event' ($!)");
-      return 3;
-    }
-
-    $handle->blocking(0);
-    $output_udgram{$file} = $handle;
   }
 
-  $nbytes = send($output_udgram{$file}, $event, 0);
-
-  if (!defined($nbytes)) {
-    log_msg(LOG_WARN, "Error when writing event '$event' to $file ($!)");
-    delete $output_udgram{$file};
-  } elsif ($nbytes != length($event)) {
-    log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+  if (! -S $file) {
+    log_msg(LOG_WARN, "Can't write event '$event' to socket $file", 
+            "(socket does not exist)");
+    return 3;
   }
 
-  return 3;
+  if (!socket($handle, PF_UNIX, SOCK_DGRAM, 0)) {
+    log_msg(LOG_WARN,
+            "Can't create socket for writing event '$event' ($!)");
+    return 3;
+  }
+
+  while (!connect($handle, sockaddr_un($file))) {
+    if ($! == EINTR)  { next; }
+    log_msg(LOG_WARN,
+            "Can't connect to socket $file for writing event '$event' ($!)");
+    return 3;
+  }
+
+  $handle->blocking(0);
+  $output_udgram{$file} = $handle;
+
+  for (;;) {
+
+    $nbytes = send($output_udgram{$file}, $event, 0);
+
+    if (!defined($nbytes)) {
+      if ($! == EINTR)  { next; }
+      log_msg(LOG_WARN, "Error when writing event '$event' to $file ($!)");
+      delete $output_udgram{$file};
+    } elsif ($nbytes != length($event)) {
+      log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+    }
+
+    return 3;
+  }
 }
 
 sub execute_ustream_action {
@@ -4053,40 +4089,68 @@ sub execute_ustream_action {
 
   log_msg(LOG_DEBUG, "Writing event '$event' to unix stream socket $file");
 
-  if (!exists($output_ustream{$file})) {
+  # if the socket already exists, use it for transmitting data; if the
+  # transmission fails (e.g., the server has been restarted and the socket
+  # file has been recreated), recreate the socket and attempt retransmission
 
-    if (! -S $file) {
-      log_msg(LOG_WARN, "Can't write event '$event' to socket $file", 
-              "(socket does not exist)");
-      return 3;
+  if (exists($output_ustream{$file})) {
+
+    for (;;) {
+
+      $nbytes = send($output_ustream{$file}, $event, 0);
+
+      if (!defined($nbytes)) {
+        if ($! == EINTR)  { next; }
+        log_msg(LOG_DEBUG, 
+                "Could not write event '$event' to $file ($!), retrying");
+        delete $output_ustream{$file};
+        last;
+      } elsif ($nbytes != length($event)) {
+        log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+        return 3;
+      } else {
+        return 3;
+      }
+
     }
-
-    if (!socket($handle, PF_UNIX, SOCK_STREAM, 0)) {
-      log_msg(LOG_WARN,
-              "Can't create socket for writing event '$event' ($!)");
-      return 3;
-    }
-
-    if (!connect($handle, sockaddr_un($file))) {
-      log_msg(LOG_WARN,
-              "Can't connect to socket $file for writing event '$event' ($!)");
-      return 3;
-    }
-
-    $handle->blocking(0);
-    $output_ustream{$file} = $handle;
   }
 
-  $nbytes = send($output_ustream{$file}, $event, 0);
-
-  if (!defined($nbytes)) {
-    log_msg(LOG_WARN, "Error when writing event '$event' to $file ($!)");
-    delete $output_ustream{$file};
-  } elsif ($nbytes != length($event)) {
-    log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+  if (! -S $file) {
+    log_msg(LOG_WARN, "Can't write event '$event' to socket $file", 
+            "(socket does not exist)");
+    return 3;
   }
 
-  return 3;
+  if (!socket($handle, PF_UNIX, SOCK_STREAM, 0)) {
+    log_msg(LOG_WARN,
+            "Can't create socket for writing event '$event' ($!)");
+    return 3;
+  }
+
+  while (!connect($handle, sockaddr_un($file))) {
+    if ($! == EINTR)  { next; }
+    log_msg(LOG_WARN,
+            "Can't connect to socket $file for writing event '$event' ($!)");
+    return 3;
+  }
+
+  $handle->blocking(0);
+  $output_ustream{$file} = $handle;
+
+  for (;;) {
+
+    $nbytes = send($output_ustream{$file}, $event, 0);
+
+    if (!defined($nbytes)) {
+      if ($! == EINTR)  { next; }
+      log_msg(LOG_WARN, "Error when writing event '$event' to $file ($!)");
+      delete $output_ustream{$file};
+    } elsif ($nbytes != length($event)) {
+      log_msg(LOG_WARN, "$nbytes bytes of '$event' written to $file");
+    }
+
+    return 3;
+  }
 }
 
 sub execute_udpsock_action {
@@ -4106,56 +4170,85 @@ sub execute_udpsock_action {
 
   log_msg(LOG_DEBUG, "Sending event '$event' to UDP peer $peer");
 
-  if (!exists($output_udpsock{$peer})) {
+  # if the socket already exists, use it for transmitting data; if the
+  # transmission fails (e.g., server responded with ICMP port unreachable
+  # to previous transmission which raises an error condition for the socket),
+  # create a new socket and attempt retransmission
 
-    if ($peer !~ /^(.+):(\d+)$/) {
-      log_msg(LOG_WARN,
-      "Can't connect to UDP peer $peer for sending event '$event'",
-      "(peer not in host:portnumber format)");
-      return 3;
+  if (exists($output_udpsock{$peer})) {
+
+    for (;;) {
+
+      $nbytes = send($output_udpsock{$peer}, $event, 0);
+
+      if (!defined($nbytes)) {
+        if ($! == EINTR)  { next; }
+        log_msg(LOG_DEBUG, 
+        "Could not send event '$event' to UDP peer $peer ($!), retrying");
+        delete $output_udpsock{$peer};
+        last;
+      } elsif ($nbytes != length($event)) {
+        log_msg(LOG_WARN, "$nbytes bytes of '$event' sent to UDP peer $peer");
+        return 3;
+      } else {
+        return 3;
+      }
+
     }
-
-    $host = $1;
-    $port = $2;
-
-    $iaddr = inet_aton($host);
-
-    if (!defined($iaddr)) {
-      log_msg(LOG_WARN,
-      "Can't connect to UDP peer $peer for sending event '$event'",
-      "(unable to convert $host to Internet address)");
-      return 3;
-    }
-
-    $paddr = sockaddr_in($port, $iaddr);
-
-    if (!socket($handle, PF_INET, SOCK_DGRAM, getprotobyname('udp'))) {
-      log_msg(LOG_WARN,
-              "Can't create socket for sending event '$event' ($!)");
-      return 3;
-    }
-
-    if (!connect($handle, $paddr)) {
-      log_msg(LOG_WARN,
-      "Can't connect to UDP peer $peer for sending event '$event' ($!)");
-      return 3;
-    }
-
-    $handle->blocking(0);
-    $output_udpsock{$peer} = $handle;
-  } 
-
-  $nbytes = send($output_udpsock{$peer}, $event, 0);
-
-  if (!defined($nbytes)) {
-    log_msg(LOG_WARN, 
-            "Error when sending event '$event' to UDP peer $peer ($!)");
-    delete $output_udpsock{$peer};
-  } elsif ($nbytes != length($event)) {
-    log_msg(LOG_WARN, "$nbytes bytes of '$event' sent to UDP peer $peer");
   }
 
-  return 3;
+  if ($peer !~ /^(.+):(\d+)$/) {
+    log_msg(LOG_WARN,
+    "Can't connect to UDP peer $peer for sending event '$event'",
+    "(peer not in host:portnumber format)");
+    return 3;
+  }
+
+  $host = $1;
+  $port = $2;
+
+  $iaddr = inet_aton($host);
+
+  if (!defined($iaddr)) {
+    log_msg(LOG_WARN,
+    "Can't connect to UDP peer $peer for sending event '$event'",
+    "(unable to convert $host to Internet address)");
+    return 3;
+  }
+
+  $paddr = sockaddr_in($port, $iaddr);
+
+  if (!socket($handle, PF_INET, SOCK_DGRAM, getprotobyname('udp'))) {
+    log_msg(LOG_WARN,
+            "Can't create socket for sending event '$event' ($!)");
+    return 3;
+  }
+
+  while (!connect($handle, $paddr)) {
+    if ($! == EINTR)  { next; }
+    log_msg(LOG_WARN,
+    "Can't connect to UDP peer $peer for sending event '$event' ($!)");
+    return 3;
+  }
+
+  $handle->blocking(0);
+  $output_udpsock{$peer} = $handle;
+
+  for (;;) {
+
+    $nbytes = send($output_udpsock{$peer}, $event, 0);
+
+    if (!defined($nbytes)) {
+      if ($! == EINTR)  { next; }
+      log_msg(LOG_WARN, 
+              "Error when sending event '$event' to UDP peer $peer ($!)");
+      delete $output_udpsock{$peer};
+    } elsif ($nbytes != length($event)) {
+      log_msg(LOG_WARN, "$nbytes bytes of '$event' sent to UDP peer $peer");
+    }
+
+    return 3;
+  }
 }
 
 sub execute_tcpsock_action {
@@ -4175,17 +4268,57 @@ sub execute_tcpsock_action {
 
   log_msg(LOG_DEBUG, "Sending event '$event' to TCP peer $peer");
 
-  if (exists($output_tcpconn{$peer})) {
+  # If the socket exists and there is an established connection to remote
+  # peer, send data to the peer. In the case of fully or partially successful 
+  # transmission, return immediately; if sending failed, close the socket 
+  # and attempt resending with a newly created socket later in the function.
 
-    $win = '';
-    vec($win, fileno($output_tcpconn{$peer}->{"socket"}), 1) = 1;
-    $ret = select(undef, $win, undef, 0);
+  if (exists($output_tcpsock{$peer})) {
+
+    for (;;) {
+
+      $nbytes = send($output_tcpsock{$peer}, $event, 0);
+
+      if (!defined($nbytes)) {
+        if ($! == EINTR)  { next; }
+        log_msg(LOG_DEBUG, 
+        "Could not send event '$event' to TCP peer $peer ($!), retrying");
+        delete $output_tcpsock{$peer};
+        last;
+      } elsif ($nbytes != length($event)) {
+        log_msg(LOG_WARN, "$nbytes bytes of '$event' sent to TCP peer $peer");
+        return 3;
+      } else {
+        return 3;
+      }
+
+    }
+  } 
+
+  # If the socket exists but the connection has not been established yet,
+  # check the latest status of the connection. If the connection is still 
+  # pending and the establishment timeout has been exceeded, close the socket, 
+  # drop all previously buffered data, and return immediately. 
+  # If the connection is still pending and the establishment timeout is not 
+  # exceeded, buffer the data for future transmission and return immediately. 
+  # If the latest status indicates the connection has become established, 
+  # send previously buffered data and current data to remote peer and return 
+  # immediately (in the case of errors, retransmission is not attempted and 
+  # data is not buffered, but socket is closed).
+
+  elsif (exists($output_tcpconn{$peer})) {
+
+    for (;;) {
+      $win = '';
+      vec($win, fileno($output_tcpconn{$peer}->{"socket"}), 1) = 1;
+      $ret = select(undef, $win, undef, 0);
+      if (defined($ret) || $! != EINTR)  { last; }
+    }
 
     if (!defined($ret) || $ret <= 0) {
       if (time() - $output_tcpconn{$peer}->{"time"} > $socket_timeout) {
         log_msg(LOG_WARN,
-        "Can't connect to TCP peer $peer for sending event '$event'",
-        "(connection timed out)");
+        "Can't connect to TCP peer $peer (connection establishment timeout)");
         delete $output_tcpconn{$peer};
       } else {
         push @{$output_tcpconn{$peer}->{"buffer"}}, $event;
@@ -4193,9 +4326,12 @@ sub execute_tcpsock_action {
       return 3;
     }
 
+    push @{$output_tcpconn{$peer}->{"buffer"}}, $event;
+
     foreach $elem (@{$output_tcpconn{$peer}->{"buffer"}}) {
       $nbytes = send($output_tcpconn{$peer}->{"socket"}, $elem, 0);
       if (!defined($nbytes)) {
+        if ($! == EINTR)  { redo; }
         log_msg(LOG_WARN, 
                 "Error when sending event '$elem' to TCP peer $peer ($!)");
         delete $output_tcpconn{$peer};
@@ -4208,63 +4344,71 @@ sub execute_tcpsock_action {
     $output_tcpsock{$peer} = $output_tcpconn{$peer}->{"socket"};
     delete $output_tcpconn{$peer};
 
-  } elsif (!exists($output_tcpsock{$peer})) {
-
-    if ($peer !~ /^(.+):(\d+)$/) {
-      log_msg(LOG_WARN,
-      "Can't connect to TCP peer $peer for sending event '$event'",
-      "(peer not in host:portnumber format)");
-      return 3;
-    }
-
-    $host = $1;
-    $port = $2;
-
-    $iaddr = inet_aton($host);
-
-    if (!defined($iaddr)) {
-      log_msg(LOG_WARN,
-      "Can't connect to TCP peer $peer for sending event '$event'",
-      "(unable to convert $host to Internet address)");
-      return 3;
-    }
-
-    $paddr = sockaddr_in($port, $iaddr);
-
-    if (!socket($handle, PF_INET, SOCK_STREAM, getprotobyname('tcp'))) {
-      log_msg(LOG_WARN,
-              "Can't create socket for sending event '$event' ($!)");
-      return 3;
-    }
-
-    $handle->blocking(0);
-
-    if (!connect($handle, $paddr)) {
-      if ($! == EINPROGRESS) {
-        $output_tcpconn{$peer} = { "socket" => $handle, 
-                                   "buffer" => [ $event ],
-                                   "time" => time() };
-      } else {
-        log_msg(LOG_WARN,
-        "Can't connect to TCP peer $peer for sending event '$event' ($!)");
-      }
-      return 3;
-    }
-
-    $output_tcpsock{$peer} = $handle;
+    return 3;
   } 
 
-  $nbytes = send($output_tcpsock{$peer}, $event, 0);
+  # If the socket did not exist previously or the established connection 
+  # was closed because of an error, recreate the socket and attempt to
+  # establish a new connection for transmitting data to remote peer
 
-  if (!defined($nbytes)) {
-    log_msg(LOG_WARN, 
-            "Error when sending event '$event' to TCP peer $peer ($!)");
-    delete $output_tcpsock{$peer};
-  } elsif ($nbytes != length($event)) {
-    log_msg(LOG_WARN, "$nbytes bytes of '$event' sent to TCP peer $peer");
+  if ($peer !~ /^(.+):(\d+)$/) {
+     log_msg(LOG_WARN,
+     "Can't connect to TCP peer $peer for sending event '$event'",
+     "(peer not in host:portnumber format)");
+     return 3;
   }
 
-  return 3;
+  $host = $1;
+  $port = $2;
+  $iaddr = inet_aton($host);
+
+  if (!defined($iaddr)) {
+    log_msg(LOG_WARN,
+    "Can't connect to TCP peer $peer for sending event '$event'",
+    "(unable to convert $host to Internet address)");
+    return 3;
+  }
+
+  $paddr = sockaddr_in($port, $iaddr);
+
+  if (!socket($handle, PF_INET, SOCK_STREAM, getprotobyname('tcp'))) {
+    log_msg(LOG_WARN,
+            "Can't create socket for sending event '$event' ($!)");
+    return 3;
+  }
+
+  $handle->blocking(0);
+
+  while (!connect($handle, $paddr)) {
+    if ($! == EINTR) { next; }
+    if ($! == EINPROGRESS) {
+      $output_tcpconn{$peer} = { "socket" => $handle, 
+                                 "buffer" => [ $event ],
+                                 "time" => time() };
+    } else {
+      log_msg(LOG_WARN,
+      "Can't connect to TCP peer $peer for sending event '$event' ($!)");
+    }
+    return 3;
+  }
+
+  $output_tcpsock{$peer} = $handle;
+
+  for (;;) {
+
+    $nbytes = send($output_tcpsock{$peer}, $event, 0);
+
+    if (!defined($nbytes)) {
+      if ($! == EINTR) { next; }
+      log_msg(LOG_WARN, 
+              "Error when sending event '$event' to TCP peer $peer ($!)");
+      delete $output_tcpsock{$peer};
+    } elsif ($nbytes != length($event)) {
+      log_msg(LOG_WARN, "$nbytes bytes of '$event' sent to TCP peer $peer");
+    }
+
+    return 3;
+  }
 }
 
 sub execute_shellcmd_action {
@@ -6453,18 +6597,18 @@ sub subst_string {
 
     elsif (index($msg, "$token:{") == -1) {    
 
-      $msg =~ s/$token2(?:$token2|(\d+)|
+      $msg =~ s/$token2(?:$token2|(\d+)|\{(\d+)\}|
                           \+\{([[:alpha:]_][\w!]*|\d+)\})/
       !defined($+)?$token:(defined($subst_ref->{$+})?$subst_ref->{$+}:"")/egx;
 
     } else {
 
-      $msg =~ s/$token2(?:$token2|(\d+)|
+      $msg =~ s/$token2(?:$token2|(\d+)|\{(\d+)\}|
                           \+\{([[:alpha:]_][\w!]*|\d+)\}|
                           :\{([[:alpha:]]\w*):([[:alpha:]_][\w!]*|\d+)\})/
       !defined($+)?$token:
-          (!defined($3)?(defined($subst_ref->{$+})?$subst_ref->{$+}:"")
-           :(defined($pmatch_cache{$3}->{$+})?$pmatch_cache{$3}->{$+}:""))/egx;
+          (!defined($4)?(defined($subst_ref->{$+})?$subst_ref->{$+}:"")
+           :(defined($pmatch_cache{$4}->{$+})?$pmatch_cache{$4}->{$+}:""))/egx;
     }
   }
 
@@ -8066,6 +8210,11 @@ sub process_lists {
 
   if (scalar(%output_tcpconn))  { check_tcp_conn(); }
 
+  # read from TCP sockets, in order to detect if established connections
+  # have been closed by remote peers
+
+  if (scalar(%output_tcpsock))  { read_tcp_sock(); }
+
   # process CALENDAR rules
 
   @time = localtime(time());
@@ -9520,12 +9669,19 @@ sub internal_event {
 
 
 # Parameters: par1 - process ID
-# Action: read available data from process par1 and create events.
+#             par2 - 'read all' flag
+# Action: read available data from process par1 and create events. If par2 
+#         is defined and non-zero, the function will keep reading until all 
+#         available data have been consumed; otherwise the function will 
+#         return when the number of consumed bytes exceeds BATCHREADLIMIT.
 
 sub consume_pipe {
 
   my($pid) = $_[0];
-  my($rin, $ret, $pos, $nbytes, $event);
+  my($read_all) = $_[1];
+  my($rin, $ret, $pos, $nbytes, $total, $event);
+
+  $total = 0;
 
   for (;;) {
 
@@ -9582,7 +9738,7 @@ sub consume_pipe {
       $children{$pid}->{"open"} = 0;
       last; 
 
-    }
+    } else { $total += $nbytes; }
 
     # create all lines of pipe buffer as events, except the last one
     # which could be a partial line with its 2nd part still not written
@@ -9600,6 +9756,8 @@ sub consume_pipe {
       push @events, $event;
 
     }
+
+    if (!$read_all  &&  $total >= BATCHREADLIMIT)  { last; }
 
   }
 
@@ -9657,10 +9815,10 @@ sub check_children {
 
       $exitcode = $? >> 8;
 
-      # if the terminated child was started as a part of 'spawn'
-      # action and its pipe has not been emptied yet, do it now
+      # if the terminated child was started with the 'spawn' action and
+      # its pipe is still open, read all available data from the pipe
 
-      if ($children{$pid}->{"open"})  { consume_pipe($pid); }
+      if ($children{$pid}->{"open"})  { consume_pipe($pid, 1); }
 
       # if the child exit code is zero and the child was started as 
       # a part of SINGLE_W_SCRIPT rule, execute action list 'Action'
@@ -9712,17 +9870,23 @@ sub check_tcp_conn {
 
   foreach $peer (keys %output_tcpconn) {
 
-    $win = '';
-    vec($win, fileno($output_tcpconn{$peer}->{"socket"}), 1) = 1;
-    $ret = select(undef, $win, undef, 0);
+    for (;;) {
+      $win = '';
+      vec($win, fileno($output_tcpconn{$peer}->{"socket"}), 1) = 1;
+      $ret = select(undef, $win, undef, 0);
+      if (defined($ret) || $! != EINTR)  { last; }
+    }
 
     if (defined($ret) && $ret > 0) {
 
       $sockok = 1;
 
       foreach $event (@{$output_tcpconn{$peer}->{"buffer"}}) {
+
         $nbytes = send($output_tcpconn{$peer}->{"socket"}, $event, 0);
+
         if (!defined($nbytes)) {
+          if ($! == EINTR)  { redo; }
           log_msg(LOG_WARN, 
                   "Error when sending event '$event' to TCP peer $peer ($!)");
           $sockok = 0;
@@ -9742,10 +9906,55 @@ sub check_tcp_conn {
     } else {
       if ($time - $output_tcpconn{$peer}->{"time"} > $socket_timeout) {
         log_msg(LOG_WARN,
-                "Can't connect to TCP peer $peer (connection timed out)");
+        "Can't connect to TCP peer $peer (connection establishment timeout)");
         delete $output_tcpconn{$peer};
       } 
     }
+
+  }
+}
+
+
+# Parameters: -
+# Action: read data from TCP sockets, in order to detect if remote peers
+#         have closed established connections
+
+sub read_tcp_sock {
+
+  my($peer, $rin, $ret, $buffer, $nbytes, $total);
+
+  foreach $peer (keys %output_tcpsock) {
+
+    $total = 0;
+
+    for (;;) {
+
+      $rin = '';
+      vec($rin, fileno($output_tcpsock{$peer}), 1) = 1;
+      $ret = select($rin, undef, undef, 0);
+
+      if (!defined($ret) && $! == EINTR)  { next; }
+      if (!defined($ret) || $ret <= 0)  { last; }
+
+      $ret = recv($output_tcpsock{$peer}, $buffer, $bufsize, 0);
+      $nbytes = length($buffer);
+
+      if (!defined($ret)) {
+        if ($! == EINTR)  { next; }
+        log_msg(LOG_WARN, 
+                "IO error, closing connection to TCP peer $peer ($!)");
+        delete $output_tcpsock{$peer};
+        last;
+      } 
+      elsif ($nbytes == 0) {
+        log_msg(LOG_DEBUG, "TCP peer $peer has closed the connection");
+        delete $output_tcpsock{$peer};
+        last;
+      }
+      else { $total += $nbytes; }
+
+      if ($total >= BATCHREADLIMIT)  { last; }
+    } 
 
   }
 }
@@ -10707,6 +10916,52 @@ sub check_signals {
 
 
 # Parameters: -
+# Action: detect if SIGINT can be used for changing logging levels
+
+sub override_sigint {
+
+  my($tty, $fh, $tcpgrp, $pgrp);
+
+  # if the process is started as a daemon, override SIGINT
+  if ($detach)  { return 1; }
+
+  # on Windows platform, do not override SIGINT
+  if ($WIN32)  { return 0; } 
+
+  # if the process was not started as a daemon, get the name of the special
+  # file which points to the controlling terminal of the process (should be
+  # /dev/tty on most platforms); if opening the special file fails, the
+  # process has no controlling terminal, and override SIGINT
+
+  $tty = POSIX::ctermid();
+  if (!open($fh, $tty))  { return 1; }
+
+  # get group ID of the current process, and the group ID of the foreground 
+  # process at the controlling terminal; if the ID's are different, current
+  # process is not running on foreground, and override SIGINT
+
+  $pgrp = POSIX::getpgrp();
+
+  if (!defined($pgrp)) {
+    log_msg(LOG_ERR, "Can't get process group ID ($!)");
+    return 0;
+  }
+
+  $tcpgrp = POSIX::tcgetpgrp(fileno($fh));
+
+  if (!defined($tcpgrp)) {
+    log_msg(LOG_ERR, "Can't get foreground process group ID ($!)");
+    return 0;
+  }
+
+  close($fh);
+
+  return ($pgrp != $tcpgrp);
+
+}
+
+
+# Parameters: -
 # Action: terminate child processes
 
 sub child_cleanup {
@@ -10803,7 +11058,7 @@ sub daemonize {
   # -detach is not supported on Windows
 
   if ($WIN32) {
-    log_msg(LOG_CRIT, "'-detach' option is not supported on Win32");
+    log_msg(LOG_CRIT, "'--detach' option is not supported on Win32");
     exit(1);
   }
 
@@ -11377,12 +11632,13 @@ $openlog = 0;
 $SIG{USR2} = \&usr2_handler;
 
 $debuglevelinc = 0;
-if (-t STDIN) {
-  log_msg(LOG_NOTICE, 
-          "Stdin connected to terminal, SIGINT can't be used for changing the logging level");
-} else {
+
+if (override_sigint()) { 
   $SIG{INT} = \&int_handler;
-}
+} else {
+  log_msg(LOG_NOTICE, 
+  "Interactive process, SIGINT can't be used for changing the logging level");
+} 
 
 $terminate = 0;
 $SIG{TERM} = \&term_handler;

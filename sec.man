@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.7.2 - sec.man
+.\" SEC (Simple Event Correlator) 2.7.3 - sec.man
 .\" Copyright (C) 2000-2013 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "April 2013" "SEC 2.7.2"
+.TH sec 1 "May 2013" "SEC 2.7.3"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -1209,9 +1209,12 @@ String <string> is sent to the TCP port <port> of the host <host>.
 The timeout value given with the
 .B \-\-socket\-timeout
 option determines for how many seconds SEC will attempt to establish 
-a connection to the remote peer. 
-Note that the relevant TCP socket will not be closed after the action 
-completes, and the following 
+a connection to the remote peer. If the connection establishment does
+not succeed immediately, the
+.I tcpsock
+action buffers <string> in memory for later sending to the remote peer.
+Note that the relevant TCP socket will not be closed after <string>
+has been transmitted, and the following 
 .I tcpsock
 actions for the same peer will use an already existing socket.
 However, several signals cause the socket to be closed and recreated
@@ -2777,7 +2780,9 @@ pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from ([\\d.]+) port \\d+ ssh2
 .br
 desc=Three SSH login failures within 1m for user $1 from $2
 .br
-action=pipe '%t: %s' /bin/mail root@localhost; create SUPPRESS_IP_$2 3600
+action=pipe '%t: %s' /bin/mail root@localhost; \\
+.br
+       create SUPPRESS_IP_$2 3600
 .br
 window=60
 .br
@@ -3427,11 +3432,115 @@ use the shell && operator and write
 SEC supports patterns, context expressions, and actions 
 which involve calls to the Perl
 .BR eval ()
-function. Apart from using action list variables for data sharing between
-rules, Perl variables created with
-.BR eval ()
-can be employed for the same purpose. 
-E.g., when SEC has executed the following action
+function or the execution of precompiled Perl code. The use of Perl code
+in SEC patterns and context expressions allows for creating proper match 
+conditions for scenarios which can't be handled by a simple regular
+expression match. For example, consider the following iptables syslog events:
+.PP
+May 27 10:00:15 box1 kernel: iptables: IN=eth0 OUT= MAC=08:00:27:be:9e:2f:00:10:db:ff:20:03:08:00 SRC=10.6.4.14 DST=10.1.8.2 LEN=84 TOS=0x00 PREC=0x00 TTL=251 ID=61426 PROTO=ICMP TYPE=8 CODE=0 ID=11670 SEQ=2
+.br
+May 27 10:02:22 box1 kernel: iptables: IN=eth0 OUT= MAC=08:00:27:be:9e:2f:00:10:db:ff:20:03:08:00 SRC=10.6.4.14 DST=10.1.8.2 LEN=52 TOS=0x00 PREC=0x00 TTL=60 ID=61441 DF PROTO=TCP SPT=53125 DPT=23 WINDOW=49640 RES=0x00 SYN URGP=0
+.PP
+Depending on the protocol and the nature of the traffic, events can have 
+a wide variety of fields, and parsing out all event data with one regular 
+expression is infeasible. For addressing this issue, a PerlFunc pattern can 
+be used which creates match variables from all fields of the matching event, 
+stores them in one Perl hash, and returns a reference to this hash. Outside 
+the PerlFunc pattern, match variables are initialized from the key-value
+pairs in the returned hash.
+Suppose the following Jump rule with a PerlFunc pattern is defined in 
+the main.rules rule file:
+.PP
+type=Jump
+.br
+ptype=PerlFunc
+.br
+pattern=sub { my(%var); my($line) = $_[0]; \\
+.br
+        if ($line !~ /kernel: iptables:/g) { return 0; } \\
+.br
+        while ($line =~ /\\G\\s*([A-Z]+)(?:=(\\S*))?/g) { \\
+.br
+          $var{$1} = defined($2)?$2:1; \\
+.br
+        } return \\%var; }
+.br
+varmap=IPTABLES
+.br
+desc=parse iptables event
+.br
+cfset=iptables
+.PP
+For example, if the iptables event contains the fields SRC=10.6.4.14,
+DST=10.1.8.2 and SYN, the above PerlFunc pattern sets up match variable 
+$+{SRC} which holds 10.6.4.14, match variable $+{DST} which holds 10.1.8.2,
+and match variable $+{SYN} which holds 1.
+The Jump rule caches all created match variables under the name IPTABLES, 
+and submits the matching event to 
+.B iptables
+ruleset for further processing. Suppose the 
+.B iptables
+ruleset is defined in the iptables.rules rule file:
+.PP
+type=Options
+.br
+procallin=no
+.br
+joincfset=iptables
+.PP
+type=SingleWithThreshold
+.br
+ptype=Cached
+.br
+pattern=IPTABLES
+.br
+context=IPTABLES :> ( sub { return $_[0]->{"PROTO"} eq "ICMP"; } )
+.br
+desc=ICMP flood type $+{TYPE} code $+{CODE} from host $+{SRC}
+.br
+action=logonly
+.br
+window=10
+.br
+thresh=100
+.PP
+type=SingleWithThreshold
+.br
+ptype=Cached
+.br
+pattern=IPTABLES
+.br
+context=IPTABLES :> ( sub { return exists($_[0]->{"SYN"}) && \\
+.br
+                                   exists($_[0]->{"FIN"}) ; } )
+.br
+desc=SYN+FIN flood from host $+{SRC}
+.br
+action=logonly
+.br
+window=10
+.br
+thresh=100
+.PP
+The two SingleWithThreshold rules employ Cached patterns for matching
+iptables events by looking up the IPTABLES entry in the pattern match cache
+(created by the above Jump rule for each iptables event).
+In order to narrow down the match to specific iptables events, the rules 
+employ precompiled Perl functions in context expressions. 
+The :> operator is used for speeding up the matching, providing the function
+with a single parameter which refers to the hash of variable name-value pairs
+for the IPTABLES cache entry.
+.PP
+The first SingleWithThreshold rule logs a warning message if within 10 
+seconds 100 iptables events have been observed for ICMP packets with
+the same type, code, and source IP address.
+The second SingleWithThreshold rule logs a warning message if within 10
+seconds 100 iptables events have been observed for TCP packets coming 
+from the same host, and having both SYN and FIN flag set in each packet.
+.PP
+Apart from using action list variables for data sharing between
+rules, Perl variables created in Perl code can be employed for the same 
+purpose. For example, when SEC has executed the following action
 .PP
 action=eval %a ($b = 1)
 .PP
@@ -3442,13 +3551,11 @@ context= =(++$b > 10)
 .PP
 (with that expression one can implement event counting implicitly).
 In order to avoid possible clashes with variables inside the SEC
-code itself, all calls for 
-.BR eval ()
-are made in the main::SEC namespace (i.e., inside the special package 
-main::SEC). By using the main:: prefix, SEC data structures can be accessed 
-and modified. For example, the following rules restore and save contexts on 
-SEC startup and shutdown (SEC keeps all contexts in %main::context_list
-hash):
+code itself, user-defined Perl code is executed in the main::SEC namespace 
+(i.e., inside the special package main::SEC). 
+By using the main:: prefix, SEC data structures can be accessed and modified. 
+For example, the following rules restore and save contexts on SEC startup 
+and shutdown (SEC keeps all contexts in %main::context_list hash):
 .PP
 type=Single
 .br
@@ -3462,9 +3569,9 @@ continue=TakeNext
 .br
 desc=Load the Storable module and terminate if it is not found
 .br
-action=assign %ret 0; eval %ret (require Storable); \\
+action=eval %ret (require Storable); \\
 .br
-       eval %ret (exit(1) unless %ret) 
+       if %ret ( logonly Storabe loaded ) else ( eval %o exit(1) ) 
 .PP
 type=Single
 .br
@@ -3497,6 +3604,7 @@ action=lcall %ret -> ( sub { \\
 However, note that modifying data structures within SEC code is recommended 
 only for advanced users who have carefully studied relevant parts of the code. 
 .SH EXAMPLES
+.SS Example 1
 This section presents an example rulebase for managing Cisco devices.
 It is assumed that the managed devices have syslog 
 logging enabled, and that all syslog messages are sent to a central host 
@@ -3677,6 +3785,238 @@ action=pipe '%t: %s' /bin/mail root@localhost
 window=21600
 .br
 thresh=10
+.SS Example 2
+This section presents an example of hierarchically organized rules for
+processing Linux iptables events from /var/log/messages and SSH login events
+from /var/log/secure. It is assumed that all rule files reside in the
+/etc/sec directory and that the rule hierarchy has two levels. 
+The file /etc/sec/main.rules contains first-level Jump rules for matching and
+parsing events from input files and submitting them to proper rulesets for 
+further processing. All other rule files in the /etc/sec directory contain
+second-level rules which receive their input from first-level Jump rules.
+Also, the example assumes that SEC is started with the following command line:
+.PP
+/usr/bin/sec --conf=/etc/sec/*.rules --intcontexts \\
+.br
+             --input=/var/log/messages --input=/var/log/secure
+.PP
+#
+.br
+# the content of /etc/sec/main.rules 
+.br
+#
+.PP
+type=Jump
+.br
+context=[ _FILE_EVENT_/var/log/messages ]
+.br
+ptype=PerlFunc
+.br
+pattern=sub { my(%var); my($line) = $_[0]; \\
+.br
+        if ($line !~ /kernel: iptables:/g) { return 0; } \\
+.br
+        while ($line =~ /\\G\\s*([A-Z]+)(?:=(\\S*))?/g) { \\
+.br
+          $var{$1} = defined($2)?$2:1; \\
+.br
+        } return \\%var; }
+.br
+varmap=IPTABLES
+.br
+desc=parse iptables events and direct to relevant ruleset
+.br
+cfset=iptables
+.PP
+type=Jump
+.br
+context=[ _FILE_EVENT_/var/log/secure ]
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[(?<pid>\\d+)\]: (?<status>Accepted|Failed) \\
+.br
+(?<authmethod>[\\w-]+) for (?<invuser>invalid user )?\\
+.br
+(?<user>[\\w-]+) from (?<srcip>[\\d.]+) port (?<srcport>\\d+) ssh2$
+.br
+varmap=SSH_LOGIN
+.br
+desc=parse SSH login events and direct to relevant ruleset
+.br
+cfset=ssh-login
+.PP
+type=Jump
+.br
+context=[ _INTERNAL_EVENT ]
+.br
+ptype=TValue
+.br
+pattern=True
+.br
+desc=direct synthetic events to relevant ruleset
+.br
+cfset=ssh-events
+.PP
+#
+.br
+# the content of /etc/sec/iptables.rules
+.br
+#
+.PP
+type=Options
+.br
+procallin=no
+.br
+joincfset=iptables
+.PP
+type=SingleWithThreshold
+.br
+ptype=Cached
+.br
+pattern=IPTABLES
+.br
+context=IPTABLES :> ( sub { return exists($_[0]->{"SYN"}) && \\
+.br
+                                   exists($_[0]->{"FIN"}) ; } ) \\
+.br
+        && !SUPPRESS_IP_$+{SRC}
+.br
+desc=SYN+FIN flood from host $+{SRC}
+.br
+action=pipe '%t: %s' /bin/mail -s 'iptables alert' root@localhost; \\
+.br
+       create SUPPRESS_IP_$+{SRC} 3600
+.br
+window=10
+.br
+thresh=100
+.PP
+type=SingleWithThreshold
+.br
+ptype=Cached
+.br
+pattern=IPTABLES
+.br
+context=IPTABLES :> ( sub { return exists($_[0]->{"SYN"}) && \\
+.br
+                                  !exists($_[0]->{"ACK"}) ; } ) \\
+.br
+        && !SUPPRESS_IP_$+{SRC}
+.br
+desc=SYN flood from host $+{SRC}
+.br
+action=pipe '%t: %s' /bin/mail -s 'iptables alert' root@localhost; \\
+.br
+       create SUPPRESS_IP_$+{SRC} 3600
+.br
+window=10
+.br
+thresh=100
+.PP
+#
+.br
+# the content of /etc/sec/ssh-login.rules 
+.br
+#
+.PP
+type=Options
+.br
+procallin=no
+.br
+joincfset=ssh-login
+.PP
+type=Single
+.br
+ptype=Cached
+.br
+pattern=SSH_LOGIN
+.br
+context=SSH_LOGIN :> ( sub { return $_[0]->{"status"} eq "Failed" && \\
+.br
+                                    $_[0]->{"srcport"} < 1024 && \\
+.br
+                                    defined($_[0]->{"invuser"}); } )
+.br
+continue=TakeNext
+.br
+desc=Probe of invalid user $+{user} from privileged port of $+{srcip}
+.br
+action=pipe '%t: %s' /bin/mail -s 'SSH alert' root@localhost
+.PP
+type=SingleWithThreshold
+.br
+ptype=Cached
+.br
+pattern=SSH_LOGIN
+.br
+context=SSH_LOGIN :> ( sub { return $_[0]->{"status"} eq "Failed" && \\
+.br
+                                    defined($_[0]->{"invuser"}); } )
+.br
+desc=Ten login probes for invalid users from $+{srcip} within 60s
+.br
+action=pipe '%t: %s' /bin/mail -s 'SSH alert' root@localhost
+.br
+thresh=10
+.br
+window=60
+.PP
+type=PairWithWindow
+.br
+ptype=Cached
+.br
+pattern=SSH_LOGIN
+.br
+context=SSH_LOGIN :> ( sub { return $_[0]->{"status"} eq "Failed"; } )
+.br
+desc=User $+{user} failed to log in from $+{srcip} within 60s
+.br
+action=event %s
+.br
+ptype2=Cached
+.br
+pattern2=SSH_LOGIN
+.br
+context2=SSH_LOGIN :> \\
+.br
+           ( sub { return $_[0]->{"status"} eq "Accepted"; } ) && \\
+.br
+         $+{user} %+{user} $+{srcip} %+{srcip} -> \\
+.br
+           ( sub { return $_[0] eq $_[1]  &&  $_[2] eq $_[3]; }  )
+.br
+desc2=User $+{user} logged in successfully from $+{srcip} within 60s
+.br
+action2=logonly
+.br
+window=60
+.PP
+#
+.br
+# the content of /etc/sec/ssh-events.rules 
+.br
+#
+.PP
+type=Options
+.br
+procallin=no
+.br
+joincfset=ssh-events
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=User ([\\w-]+) failed to log in from [\\d.]+ within 60s
+.br
+desc=Ten login failures for user $1 within 1h
+.br
+action=pipe '%t: %s' /bin/mail -s 'SSH alert' root@localhost
+.br
+thresh=10
+.br
+window=3600
 .SH ENVIRONMENT
 If the 
 .B 
@@ -3764,7 +4104,7 @@ its output files and sockets which will be reopened on demand.
 .B SIGINT
 SEC will increase its logging level by one; if the current level is 6,
 the level will be set back to 1. Please note this feature is available only 
-if SEC standard input is not connected to a terminal (e.g., in daemon mode).
+if SEC is running non-interactively (e.g., in daemon mode).
 .TP
 .B SIGTERM
 SEC will terminate gracefully (all SEC child processes will receive 
@@ -3775,6 +4115,15 @@ be displayed incorrectly. As a workaround, set the LANG environment
 variable to C when reading this man page (e.g., env LANG=C man sec).
 .SH AUTHOR
 Risto Vaarandi (ristov at users d0t s0urcef0rge d0t net)
+.SH ACKNOWLEDGMENTS
+This work is supported by SEB.
+The author thanks the following people for supplying software patches,
+documentation fixes, and suggesting new features:
+Al Sorrell, David Lang, James Brown, Jon Frazier, Mark D. Nagel, Peter Eckel, 
+Rick Casey, and William Gertz. 
+Last but not least, the author expresses his profound gratitute to 
+John P. Rouillard for many great ideas and creative discussions that have 
+helped to develop SEC.
 .SH "SEE ALSO"
 .BR cron (8),
 .BR crontab (1),
