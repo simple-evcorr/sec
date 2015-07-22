@@ -1,0 +1,10 @@
+[Unit]
+Description=sec is an simple event correlator
+
+[Service]
+EnvironmentFile=-/etc/sysconfig/sec
+ExecStart=/usr/bin/sec ${SEC_OPTS}
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

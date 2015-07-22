@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.6.1 - sec.man
-.\" Copyright (C) 2000-2011 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.6.2 - sec.man
+.\" Copyright (C) 2000-2012 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "September 2011" "SEC 2.6.1"
+.TH sec 1 "January 2012" "SEC 2.6.2"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -62,6 +62,8 @@ sec \- simple event correlator
 .br
 [--detach | --nodetach]
 .br
+[--jointbuf | --nojointbuf]
+.br
 [--keepopen | --nokeepopen]
 .br
 [--intevents | --nointevents]
@@ -78,7 +80,7 @@ SEC is a tool for accomplishing event correlation tasks in the domains of
 log analysis, system monitoring, network and security management, etc.
 Event correlation is a procedure where a stream of events is processed, 
 in order to detect (and act on) certain event groups that occur within 
-predefined time windows. Unlike most other event correlation products which
+predefined time windows. Unlike many other event correlation products which
 are heavyweight solutions, SEC is a lightweight and platform-independent
 event correlator which runs as a single process.
 .PP
@@ -96,9 +98,15 @@ or
 .BR mail (1)), 
 by writing to files, by calling precompiled Perl subroutines, etc. 
 .PP
-Some SEC rules start event correlation operations, while other rules react
-immediately to input events or system clock. For example, the following
-rule correlates SSH failed login syslog events:
+Some rules start event correlation operations, while other rules react
+immediately to input events or system clock. For example, suppose that SEC
+has been started with the following command line
+.PP
+/usr/bin/sec --conf=/etc/sec/sshd.rules --input=/var/log/secure
+.PP
+in order to monitor the /var/log/secure syslog file for sshd events. 
+Also, suppose that the /etc/sec/sshd.rules configuration file contains
+the following rule for correlating SSH failed login syslog events:
 .PP
 type=SingleWithThreshold
 .br
@@ -108,7 +116,7 @@ pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from [\\d.]+ port \\d+ ssh2
 .br
 desc=Three SSH login failures within 1m for user $1
 .br
-action=pipe '%s' mail -s 'SSH login alert' root@localhost
+action=pipe '%s' /bin/mail -s 'SSH login alert' root@localhost
 .br
 window=60
 .br
@@ -119,13 +127,16 @@ The
 field of the rule defines the pattern for recognizing input events, while the
 .I ptype
 field defines its type (regular expression). Suppose that user risto fails to 
-log in over SSH and the following message is logged by sshd:
+log in over SSH and the following message is logged to /var/log/secure:
 .PP
 Dec 16 16:24:59 myserver sshd[13685]: Failed password for risto from 10.12.2.5 port 41063 ssh2
 .PP
 This input message will match the regular expression
 pattern of the above rule, and the match variable $1 will be set to the string
-.IR risto .
+.I risto 
+(see
+.BR perlre (1)
+for details).
 After a match, SEC will evaluate the operation description string given with 
 the
 .I desc
@@ -154,7 +165,7 @@ fields) is now satisfied, SEC will execute the action defined with the
 .I action 
 field -- it will fork a command 
 .PP
-mail -s 'SSH login alert' root@localhost 
+/bin/mail -s 'SSH login alert' root@localhost 
 .PP
 with a pipe connected to its standard input. Then, SEC writes the operation 
 description string 
@@ -169,12 +180,12 @@ after 5 seconds.
 .PP
 The above example illustrates that the
 .I desc
-field of a SEC rule defines the scope of event correlation and influences the
+field of a rule defines the scope of event correlation and influences the
 number of operations created by the rule. For example, if we set the
 .I desc 
 field to 
 .IR "Three SSH login failures within 1m" ,
-the root-user would be alerted even on 3 SSH login failure events 
+the root-user would be also alerted on 3 SSH login failure events 
 for *different* users within 1 minute (see EVENT CORRELATION OPERATIONS 
 section for more information).
 .PP
@@ -212,7 +223,7 @@ count=alias USER_COUNTING USER_$1_COUNTED
 .br
 desc=Repeated SSH login failures for 30 distinct users within 1m
 .br
-action=pipe '%s' mail -s 'SSH login alert' root@localhost
+action=pipe '%s' /bin/mail -s 'SSH login alert' root@localhost
 .br
 window=60
 .br
@@ -226,7 +237,7 @@ the same user name within one minute by an event correlation operation,
 the operation will emit the synthetic event 
 3_SSH_LOGIN_FAILURES_FOR_<username>. Although synthetic events are created
 by SEC, they are treated like regular events received from input sources and 
-are matched against SEC rules. 
+are matched against rules. 
 The regular expression pattern of the second rule will match the
 3_SSH_LOGIN_FAILURES_FOR_<username> event and start a new event correlation
 operation if no such events have been previously seen. When the operation is 
@@ -243,7 +254,8 @@ prevents further matches for the same user name, since a synthetic event
 for <username> can match the rule only if the context alias 
 USER_<username>_COUNTED *does not* exist (as requested by the
 .I context
-field). The operation started by the rule sends an e-mail warning to the local 
+field; see CONTEXT EXPRESSIONS section for more information). 
+The operation started by the rule sends an e-mail warning to the local 
 root-user if 30 synthetic events have been observed within 1 minute (see the
 .I thresh
 and
@@ -266,8 +278,8 @@ function) and read event correlation rules from every file. Multiple
 .B \-\-conf
 options can be specified at command line. Each time SEC receives a signal
 that forces a configuration reload, <file_pattern> is re-evaluated. See also
-TIMING section for a discussion on rule processing order for
-multiple configuration files.
+INPUT PROCESSING AND TIMING section for a discussion on rule processing order 
+for multiple configuration files.
 .TP 
 .B \-\-input=<file_pattern>[=<context>]
 expand <file_pattern> to filenames (with the Perl
@@ -310,9 +322,9 @@ and
 respectively.
 .TP 
 .B \-\-reopen\-timeout=<reopen_timeout> 
-if an input file is in the closed state (e.g., because SEC has failed to open 
-it at startup), SEC will attempt to reopen the file after every
-<reopen_timeout> seconds until open succeeds. 
+if an input file is in the closed state (e.g., SEC fails to open the file at 
+startup, because it has not been created yet), SEC will attempt
+to reopen the file after every <reopen_timeout> seconds until open succeeds. 
 Note that 
 .B \-\-reopen_timeout
 is a synonym for
@@ -339,10 +351,11 @@ the number of bytes SEC will attempt to read at once from an input file.
 Default is 1024 (i.e., read from input files by 1KB blocks).
 .TP 
 .B \-\-bufsize=<input_buffer_size>
-set input buffer to hold last <input_buffer_size> lines that have been read 
-from input files. The content of input buffer will be compared with patterns 
-that are part of rule definitions (i.e., no more than <input_buffer_size> 
-lines can be matched by a pattern at a time). Default buffer size is 10 lines.
+set all input buffers to hold last <input_buffer_size> lines. 
+The content of input buffers will be compared with 
+patterns that are part of rule definitions (i.e., no more than 
+<input_buffer_size> lines can be matched by a pattern at a time). 
+Default buffer size is 10 lines.
 .TP
 .B \-\-evstoresize=<event_store_size>
 set an upper limit to the number of events in context event stores. 
@@ -350,7 +363,8 @@ set an upper limit to the number of events in context event stores.
 .B \-\-cleantime=<clean_time>
 time interval in seconds that specifies how often internal event correlation
 and context lists are processed, in order to accomplish time-related tasks
-and to remove obsolete elements. See TIMING section for more information.
+and to remove obsolete elements. See INPUT PROCESSING AND TIMING section for 
+more information.
 Default is 1 second.
 .TP 
 .B \-\-log=<logfile>
@@ -452,6 +466,28 @@ terminal and become a daemon at startup (note that SEC will close its standard
 input, standard output, and standard error, and change its working directory
 to the root directory). Default is 
 .BR \-\-nodetach .
+.TP
+.BR \-\-jointbuf ", " \-\-nojointbuf
+if the
+.B \-\-jointbuf
+option is specified, SEC uses joint input buffer for all input sources
+(the size of the buffer is set with the
+.B \-\-bufsize
+option). The
+.B \-\-nojointbuf
+option creates a separate input buffer for each input file, and a separate
+buffer for all synthetic and internal events (the sizes of all buffers are 
+set with the
+.B \-\-bufsize
+option). The
+.B \-\-jointbuf
+option allows multiline patterns to match lines from several input 
+sources, while the
+.B \-\-nojointbuf 
+pattern restricts the matching to lines from one input source only.
+See INPUT PROCESSING AND TIMING section for more information.
+Default is
+.BR \-\-jointbuf .
 .TP
 .BR \-\-keepopen ", " \-\-nokeepopen
 if the
@@ -556,15 +592,35 @@ Patterns and pattern types are defined with
 and
 .I ptype*
 fields.
-SEC supports the following pattern types (if 
+Many pattern types define the number of lines 
 .I N 
-is omitted, 1 is assumed):
+which the pattern matches (if 
+.I N 
+is omitted, 1 is assumed). If
+.I N
+is greater than 1, the scope of matching is set with the 
+.B \-\-jointbuf
+and
+.B \-\-nojointbuf
+options.
+With 
+.BR \-\-jointbuf ,
+the pattern is used for matching 
+.I N 
+last input lines taken from the joint input buffer (the lines can come from 
+different input sources).
+With 
+.BR \-\-nojointbuf ,
+the source of the last input line is identified, and the pattern
+is matched with 
+.I N 
+last input lines from the input buffer of the identified source.
 .TP
 .I SubStr[N]
 pattern is a string that is searched in the last N input lines 
 L1, L2, ..., LN. If N is greater than 1, the input lines are joined into 
 a string "L1<NEWLINE>L2<NEWLINE>...<NEWLINE>LN", and the pattern
-string will be searched from it. 
+string will be searched from it.
 If the pattern string is found in input line(s), the pattern matches.
 Backslash sequences \\t, \\n, \\r, \\s, and \\0 can be used in the
 pattern for denoting tabulation, newline, carriage return, space character, 
@@ -628,7 +684,9 @@ Cached match results can be reused by
 and 
 .I NCached
 patterns. Note that before processing each new input line, previous
-content of the pattern match cache is cleared. 
+content of the pattern match cache is cleared. Also note that a successful
+pattern match is cached even if the subsequent context expression evaluation
+yields FALSE (see INPUT PROCESSING AND TIMING section for more information).
 .sp
 For example, consider the following pattern definition:
 .sp
@@ -654,8 +712,15 @@ pattern=^AAA\\nBBB$
 .br
 varmap=aaa_bbb
 .sp
+Note that with the
+.B \-\-nojointbuf
+option the pattern only matches if the matching lines are coming from 
+the *same* input file, while the
+.B \-\-jointbuf
+option lifts that restriction.
+.sp
 In the case of a match, $0 is set to "AAA<NEWLINE>BBB" and $+{_inputsrc} to 
-file names for matching lines. Also, these variable-value pairs are cached 
+file name(s) for matching lines. Also, these variable-value pairs are cached 
 under the name "aaa_bbb".
 .TP
 .I PerlFunc[N]
@@ -674,8 +739,16 @@ parameters:
 .sp
 function(L1, L2, ..., LN, F1, F2, ..., FN) 
 .sp
-Note that if the input line is a synthetic event, the input file name equals 
-to 'undef'.
+Note that with the
+.B \-\-nojointbuf
+option, the function is called with a single file name parameter F, since
+lines L1, ..., LN are coming from the same input file:
+.sp
+function(L1, L2, ..., LN, F)
+.sp
+Also note that if the input line is a synthetic event, the input file name 
+equals to 'undef'.
+.sp
 If the function returns several values or a single value that is TRUE in 
 boolean context, the pattern matches. If the pattern matches, return values 
 will be assigned to numbered match variables ($1, $2, etc.). 
@@ -692,7 +765,7 @@ The pattern compares last two input lines in a stringwise manner ($_[1]
 holds the last line and $_[0] the preceding one), and matches if the lines
 are different. Note that the result of the comparison is assigned to $1,
 while two matching lines are concatenated (with the newline character
-between them) and assigned to $0. The file names for matching lines are 
+between them) and assigned to $0. The file name(s) for matching lines are 
 assigned to $+{_inputsrc}.
 .sp
 The following pattern definition produces a match if the input line is not
@@ -1200,7 +1273,7 @@ If the miniprogram returns a single value,
 it is assigned to the action list variable %<var>. If the miniprogram 
 returns several values s1,...,sn, they are joined into a multi-line string
 "s1<NEWLINE>...<NEWLINE>sn", and this string is assigned to %<var>.
-If no value is returned or
+If no value is returned, %<var> is set to 'undef'. If
 .BR eval ()
 fails, the value of %<var> does not change.
 Since most Perl programs contain semicolons which are also employed by SEC
@@ -1220,8 +1293,9 @@ in the <paramlist> string.
 If the function returns a single value, it is assigned to %<var>.
 If the function returns several values s1,...,sn, they are joined into 
 a multi-line string "s1<NEWLINE>...<NEWLINE>sn", and this string is assigned 
-to %<var>. If no value is returned, the function encounters a fatal runtime
-error, or %<ref> is not a code reference, the value of %<var> does not change.
+to %<var>. If no value is returned, %<var> is set to 'undef'. 
+If the function encounters a fatal runtime error or %<ref> is not a code 
+reference, the value of %<var> does not change.
 For additional information, see PERL INTEGRATION section.
 .TP 
 .I lcall %<var> [<paramlist>] \-> <code>
@@ -1239,12 +1313,34 @@ in the <paramlist> string.
 If the function returns a single value, it is assigned to %<var>.
 If the function returns several values s1,...,sn, they are joined into 
 a multi-line string "s1<NEWLINE>...<NEWLINE>sn", and this string is assigned 
-to %<var>. If no value is returned or the function encounters a fatal runtime
-error, the value of %<var> does not change.
+to %<var>. If no value is returned, %<var> is set to 'undef'.
+If the function encounters a fatal runtime error, 
+the value of %<var> does not change.
 Since most Perl functions contain semicolons which are also employed by SEC
 as action separators, it is recommended to enclose the <code> parameter in 
 parentheses, in order to mask the semicolons in <code>.
 For additional information, see PERL INTEGRATION section.
+.TP
+.I rewrite <lnum> [<string>]
+Replace last <lnum> lines in the input buffer with string <string>. If the
+.B \-\-nojointbuf 
+option was specified and the action is triggered by a matching event, 
+the action modifies the buffer which holds this event. If the
+.B \-\-nojointbuf 
+option was specified and the action is triggered by the system clock 
+(e.g., the action is executed from the Calendar rule), 
+the action modifies the buffer which holds the last already processed event. 
+With the
+.B \-\-jointbuf 
+option, the content of the joint input buffer is rewritten. The <lnum> 
+parameter must evaluate to an unsigned integer at runtime. If <lnum> evaluates 
+to 0, <lnum> is reset to the number of lines in <string>.
+If the value of <lnum> is greater than the buffer size N, <lnum> is reset to N. 
+If <string> contains less than <lnum> lines, <string> will be padded with 
+leading empty lines. If <string> contains more than <lnum> lines, 
+only leading <lnum> lines from <string> are written into the buffer. 
+Default value for <string> is %s. 
+For additional information, see INPUT PROCESSING AND TIMING section.
 .PP
 .B Examples:
 .PP
@@ -2793,47 +2889,76 @@ and
 .I reset
 actions only work for operations started by the rules from the same 
 configuration file.
-.SH TIMING
-There are several kinds of events that SEC reacts to -- changes in input 
-files (e.g., appearance of new data), reception of a signal, status change
-of a child process, and time related events (e.g., context expiration).
+.SH INPUT PROCESSING AND TIMING
+SEC processes input data iteratively by reading one line at each iteration,
+writing this line into a relevant input buffer, and matching the content
+of the updated buffer with rules from configuration files.
 .PP
-When new data appear in SEC input files, only one line is read at a time 
-(even when more lines are available) and the input buffer is updated 
-with this line. Input buffer contains the last N lines from 
-the SEC input, in the order they were read (the value of N can be set with the
+With the
+.B \-\-jointbuf
+option, SEC employs a joint input buffer for all input sources which holds
+N last input lines (the value of N can be set with the
 .B \-\-bufsize
 option). Updating the input buffer means that the new line becomes the first
 element of the buffer, while the last element (the oldest line) is removed 
-from the end of the buffer. Note that when both synthetic events and regular 
-input are available for reading, synthetic events are always read first by SEC.
-When all synthetic events have been consumed, 
-SEC will read new data from input files.
+from the end of the buffer. 
+With the 
+.B \-\-nojointbuf
+option, SEC maintains a buffer of N lines for each input file, and 
+if the input line comes from file F, the buffer of F is updated as described
+previously.
+There is also a separate buffer for synthetic and internal events.
 .PP
-After the buffer has been updated (every update always adds one fresh line
-and drops one old line), the rules from configuration files are
-processed, matching the rules against the new content of the input buffer.
-Note that the presence of N lines in the buffer allows for the use of
-patterns that match multiple lines.
-However, since the input buffer is shared between all input sources,
-these patterns work reliably only if events are coming from one source.
-If during the match process an action list is executed which creates new
+Note that when both synthetic events and regular input are available for 
+reading, synthetic events are always consumed first.
+When all synthetic events have been consumed iteratively, 
+SEC will start reading new data from input files.
+.PP
+After the relevant buffer has been updated (every update 
+adds one fresh line and drops one old line), rules from 
+configuration files are processed, matching the rules against the updated 
+content of the buffer.
+If during this matching process an action list is executed which creates new
 input events (e.g., through the
 .I event
-action), the input buffer will *not* be updated until all the rules have
-been matched against the current content of the buffer. 
+action), they are *not* written to buffers immediately, but rather consumed
+at following iterations. 
 .PP
-After each input buffer update, the pattern match cache is cleared. In other
-words, if a match is cached with the rule
+After each event processing iteration, the pattern match cache is cleared. 
+In other words, if a match is cached with the rule
 .I varmap*
-field, it is only available for matching rules against the *current* content 
-of the input buffer.
+field, it is available during ongoing iteration only. 
 .PP
-Rules from the same configuration file are matched against the input buffer 
+Note that results from a successful pattern matching are also cached when 
+the subsequent context expression evaluation yields FALSE. 
+This allows for reusing results from partial rule matches.
+For example, the following rule creates the cache entry "ssh_failed_login" for
+any SSH failed login event, even if the context ALERTING_ON does not exist:
+.PP
+type=Single
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from ([\\d.]+) port \\d+ ssh2
+.br
+varmap=ssh_failed_login; user=1; ip=2
+.br
+context=ALERTING_ON
+.br
+desc=SSH login failure for user $1 from $2
+.br
+action=pipe '%s' /bin/mail -s 'SSH login alert' root@localhost
+.PP
+However, provided the context expression does not contain match variables,
+enclosing the expression in square brackets (e.g., [ALERTING_ON])
+forces its evaluation before the pattern matching, and will thus prevent the
+matching and the creation of the cache entry if the evaluation yields FALSE.
+.PP
+Rules from the same configuration file are matched against the buffer content
 in the order they are given in that file.
 When multiple configuration files have been specified, rule sequences from 
-all files are matched against the input buffer (unless specified otherwise with
-Options rules).
+all files are matched against the buffer content (unless specified otherwise 
+with Options rules).
 The matching order is determined by the order of configuration files 
 in SEC command line.
 For example, if the Perl
@@ -2889,9 +3014,9 @@ pattern=TRUE
 .br
 cfset=FileA FileC FileB
 .PP
-After the input buffer has been updated and its content has been matched
-by the rules, SEC handles caught signals 
-and checks the status of child processes.
+After the relevant input buffer has been updated and its content has been 
+matched by the rules, SEC handles caught signals and checks the status of 
+child processes.
 When the timeout specified with the
 .B \-\-cleantime
 option has expired, SEC also checks the status of contexts and event 

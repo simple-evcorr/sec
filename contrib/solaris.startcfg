@@ -1,0 +1,2 @@
+# /usr/local/etc/sec/sec.start (config file for SEC)
+-detach -debug=5 -conf=/usr/local/etc/sec/sec.rules -input=/var/log/syslog.log -log=/var/log/sec.log -pid=/var/run/sec.pid

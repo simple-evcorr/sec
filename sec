@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.6.1 - sec
-# Copyright (C) 2000-2011 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.6.2 - sec
+# Copyright (C) 2000-2012 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -85,6 +85,7 @@ use vars qw(
   $dumpdata
   $dumpfile
   @events
+  %event_buffer
   $evstoresize
   @execactionfunc
   $fromstart
@@ -93,11 +94,13 @@ use vars qw(
   @inputfiles
   %inputsrc
   @input_buffer
+  %input_buffers
   @input_sources
   $input_timeout
   $intcontexts
   $intevents
   %int_contexts
+  $jointbuf
   $keepopen
   $lastcleanuptime
   $lastconfigload
@@ -153,8 +156,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.6.1";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2011 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.6.2";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2012 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -179,6 +182,7 @@ Options:
   --tail, --notail
   --fromstart, --nofromstart
   --detach, --nodetach
+  --jointbuf, --nojointbuf
   --keepopen, --nokeepopen
   --intevents, --nointevents
   --intcontexts, --nointcontexts
@@ -260,6 +264,7 @@ use constant ASSIGN		=> 22;
 use constant EVAL		=> 23;
 use constant CALL		=> 24;
 use constant LCALL		=> 25;
+use constant REWRITE		=> 26;
 
 use constant OPERAND		=> 0;
 use constant NEGATION		=> 1;
@@ -748,7 +753,7 @@ sub analyze_action {
   my($lineno) = $_[2];
   my($ruleid) = $_[3];
   my($file, $cmdline, $progname);
-  my($sign, $rule);
+  my($sign, $rule, $count);
   my($actionlist, @action);
   my($createafter, $event, $timestamp);
   my($lifetime, $context, $alias);
@@ -756,9 +761,9 @@ sub analyze_action {
 
   if ($action =~ /^none$/i)  { return NONE; }
 
-  elsif ($action =~ /^logonly\b\s*(.*)/i) { 
+  elsif ($action =~ /^logonly(?:\s+(.*))?$/i) { 
 
-    $event = $1;
+    $event = defined($1)?$1:"";
 
     # strip outer parentheses if they exist
     if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
@@ -844,10 +849,10 @@ sub analyze_action {
 
   }
 
-  elsif ($action =~ /^pipe\s+'([^']*)'\s*(.*)/i) {
+  elsif ($action =~ /^pipe\s+'([^']*)'(?:\s+(.*))?$/i) {
 
     $event = $1;
-    $cmdline = $2;
+    $cmdline = defined($2)?$2:"";
 
     # strip outer parentheses if they exist
     if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
@@ -877,11 +882,11 @@ sub analyze_action {
 
   }
 
-  elsif ($action =~ /^create\b\s*(\S*)\s*(\S*)\s*(.*)/i) { 
+  elsif ($action =~ /^create(?:\s+(\S*)\s*(\S*)\s*(.*))?$/i) { 
 
-    $context = $1;
-    $lifetime = $2;
-    $actionlist = $3;
+    $context = defined($1)?$1:"";
+    $lifetime = defined($2)?$2:"";
+    $actionlist = defined($3)?$3:"";
 
     # strip outer parentheses if they exist
     if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
@@ -908,9 +913,9 @@ sub analyze_action {
 
   }
 
-  elsif ($action =~ /^delete\b\s*(\S*)\s*$/i) { 
+  elsif ($action =~ /^delete(?:\s+(\S+))?\s*$/i) { 
 
-    $context = $1;
+    $context = defined($1)?$1:"";
 
     # strip outer parentheses if they exist
     if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
@@ -924,9 +929,9 @@ sub analyze_action {
 
   }
 
-  elsif ($action =~ /^obsolete\b\s*(\S*)\s*$/i) { 
+  elsif ($action =~ /^obsolete(?:\s+(\S+))?\s*$/i) { 
 
-    $context = $1;
+    $context = defined($1)?$1:"";
 
     # strip outer parentheses if they exist
     if ($context =~ /^\s*\(\s*(.*)\)\s*$/)  { $context = $1; }
@@ -987,9 +992,9 @@ sub analyze_action {
 
   }
 
-  elsif ($action =~ /^unalias\b\s*(\S*)\s*$/i) { 
+  elsif ($action =~ /^unalias(?:\s+(\S+))?\s*$/i) { 
 
-    $alias = $1;
+    $alias = defined($1)?$1:"";
 
     # strip outer parentheses if they exist
     if ($alias =~ /^\s*\(\s*(.*)\)\s*$/)  { $alias = $1; }
@@ -1118,10 +1123,10 @@ sub analyze_action {
 
   }
 
-  elsif ($action =~ /^event\b\s*(\d*)\b\s*(.*)/i) {
+  elsif ($action =~ /^event(?:\s+0*(\d+))?(?:\s+(.*))?$/i) {
 
-    $createafter = $1;
-    $event = $2;
+    $createafter = defined($1)?$1:"";
+    $event = defined($2)?$2:"";
 
     # strip outer parentheses if they exist
     if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
@@ -1155,11 +1160,11 @@ sub analyze_action {
 
   }
 
-  elsif ($action =~ /^reset\b\s*([\+-]?)(\d*)\b\s*(.*)/i) { 
+  elsif ($action =~ /^reset(?:\s+([\+-]?)0*(\d+))?(?:\s+(.*))?$/i) { 
 
-    $sign = $1;
-    $rule = $2;
-    $event = $3;
+    $sign = defined($1)?$1:"";
+    $rule = defined($2)?$2:"";
+    $event = defined($3)?$3:"";
 
     if (length($rule)) {
 
@@ -1182,12 +1187,12 @@ sub analyze_action {
 
   }
 
-  elsif ($action =~ /^getwpos\s+(\S+)\s+([\+-]?)(\d+)\b\s*(.*)/i) { 
+  elsif ($action =~ /^getwpos\s+(\S+)\s+([\+-]?)0*(\d+)(?:\s+(.*))?$/i) { 
 
     $variable = $1;
     $sign = $2;
     $rule = $3;
-    $event = $4;
+    $event = defined($4)?$4:"";
 
     if ($variable !~ /^%[[:alpha:]]\w*$/) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
@@ -1213,12 +1218,12 @@ sub analyze_action {
 
   }
 
-  elsif ($action =~ /^setwpos\s+(\S+)\s+([\+-]?)(\d+)\b\s*(.*)/i) { 
+  elsif ($action =~ /^setwpos\s+(\S+)\s+([\+-]?)0*(\d+)(?:\s+(.*))?$/i) { 
 
     $timestamp = $1;
     $sign = $2;
     $rule = $3;
-    $event = $4;
+    $event = defined($4)?$4:"";
 
     if ($sign eq "+") { $rule = $ruleid + $rule; }
     elsif ($sign eq "-") { $rule = $ruleid - $rule; }
@@ -1347,6 +1352,25 @@ sub analyze_action {
     }
 
     return (LCALL, substr($variable, 1), $codeptr, [ split(' ', $params) ]); 
+
+  }
+
+  elsif ($action =~ /^rewrite\s+(\S+)\s*(.*)/i) { 
+
+    $count = $1;
+    $event = $2;
+
+    # strip outer parentheses if they exist
+    if ($count =~ /^\s*\(\s*(.*)\)\s*$/)  { $count = $1; }
+    if ($event =~ /^\s*\(\s*(.*)\)\s*$/)  { $event = $1; }
+
+    # remove backslashes in front of the parentheses
+    $count =~ s/\\([\(\)])/$1/g;
+    $event =~ s/\\([\(\)])/$1/g;
+
+    if (!length($event))  { $event = "%s"; }
+
+    return (REWRITE, $count, $event); 
 
   }
 
@@ -4159,7 +4183,7 @@ sub execute_add_action {
   substitute_var($context, $text);
   substitute_var($event, $text);
 
-  log_msg(LOG_DEBUG, "Adding event '$event' to context '$context'");
+  log_msg(LOG_DEBUG, "Adding event(s) '$event' to context '$context'");
 
   if (!exists($context_list{$context})) { 
 
@@ -4171,14 +4195,14 @@ sub execute_add_action {
                                 "Aliases" => [ $context ] };
   }
 
-  @event = split(/\n/, $event);
+  @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
   if (!$evstoresize  ||  scalar(@{$context_list{$context}->{"Buffer"}}) 
                        + scalar(@event) <= $evstoresize) {
     push @{$context_list{$context}->{"Buffer"}}, @event;
   } else {
     log_msg(LOG_WARN,
-            "Can't add event '$event' to context '$context', store full");
+            "Can't add event(s) '$event' to context '$context', store full");
   }
 
   return 3;
@@ -4197,7 +4221,7 @@ sub execute_fill_action {
   substitute_var($context, $text);
   substitute_var($event, $text);
 
-  log_msg(LOG_DEBUG, "Filling context '$context' with event '$event'");
+  log_msg(LOG_DEBUG, "Filling context '$context' with event(s) '$event'");
 
   if (!exists($context_list{$context})) { 
 
@@ -4209,13 +4233,13 @@ sub execute_fill_action {
                                 "Aliases" => [ $context ] };
   }
 
-  @event = split(/\n/, $event);
+  @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
   if (!$evstoresize  ||  scalar(@event) <= $evstoresize) {
     @{$context_list{$context}->{"Buffer"}} = @event;
   } else {
     log_msg(LOG_WARN,
-            "Can't fill context '$context' with event '$event', store full");
+            "Can't fill context '$context' with event(s) '$event', store full");
   }
 
   return 3;
@@ -4330,15 +4354,17 @@ sub execute_event_action {
 
   substitute_var($event, $text);
 
-  @event = split(/\n/, $event);
+  @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
   if ($createafter) {
     foreach $event (@event) {
       push @pending_events, [ time() + $createafter, $event ]; 
     }
   } else {
-    log_msg(LOG_DEBUG, "Creating event '$event'");
-    push @events, @event;
+    foreach $event (@event) {
+      log_msg(LOG_DEBUG, "Creating event '$event'");
+      push @events, $event;
+    }
   }
 
   return 3;
@@ -4357,7 +4383,7 @@ sub execute_tevent_action {
   substitute_var($createafter, $text);
   substitute_var($event, $text);
 
-  @event = split(/\n/, $event);
+  @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
   if ($createafter =~ /^\s*0*(\d+)\s*$/) {
 
@@ -4368,13 +4394,15 @@ sub execute_tevent_action {
         push @pending_events, [ time() + $createafter, $event ]; 
       }
     } else {
-      log_msg(LOG_DEBUG, "Creating event '$event'");
-      push @events, @event;
+      foreach $event (@event) {
+        log_msg(LOG_DEBUG, "Creating event '$event'");
+        push @events, $event;
+      }
     }
 
   } else {
     log_msg(LOG_WARN,
-    "Can't create event '$event' after '$createafter' seconds");
+    "Can't create event(s) '$event' after '$createafter' seconds");
   }
 
   return 3;
@@ -4605,7 +4633,9 @@ sub execute_eval_action {
       $variables{$variable} = $retval[0];
       log_msg(LOG_DEBUG, "Variable '%$variable' set to '$retval[0]'");
     } else {
-      log_msg(LOG_DEBUG, "No value received for variable '%$variable'");
+      $variables{$variable} = undef;
+      log_msg(LOG_DEBUG, 
+              "No value received for variable '%$variable', set to undef");
     }
 
   } else {
@@ -4645,7 +4675,9 @@ sub execute_call_action {
         $variables{$variable} = $value;
         log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
       } else {
-        log_msg(LOG_DEBUG, "No value received for variable '%$variable'");
+        $variables{$variable} = undef;
+        log_msg(LOG_DEBUG, 
+               "No value received for variable '%$variable', set to undef");
       }
 
     }
@@ -4685,12 +4717,91 @@ sub execute_lcall_action {
       $variables{$variable} = $value;
       log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
     } else {
-      log_msg(LOG_DEBUG, "No value received for variable '%$variable'");
+      $variables{$variable} = undef;
+      log_msg(LOG_DEBUG, 
+             "No value received for variable '%$variable', set to undef");
     }
 
   }
         
   return 4;
+}
+
+sub execute_rewrite_action {
+
+  my($actionlist) = $_[0];
+  my($text) = $_[1];
+  my($i) = $_[2];
+  my($count, $event, @event, $j, $buffer, $bufptr);
+
+  $count = $actionlist->[$i+1];
+  $event = $actionlist->[$i+2];
+
+  substitute_var($count, $text);
+  substitute_var($event, $text);
+
+  if ($count =~ /^\s*0*(\d+)\s*$/) {
+
+    $count = $1;
+
+    @event = split(/\n/, $event);  # split returns empty list for "" or undef
+    $j = scalar(@event);
+
+    if (!$count) { 
+      if (!$j) { 
+        log_msg(LOG_WARN, "No data for rewriting input buffer");
+        return 3;
+      } else { $count = $j; } 
+    }
+
+    if ($count > $bufsize)  { $count = $bufsize; }
+
+    if ($j > $count) { 
+      @event = @event[0 .. $count - 1]; 
+      $event = join("\n", @event);
+    } elsif ($j < $count) { 
+      while ($j++ < $count)  { unshift @event, ""; }
+      $event = join("\n", @event);
+    }
+
+    if ($jointbuf) {
+
+      @input_buffer[$bufpos - $count + 1 .. $bufpos] = @event;
+      log_msg(LOG_DEBUG, "Input buffer rewritten with '$event'"); 
+
+    } elsif (defined($input_sources[$bufpos])) {
+
+      # if the 'rewrite' action is not triggered by a pattern match but 
+      # rather by system clock, the source for last input line might be
+      # no longer monitored (also, the elements of @input_sources list 
+      # are set to "" at program startup)
+
+      if (exists($input_buffers{$input_sources[$bufpos]})) {
+        $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
+        $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
+        @{$buffer}[$bufptr - $count + 1 .. $bufptr] = @event;
+        log_msg(LOG_DEBUG, "Input buffer of", $input_sources[$bufpos], 
+                           "rewritten with '$event'"); 
+      } else {
+        log_msg(LOG_WARN, 
+                "Can't rewrite the input buffer of non-configured source", 
+                $input_sources[$bufpos]);
+      }
+
+    } else {
+
+      $buffer = $event_buffer{"Events"};
+      $bufptr = $event_buffer{"BufPos"};
+      @{$buffer}[$bufptr - $count + 1 .. $bufptr] = @event;
+      log_msg(LOG_DEBUG, 
+              "Input buffer of synthetic events rewritten with '$event'"); 
+    }
+
+  } else {
+    log_msg(LOG_WARN, "Invalid linecount '$count', can't rewrite input buffer");
+  }
+
+  return 3;
 }
 
 
@@ -5021,9 +5132,20 @@ sub match_substr {
   my($linecount) = $_[0];
   my($substr) = $_[1];
   my($subst_ref) = $_[2];
-  my($line);
+  my($line, $buffer, $bufptr);
 
-  $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+  if ($jointbuf) {
+    $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+  } elsif (defined($input_sources[$bufpos])) {
+    $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
+    $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+  } else {
+    $buffer = $event_buffer{"Events"};
+    $bufptr = $event_buffer{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+  }
+
   if (index($line, $substr) != -1) { 
     %{$subst_ref} = (); 
     return 1; 
@@ -5045,9 +5167,20 @@ sub match_nsubstr {
   my($linecount) = $_[0];
   my($substr) = $_[1];
   my($subst_ref) = $_[2];
-  my($line);
+  my($line, $buffer, $bufptr);
 
-  $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+  if ($jointbuf) {
+    $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+  } elsif (defined($input_sources[$bufpos])) {
+    $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
+    $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+  } else {
+    $buffer = $event_buffer{"Events"};
+    $bufptr = $event_buffer{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+  }
+
   if (index($line, $substr) == -1) { 
     %{$subst_ref} = (); 
     return 1; 
@@ -5074,20 +5207,37 @@ sub match_regexp {
   my($regexp) = $_[1];
   my($subst_ref) = $_[2];
   my($varmap_ref) = $_[3];
-  my($line, @matches, $match, $var, $i, $j, @celem);
+  my($line, $buffer, $bufptr, @matches, $match, $var, $i, $j, @celem);
 
-  $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
-  
+  if ($jointbuf) {
+    $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+  } elsif (defined($input_sources[$bufpos])) {
+    $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
+    $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+  } else {
+    $buffer = $event_buffer{"Events"};
+    $bufptr = $event_buffer{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+  }
+
   if (@matches = ($line =~ /$regexp/)) { 
 
     # overwrite the previous content of the match variable hash with named
     # substring matches from the regular expression
     %{$subst_ref} = %+;
 
-    # create the $0 and $+{_inputsrc} variables
+    # create the $0 variable
     $subst_ref->{"0"} = $line;
-    $subst_ref->{"_inputsrc"} = join(" ", map(defined($_)?$_:"synthetic", 
-      @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+
+    # create the $+{_inputsrc} variable
+    if ($jointbuf) {
+      $subst_ref->{"_inputsrc"} = join(" ", map(defined($_)?$_:"synthetic", 
+        @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+    } else {
+      $subst_ref->{"_inputsrc"} = 
+        defined($input_sources[$bufpos])?$input_sources[$bufpos]:"synthetic";
+    }
 
     # add the $<number> match variables to the variable hash
     $i = 1;
@@ -5125,15 +5275,30 @@ sub match_nregexp {
   my($linecount) = $_[0];
   my($regexp) = $_[1];
   my($subst_ref) = $_[2];
-  my($line, $source);
+  my($line, $buffer, $bufptr, $source);
 
-  $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
-  
+  if ($jointbuf) {
+    $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+  } elsif (defined($input_sources[$bufpos])) {
+    $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
+    $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+  } else {
+    $buffer = $event_buffer{"Events"};
+    $bufptr = $event_buffer{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+  }
+
   if ($line !~ /$regexp/) { 
     # erase the previous content of the match variable hash, and
     # create the $0 and $+{_inputsrc} variables
-    $source = join(" ", map(defined($_)?$_:"synthetic",
-      @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+    if ($jointbuf) {
+      $source = join(" ", map(defined($_)?$_:"synthetic",
+        @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+    } else {
+      $source = 
+        defined($input_sources[$bufpos])?$input_sources[$bufpos]:"synthetic";
+    }
     %{$subst_ref} = ( "0" => $line, "_inputsrc" => $source );
     return 1; 
   } 
@@ -5158,11 +5323,23 @@ sub match_perlfunc {
   my($codeptr) = $_[1];
   my($subst_ref) = $_[2];
   my($varmap_ref) = $_[3];
-  my(@lines, @sources, $line, $source);
+  my(@lines, @sources, $line, $source, $buffer, $bufptr);
   my(@matches, $match, $size, $var, $i, $j, @celem);
 
-  @lines = @input_buffer[$bufpos - $linecount + 1 .. $bufpos];
-  @sources = @input_sources[$bufpos - $linecount + 1 .. $bufpos];
+  if ($jointbuf) {
+    @lines = @input_buffer[$bufpos - $linecount + 1 .. $bufpos];
+    @sources = @input_sources[$bufpos - $linecount + 1 .. $bufpos];
+  } elsif (defined($input_sources[$bufpos])) {
+    $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
+    $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
+    @lines = @{$buffer}[$bufptr - $linecount + 1 .. $bufptr];
+    $sources[0] = $input_sources[$bufpos];
+  } else {
+    $buffer = $event_buffer{"Events"};
+    $bufptr = $event_buffer{"BufPos"};
+    @lines = @{$buffer}[$bufptr - $linecount + 1 .. $bufptr];
+    $sources[0] = undef;
+  }
 
   # call the function and save its return values
   @matches = eval { $codeptr->(@lines, @sources) };
@@ -5180,9 +5357,21 @@ sub match_perlfunc {
 
   # erase the previous content of the match variable hash, and
   # create the $0 and $+{_inputsrc} variables
-  $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
-  $source = join(" ", map(defined($_)?$_:"synthetic",
-    @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+  if ($jointbuf) {
+    $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+    $source = join(" ", map(defined($_)?$_:"synthetic",
+      @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+  } elsif (defined($input_sources[$bufpos])) {
+    $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
+    $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+    $source = $input_sources[$bufpos];
+  } else {
+    $buffer = $event_buffer{"Events"};
+    $bufptr = $event_buffer{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+    $source = "synthetic";
+  }
   %{$subst_ref} = ( "0" => $line, "_inputsrc" => $source );
 
   # add function return values to the variable hash
@@ -5218,11 +5407,23 @@ sub match_nperlfunc {
   my($linecount) = $_[0];
   my($codeptr) = $_[1];
   my($subst_ref) = $_[2];
-  my(@lines, @sources, $line, $source);
+  my(@lines, @sources, $line, $source, $buffer, $bufptr);
   my(@matches, $size);
 
-  @lines = @input_buffer[$bufpos - $linecount + 1 .. $bufpos];
-  @sources = @input_sources[$bufpos - $linecount + 1 .. $bufpos];
+  if ($jointbuf) {
+    @lines = @input_buffer[$bufpos - $linecount + 1 .. $bufpos];
+    @sources = @input_sources[$bufpos - $linecount + 1 .. $bufpos];
+  } elsif (defined($input_sources[$bufpos])) {
+    $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
+    $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
+    @lines = @{$buffer}[$bufptr - $linecount + 1 .. $bufptr];
+    $sources[0] = $input_sources[$bufpos];
+  } else {
+    $buffer = $event_buffer{"Events"};
+    $bufptr = $event_buffer{"BufPos"};
+    @lines = @{$buffer}[$bufptr - $linecount + 1 .. $bufptr];
+    $sources[0] = undef;
+  }
 
   # call the function and save its return values
   @matches = eval { $codeptr->(@lines, @sources) };
@@ -5240,9 +5441,21 @@ sub match_nperlfunc {
 
   # erase the previous content of the match variable hash, and
   # create the $0 and $+{_inputsrc} variables
-  $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
-  $source = join(" ", map(defined($_)?$_:"synthetic",
-    @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+  if ($jointbuf) {
+    $line = join("\n", @input_buffer[$bufpos - $linecount + 1 .. $bufpos]);
+    $source = join(" ", map(defined($_)?$_:"synthetic",
+      @input_sources[$bufpos - $linecount + 1 .. $bufpos]));
+  } elsif (defined($input_sources[$bufpos])) {
+    $buffer = $input_buffers{$input_sources[$bufpos]}->{"Events"};
+    $bufptr = $input_buffers{$input_sources[$bufpos]}->{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+    $source = $input_sources[$bufpos];
+  } else {
+    $buffer = $event_buffer{"Events"};
+    $bufptr = $event_buffer{"BufPos"};
+    $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
+    $source = "synthetic";
+  }
   %{$subst_ref} = ( "0" => $line, "_inputsrc" => $source );
 
   return 1; 
@@ -7371,6 +7584,11 @@ sub actionlist2str {
       $i += 4;
     }
 
+    elsif ($actionlist->[$i] == REWRITE) { 
+      $result .= "rewrite " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
+      $i += 3;
+    } 
+
     else { return "Unknown action type in the action list"; }
 
     $result .= "; ";
@@ -7983,33 +8201,63 @@ sub dump_data {
 
   print DUMPFILE "\n";
 
-  # print the content of input buffer
+  # print the content of input buffer(s)
 
-  print DUMPFILE "Content of input buffer (last $bufsize input lines):\n";
-  print DUMPFILE '-' x 60, "\n";
+  if ($jointbuf) {
 
-  for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
-    print DUMPFILE $input_buffer[$i], "\n";
-  }
+    print DUMPFILE "Content of input buffer (last $bufsize input lines):\n";
+    print DUMPFILE '-' x 60, "\n";
 
-  print DUMPFILE '-' x 60, "\n";
-  print DUMPFILE "\n";
-
-  # print the last $bufsize input sources
-
-  print DUMPFILE "Last $bufsize input sources:\n";
-  print DUMPFILE '-' x 60, "\n";
-
-  for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
-    if (defined($input_sources[$i])) {
-      print DUMPFILE $input_sources[$i], "\n";
-    } else {
-      print DUMPFILE "synthetic event\n";
+    for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
+      print DUMPFILE $input_buffer[$i], "\n";
     }
-  }
 
-  print DUMPFILE '-' x 60, "\n";
-  print DUMPFILE "\n";
+    print DUMPFILE '-' x 60, "\n";
+    print DUMPFILE "\n";
+
+    print DUMPFILE "Last $bufsize input sources:\n";
+    print DUMPFILE '-' x 60, "\n";
+
+    for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
+      if (defined($input_sources[$i])) {
+        print DUMPFILE $input_sources[$i], "\n";
+      } else {
+        print DUMPFILE "synthetic event\n";
+      }
+    }
+
+    print DUMPFILE '-' x 60, "\n";
+    print DUMPFILE "\n";
+
+  } else {
+
+    foreach $file (sort keys %input_buffers) {
+
+      print DUMPFILE "Content of input buffer for $file:\n";
+      print DUMPFILE '-' x 60, "\n";
+
+      for ($i = $input_buffers{$file}->{"BufPos"} - $bufsize + 1; 
+           $i <= $input_buffers{$file}->{"BufPos"}; ++$i) {
+        print DUMPFILE $input_buffers{$file}->{"Events"}->[$i], "\n";
+      }
+
+      print DUMPFILE '-' x 60, "\n";
+      print DUMPFILE "\n";
+
+    }
+
+    print DUMPFILE "Content of input buffer for synthetic events:\n";
+    print DUMPFILE '-' x 60, "\n";
+
+    for ($i = $event_buffer{"BufPos"} - $bufsize + 1; 
+         $i <= $event_buffer{"BufPos"}; ++$i) {
+      print DUMPFILE $event_buffer{"Events"}->[$i], "\n";
+    }
+
+    print DUMPFILE '-' x 60, "\n";
+    print DUMPFILE "\n";
+
+  }
 
   # print the content of pending event buffer
 
@@ -8145,35 +8393,107 @@ sub dump_data {
 #################################################################
 
 
-# Parameters: -
-# Action: if the current size of the input buffer is different from 
-#         $bufsize, change the size of the input buffer to $bufsize  
-#         and set the global variable $bufpos accordingly
+# Parameters: par1 - reference to input buffer
+#             par2 - read-write pointer of input buffer
+# Action: if the input buffer contains no data, initialize it;
+#         if its size has changed, rearrange buffer data and return 
+#         the new read-write pointer
 
-sub resize_input_buffer {
+sub arrange_input_buffer {
 
-  my($cursize) = scalar(@input_buffer);
-  my(@buf, $i, $diff);
+  my($buffer) = $_[0];
+  my($bufptr) = $_[1];
+  my($cursize, $i, $diff);
 
-  if ($cursize > $bufsize) {
+  $cursize = scalar(@{$buffer});
 
-    @input_buffer = @input_buffer[$bufpos - $bufsize + 1 .. $bufpos];
-    @input_sources = @input_sources[$bufpos - $bufsize + 1 .. $bufpos];
+  # if the buffer length is zero, it needs initialization
 
-    $bufpos = $bufsize - 1;
-
-  } elsif ($cursize < $bufsize) {
-
-    $diff = $bufsize - $cursize;
-    for ($i = 0; $i < $diff; ++$i)  { $buf[$i] = ""; }
-
-    @input_buffer = (@buf, @input_buffer[$bufpos - $cursize + 1 .. $bufpos]);
-    @input_sources = (@buf, @input_sources[$bufpos - $cursize + 1 .. $bufpos]);
-
-    $bufpos = $bufsize - 1;
-
+  if ($cursize == 0) {
+    for ($i = 0; $i < $bufsize; ++$i)  { $buffer->[$i] = ""; }
+    return $bufsize - 1;
   }
 
+  # if the buffer contains data and the buffer size has not changed,
+  # leave the buffer intact
+
+  if ($cursize == $bufsize)  { return $bufptr; }
+
+  # if the buffer size has increased or decreased, shift the elements
+  # so that the earliest has index 0 and the latest (buffersize - 1)
+
+  @{$buffer} = @{$buffer}[$bufptr - $cursize + 1 .. $bufptr];
+
+  # if the buffer size has decreased by K, remove K earliest elements;
+  # if the buffer size has increased by K, add K elements
+
+  if ($cursize > $bufsize) {
+    $diff = $cursize - $bufsize;
+    for ($i = 0; $i < $diff; ++$i)  { shift @{$buffer}; }
+  } else { 
+    $diff = $bufsize - $cursize;
+    for ($i = 0; $i < $diff; ++$i)  { unshift @{$buffer}, ""; }
+  }
+
+  return $bufsize - 1;
+
+}
+
+
+# Parameters: -
+# Action: arrange all input buffers
+
+sub arrange_input_buffers {
+
+  my($inputfile);
+
+  # create or resize the main input buffer and the list of input sources
+  # (they share a common read-write pointer, so it needs setting once)
+
+  arrange_input_buffer(\@input_buffer, $bufpos);
+  $bufpos = arrange_input_buffer(\@input_sources, $bufpos);
+
+  # with --jointbuf command line option (the default), run SEC with joint
+  # input buffer for all input sources, otherwise set up separate buffers
+
+  if ($jointbuf) {
+
+    %input_buffers = ();
+    %event_buffer = ();
+
+  } else {
+
+    # create or resize the input buffer for synthetic events
+
+    if (!exists($event_buffer{"BufPos"})) {
+      $event_buffer{"Events"} = [];
+      $event_buffer{"BufPos"} = 0;
+    }
+
+    $event_buffer{"BufPos"} = 
+      arrange_input_buffer($event_buffer{"Events"}, $event_buffer{"BufPos"});
+
+    # remove input buffers for sources which are no longer monitored
+
+    foreach $inputfile (keys %input_buffers) {
+      if (!exists($inputsrc{$inputfile})) { delete $input_buffers{$inputfile}; }
+    }
+
+    # create or resize the input buffer for each input source
+  
+    foreach $inputfile (@inputfiles) {
+
+      if (!exists($input_buffers{$inputfile})) {
+        $input_buffers{$inputfile} = {};
+        $input_buffers{$inputfile}->{"Events"} = [];
+        $input_buffers{$inputfile}->{"BufPos"} = 0;
+      }
+
+      $input_buffers{$inputfile}->{"BufPos"} = 
+        arrange_input_buffer($input_buffers{$inputfile}->{"Events"}, 
+                             $input_buffers{$inputfile}->{"BufPos"});
+    }
+  }
 }
 
 
@@ -8202,6 +8522,11 @@ sub internal_event {
   $bufpos = ($bufpos + 1) % $bufsize;
   $input_buffer[$bufpos] = $text;
   $input_sources[$bufpos] = undef;
+
+  if (!$jointbuf) {
+    $event_buffer{"BufPos"} = ($event_buffer{"BufPos"} + 1) % $bufsize;
+    $event_buffer{"Events"}->[$event_buffer{"BufPos"}] = $text;
+  }
 
   %pmatch_cache = ();
 
@@ -9170,10 +9495,10 @@ sub check_signals {
 
     read_config();
 
-    # (re)open all input sources and resize the input buffer
+    # (re)open all input sources and arrange input buffers
 
     open_input(-1);
-    resize_input_buffer();
+    arrange_input_buffers();
 
     # if -intevents flag was specified, generate the SEC_RESTART event
 
@@ -9223,10 +9548,10 @@ sub check_signals {
     }
 
     # if -keepopen flag was specified, close old and open new input sources, 
-    # otherwise (re)open all input sources; also, resize the input buffer
+    # otherwise (re)open all input sources; also, arrange input buffers
 
     open_input(-1, $keepopen);
-    resize_input_buffer();
+    arrange_input_buffers();
 
     # if -intevents flag was specified, generate the SEC_SOFTRESTART event
 
@@ -9556,6 +9881,7 @@ sub read_options {
   $tail = 1;
   $fromstart = 0;
   $detach = 0;
+  $jointbuf = 1;
   $keepopen = 0;
   $intevents = 0;
   $intcontexts = 0;
@@ -9585,6 +9911,7 @@ sub read_options {
               "tail!" => \$tail,
               "fromstart!" => \$fromstart,
               "detach!" => \$detach,
+              "jointbuf!" => \$jointbuf,
               "keepopen!" => \$keepopen,
               "intevents!" => \$intevents,
               "intcontexts!" => \$intcontexts,
@@ -9765,6 +10092,7 @@ $actioncopyfunc[ASSIGN] = \&copy_three_elem_action;
 $actioncopyfunc[EVAL] = \&copy_three_elem_action;
 $actioncopyfunc[CALL] = \&copy_call_lcall_action;
 $actioncopyfunc[LCALL] = \&copy_call_lcall_action;
+$actioncopyfunc[REWRITE] = \&copy_three_elem_action;
 
 $actionsubstfunc[NONE] = \&subst_none_action;
 $actionsubstfunc[LOGONLY] = \&subst_two_elem_action;
@@ -9792,6 +10120,7 @@ $actionsubstfunc[ASSIGN] = \&subst_event_assign_eval_action;
 $actionsubstfunc[EVAL] = \&subst_event_assign_eval_action;
 $actionsubstfunc[CALL] = \&subst_call_lcall_action;
 $actionsubstfunc[LCALL] = \&subst_call_lcall_action;
+$actionsubstfunc[REWRITE] = \&subst_three_elem_action;
 
 $execactionfunc[NONE] = \&execute_none_action;
 $execactionfunc[LOGONLY] = \&execute_logonly_action;
@@ -9819,20 +10148,16 @@ $execactionfunc[ASSIGN] = \&execute_assign_action;
 $execactionfunc[EVAL] = \&execute_eval_action;
 $execactionfunc[CALL] = \&execute_call_action;
 $execactionfunc[LCALL] = \&execute_lcall_action;
+$execactionfunc[REWRITE] = \&execute_rewrite_action;
 
 ### Set various global variables
 
 $startuptime = time();
 $processedlines = 0;
 
-### Initialize input buffer
+### Initialize input buffers
 
-for (my $i = 0; $i < $bufsize; ++$i) { 
-  $input_buffer[$i] = ""; 
-  $input_sources[$i] = "";
-}
-
-$bufpos = $bufsize - 1;
+arrange_input_buffers();
 
 ### Initialize correlation list, context list, 
 ### buffer list, and child process list
@@ -9879,17 +10204,28 @@ for (;;) {
   if (defined($line)) {
 
     if ($intcontexts) {
-      if (defined($file)) { $context = $inputsrc{$file}->{"context"}; } 
-        else { $context = "_INTERNAL_EVENT"; }
+      $context = defined($file)?$inputsrc{$file}->{"context"}:"_INTERNAL_EVENT";
       $context_list{$context} = $int_contexts{$context};
     }
 
-    # update input buffer (it is implemented as a circular buffer, since
+    # update input buffers (they are implemented as circular buffers, since
     # according to benchmarks an array queue using shift and push is slower)
+    # note that joint buffer is also maintained during --nojointbuf mode,
+    # since @input_sources list is used for pattern matching purposes
 
     $bufpos = ($bufpos + 1) % $bufsize;
     $input_buffer[$bufpos] = $line;
     $input_sources[$bufpos] = $file;
+
+    if (!$jointbuf) {
+      if (defined($file)) {
+        $input_buffers{$file}->{"BufPos"} = ($input_buffers{$file}->{"BufPos"} + 1) % $bufsize;
+        $input_buffers{$file}->{"Events"}->[$input_buffers{$file}->{"BufPos"}] = $line;
+      } else {
+        $event_buffer{"BufPos"} = ($event_buffer{"BufPos"} + 1) % $bufsize;
+        $event_buffer{"Events"}->[$event_buffer{"BufPos"}] = $line;
+      }
+    }
 
     # clear pattern match cache
 

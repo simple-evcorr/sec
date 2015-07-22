@@ -1,0 +1,13 @@
+## Description: Simple Event Correlator Configuration File
+## URL: http://simple-evcorr.sourceforge.net/
+## License: GPL-2.0
+## Modified by Malcolm J Lewis <malcolmlewis@opensuse.org>
+## Path: System/sec
+## Description:	sec settings
+## Type:	string
+## Default:	""
+## ServiceRestart: sec
+#
+# Options for sec
+#
+SEC_OPTS=""

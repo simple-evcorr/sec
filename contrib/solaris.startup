@@ -1,10 +1,8 @@
-Sample SEC startup files for Solaris (contributed by Jason Chambers)
-
-
--------------------- /etc/rc3.d/S98sec -------------------- 
 #!/bin/bash
 #
-# Modified start up script for Solaris
+# /etc/rc3.d/S98sec
+#
+# Modified start up script for Solaris (contributed by Jason Chambers)
 # Added the different SIGs to script
 
 STARTCFG=/usr/local/etc/sec/sec.start
@@ -131,11 +129,3 @@ case "$1" in
 esac
 
 exit $RETVAL
-----------------------------------------------------------------------
-
-
--------------------- /usr/local/etc/sec/sec.start --------------------
-# config file for SEC
--detach -debug=5 -conf=/usr/local/etc/sec/sec.rules 
--input=/var/log/syslog.log -log=/var/log/sec.log -pid=/var/run/sec.pid
-----------------------------------------------------------------------
