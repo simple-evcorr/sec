@@ -4,7 +4,7 @@
   server or agent event stream and writes them to standard output. Its main 
   task is to act as a link between ITO and an external message processing
   application (e.g., a correlation engine). The program has been tested with
-  ITO 5.3, 6.0, 7.1 and 8.1
+  ITO 5.3, 6.0, 7.1, 8.1 and 9.2
   
   This program takes 2 commandline parameters:
   
@@ -19,10 +19,14 @@
                    disables reopening.
 
 
-  Compiling on ITO server:
+  Compiling for Operations 9.2 server on Centos6:
+  gcc -o itostream itostream.c -L/opt/OV/lib64 -lopcsv_r \
+                               -Xlinker '-rpath=/opt/OV/lib64'
+
+  Compiling for ITO server on Solaris/HP-UX (older versions):
   gcc -o itostream itostream.c -L/opt/OV/lib -lopcsv -lnsp
   
-  Compiling on ITO agent:
+  Compiling for ITO agent:
   gcc -o itostream itostream.c -DAGENT -L/opt/OV/lib -lopc -lnsp
 
   Since ITO agent installation is sometimes broken, you might not have libopc 
@@ -32,7 +36,7 @@
 
   Compiled program needs root-privileges for running. 
   If ITO shared libraries are not found when starting the program, recompile
-  with additional options -Xlinker -rpath /opt/OV/lib 
+  with additional options -Xlinker -rpath /opt/OV/lib
 */
 
 #include <stdio.h>                      /* stdio stuff */

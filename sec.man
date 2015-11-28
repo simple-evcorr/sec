@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.7.7 - sec.man
+.\" SEC (Simple Event Correlator) 2.7.8 - sec.man
 .\" Copyright (C) 2000-2015 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "February 2015" "SEC 2.7.7"
+.TH sec 1 "November 2015" "SEC 2.7.8"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -55,6 +55,8 @@ sec \- simple event correlator
 [--pid=<pidfile>]
 .br
 [--dump=<dumpfile>]
+.br
+[--dumpfts | --nodumpfts]
 .br
 [--quoting | --noquoting]
 .br
@@ -483,8 +485,15 @@ for information on how to change <debuglevel> at runtime.
 SEC will store its process ID to <pidfile> at startup.
 .TP
 .B \-\-dump=<dumpfile>
-SEC will use <dumpfile> as its dumpfile. See SIGNALS section for more 
-information. Default is /tmp/sec.dump.
+SEC will use <dumpfile> as its dump file for writing performance and debug
+data. See SIGNALS section for more information. Default is /tmp/sec.dump.
+.TP
+.BR \-\-dumpfts ", " \-\-nodumpfts
+if the
+.B \-\-dumpfts
+option is specified, a timestamp suffix (seconds since Epoch) is appended
+to the dump file name when the file is created. Default is
+.BR \-\-nodumpfts . 
 .TP
 .BR \-\-quoting ", " \-\-noquoting 
 if the
@@ -495,7 +504,7 @@ command lines of
 .IR spawn ,
 and
 .I cspawn
-actions will be put inside apostrophes. All apostrophes ' that strings 
+actions will be put inside single quotes. Each single quote (') that strings 
 originally contain will be masked. This option prevents the shell from 
 interpreting special symbols that operation description strings might contain. 
 Default is
@@ -586,7 +595,7 @@ The
 .B \-\-nokeepopen 
 option forces SEC to close and (re)open all input files during soft restarts.
 Default is
-.BR \-\-nokeepopen .
+.BR \-\-keepopen .
 .TP
 .BR \-\-rwfifo ", " \-\-norwfifo
 if the
@@ -1596,7 +1605,16 @@ rule fields. An action list consists of action definitions that are separated
 by semicolons. 
 Each action definition begins with a keyword specifying the action type. 
 Depending on the action type, parameters may follow, and non-constant
-parameters may contain match variables.
+parameters may contain match variables. For instance, if the $1 and $2 match
+variables have the values "test1" and "the second test", respectively, 
+the action
+.I create MYCONT_$1 60
+creates the context 
+.B MYCONT_test1 
+with the lifetime of 60 seconds, while the action
+.I write - The names of tests: $1, $2
+writes the string "The names of tests: test1, the second test" 
+to standard output.
 In order to use semicolons inside a non-constant parameter, 
 the parameter must be enclosed in parentheses (the outermost set of
 parentheses will be removed by SEC during configuration file parsing).
@@ -1653,7 +1671,26 @@ utility).
 .BR time (2)
 system call).
 .PP
-Note that in order to disambiguate the variable from the following text,
+For example, the following action list assigns the current time in 
+human readable format and the content of the $0 match variable to 
+the %text action list variable, and mails the value of %text to
+root@localhost:
+.PP
+action=assign %text %t: $0; pipe '%text' /bin/mail root@localhost
+.PP
+If the action list is executed at Nov 19 10:58:51 2015 and the $0
+match variable has the value "This is a test event", the
+.I assign
+action sets the %text action list variable to the string
+"Thu Nov 19 10:58:51 2015: This is a test event", while the
+.I pipe
+action mails this string to root@localhost.
+Note that unlike match variables, action list variables have a global scope,
+and accessing the value of the %text variable in action lists of other rules 
+will thus yield the string "Thu Nov 19 10:58:51 2015: This is a test event" 
+(until another value is assigned to %text).
+.PP
+In order to disambiguate the variable from the following text,
 the variable name must be enclosed in braces (e.g., %{s}). Also, when action 
 list variables are substituted with their values, each sequence "%%" is 
 interpreted as a literal percent sign (%) which allows for masking the 
@@ -1722,7 +1759,11 @@ Default value for <string> is %s.
 Similar to the
 .I write
 action, except that the string <string> is written without a terminating 
-newline.
+newline. Note that
+.I write
+and
+.I writen
+actions share the same filehandle for accessing the file.
 .TP 
 .I closef <filename>
 Close the file <filename> that has been previously opened by the
@@ -1817,8 +1858,8 @@ action.
 Fork a process for executing command line <cmdline>. If the
 .B \-\-quoting
 option was specified and <cmdline> contains %s variables, the value of %s
-is quoted with apostrophes before substituting it into <cmdline>;
-note if the value of %s contains apostrophes, they are masked with backslashes
+is quoted with single quotes before substituting it into <cmdline>; 
+if the value of %s contains single quotes, they are masked with backslashes
 (e.g., abc is converted to 'abc' and aa'bb is converted to 'aa'\\''bb').
 For additional information, see INTERPROCESS COMMUNICATION section.
 .TP 
@@ -1846,7 +1887,7 @@ synthetic event.
 .I pipe '[<string>]' [<cmdline>]
 Fork a process for executing command line <cmdline>. The string <string> 
 with a terminating newline is written to the standard input of <cmdline> 
-(apostrophes are used for disambiguating <string> from <cmdline>).
+(single quotes are used for disambiguating <string> from <cmdline>).
 If <string> contains semicolons, <string> must be enclosed in parentheses
 (e.g.,
 .IR "pipe '($1;$2)' /bin/cat" ).
@@ -2087,6 +2128,20 @@ For additional information, see EVENT CORRELATION OPERATIONS section.
 .TP 
 .I assign %<var> [<string>]
 Assign string <string> to the action list variable %<var>. 
+Default value for <string> is %s.
+.TP
+.I assignsq %<var> [<string>]
+Similar to the
+.I assign
+action, except that <string> is quoted with single quotes before assigning
+it to %<var>. If <string> contains single quotes, they are masked with
+backslashes (e.g., if the match variable $1 holds the value 
+abc'123'xyz, the action
+.I assignsq %myvar $1
+assigns the value 'abc'\\''123'\\''xyz' to the action list variable %myvar).
+This action is useful for disabling shell intepretation 
+for the values of action list variables that appear in command lines executed 
+by SEC.
 Default value for <string> is %s.
 .TP 
 .I free %<var>
@@ -3989,9 +4044,12 @@ remarks and comments.
 .PP
 Note that match variables may be used in the
 .I context
-and
+field. They may also be used in the
 .I cfset
-fields. Also note that this rule does not start event correlation operations,
+field, provided that the 
+.I constset 
+field is set to No.
+Also note that this rule does not start event correlation operations,
 and the optional
 .I desc
 field is merely used for describing the rule.
@@ -4693,17 +4751,32 @@ supported:
 SEC_STARTUP - generated when SEC is started (this event will always be 
 the first event that SEC sees)
 .PP
-SEC_RESTART - generated after SEC has received the
+SEC_PRE_RESTART - generated before processing of the
 .B SIGHUP
-signal and all internal data structures have been cleared (this event will
-be the first event that SEC sees after reloading its configuration)
+signal (this event will be the last event that SEC sees before clearing 
+all internal data structures and reloading its configuration)
 .PP
-SEC_SOFTRESTART - generated after SEC has received the
+SEC_RESTART - generated after processing of the
+.B SIGHUP
+signal (this event will be the first event that SEC sees after clearing 
+all internal data structures and reloading its configuration)
+.PP
+SEC_PRE_SOFTRESTART - generated before processing of the
+.B SIGABRT
+signal (this event will be the last event that SEC sees before reloading
+its configuration)
+.PP
+SEC_SOFTRESTART - generated after processing of the
 .B SIGABRT
 signal (this event will be the first event that SEC sees after reloading
 its configuration)
 .PP
-SEC_LOGROTATE - generated after SEC has received the
+SEC_PRE_LOGROTATE - generated before processing of the
+.B SIGUSR2
+signal (this event will be the last event that SEC sees before reopening 
+its log file and closing its outputs)
+.PP
+SEC_LOGROTATE - generated after processing of the
 .B SIGUSR2
 signal (this event will be the first event that SEC sees after reopening 
 its log file and closing its outputs)
@@ -4855,27 +4928,27 @@ use the shell && operator and write
 .IR "action=shellcmd cmd1 && cmd2" ).
 .PP
 Sometimes it is desireable to start an external program and provide it with
-data from several rules. In order to create such setup, names pipes can be used.
-For example, if /var/log/pipe is a named pipe, then
+data from several rules. In order to create such setup, named pipes can be 
+harnessed. For example, if /var/log/pipe is a named pipe, then
 .PP
 action=shellcmd /usr/bin/logger -f /var/log/pipe -p user.notice
 .PP
-starts the /usr/bin/logger utility which sends all lines read from /var/log/pipe
-to the local syslog daemon with the "user" facility and "notice" level.
-In order to feed events to /usr/bin/logger, the
+starts the /usr/bin/logger utility which sends all lines read from 
+/var/log/pipe to the local syslog daemon with the "user" facility and "notice" 
+level. In order to feed events to /usr/bin/logger, the
 .I write
 action can be used (e.g.,
 .IR "write /var/log/pipe This is my event" ).
 Although SEC keeps the named pipe open across different
 .I write
-actions, the pipe will be closed on the reception of SIGHUP, SIGABRT and SIGUSR2
-signals. 
-Since a number of command line tools terminate on receiving EOF from input, they 
-need restarting after such signals have arrived. For this purpose, the
+actions, the pipe will be closed on the reception of SIGHUP, SIGABRT and 
+SIGUSR2 signals. 
+Since many UNIX tools terminate on receiving EOF from standard input, 
+they need restarting after such signals have arrived. For this purpose, the
 .B --intevents
-option and SEC internal events can be used. For example, the following rule starts 
-the /usr/bin/logger utility at SEC startup, and also restarts it after the reception 
-of relevant signals:
+option and SEC internal events can be used. For example, the following rule 
+starts the /usr/bin/logger utility at SEC startup, and also restarts it after 
+the reception of relevant signals:
 .PP
 type=Single
 .br
@@ -4894,8 +4967,9 @@ Note that if /var/log/pipe is never opened for writing by a
 .I write
 action, /usr/bin/logger will never see EOF and will thus not terminate. The
 .I owritecl
-action opens and closes /var/log/pipe, in order to ensure the presence of EOF
-in such cases.
+action opens and closes /var/log/pipe without writing any bytes, in order 
+to ensure the presence of EOF in such cases. This allows any previous 
+/usr/bin/logger process to terminate before the new process is started.
 .SH PERL INTEGRATION
 SEC supports patterns, context expressions, and actions 
 which involve calls to the Perl
@@ -5043,10 +5117,13 @@ pattern=SEC_STARTUP
 .br
 context=SEC_INTERNAL_EVENT
 .br
-desc=Restore all SEC contexts from /tmp/SEC_CONTEXTS on startup
+desc=Restore all SEC contexts from /var/lib/sec/SEC_CONTEXTS on startup
 .br
-action=lcall %ret -> ( sub { %main::context_list = \\
-       %{Storable::retrieve("/tmp/SEC_CONTEXTS")}; } )
+action=lcall %ret -> ( sub { \\
+       my $ptr = $main::context_list{"SEC_INTERNAL_EVENT"}; \\
+       %main::context_list = \\
+         %{Storable::retrieve("/var/lib/sec/SEC_CONTEXTS")}; \\
+       $main::context_list{"SEC_INTERNAL_EVENT"} = $ptr; } )
 .PP
 type=Single
 .br
@@ -5056,10 +5133,11 @@ pattern=SEC_SHUTDOWN
 .br
 context=SEC_INTERNAL_EVENT
 .br
-desc=Save all SEC contexts into /tmp/SEC_CONTEXTS on shutdown
+desc=Save all SEC contexts into /var/lib/sec/SEC_CONTEXTS on shutdown
 .br
 action=lcall %ret -> ( sub { \\
-       Storable::store(\\%main::context_list, "/tmp/SEC_CONTEXTS"); } )
+       Storable::store(\\%main::context_list, \\
+                       "/var/lib/sec/SEC_CONTEXTS"); } )
 .PP
 However, note that modifying data structures within SEC code is recommended 
 only for advanced users who have carefully studied relevant parts of the code. 
@@ -5335,13 +5413,13 @@ cfset=ssh-login
 .PP
 type=Jump
 .br
-context=[ _INTERNAL_EVENT ]
+context=[ SSH_EVENT ]
 .br
 ptype=TValue
 .br
 pattern=True
 .br
-desc=direct synthetic events to relevant ruleset
+desc=direct SSH synthetic events to relevant ruleset
 .br
 cfset=ssh-events
 .PP
@@ -5450,7 +5528,7 @@ context=SSH_LOGIN :> ( sub { return $_[0]->{"status"} eq "Failed"; } )
 .br
 desc=User $+{user} failed to log in from $+{srcip} within 60s
 .br
-action=event %s
+action=cevent SSH_EVENT 0 %s
 .br
 ptype2=Cached
 .br
@@ -5571,7 +5649,7 @@ is used in place of
 detailed information about the current state of SEC (performance and 
 rule matching statistics, running event correlation operations, 
 created contexts, etc.) will be written 
-to the SEC dumpfile.
+to the SEC dump file.
 .TP 
 .B SIGUSR2
 SEC will reopen its logfile (useful for logfile rotation), and also close
@@ -5588,7 +5666,7 @@ SEC will terminate gracefully. With the
 option, all SEC child processes will receive 
 .BR SIGTERM .
 .SH BUGS
-With some locale settings, apostrophes (') in this man page might
+With some locale settings, single quotes (') in this man page might
 be displayed incorrectly. As a workaround, set the LANG environment
 variable to C when reading this man page (e.g., env LANG=C man sec).
 .SH AUTHOR

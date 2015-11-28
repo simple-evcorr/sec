@@ -1,4 +1,4 @@
-SEC (Simple Event Correlator) 2.7.7
+SEC (Simple Event Correlator) 2.7.8
 
 Introduction:
 -------------
@@ -17,7 +17,7 @@ wide variety of other ways.
 Availability:
 -------------
 This program is distributed under the terms of GNU General Public License, 
-and can be downloaded from http://simple-evcorr.sourceforge.net
+and can be downloaded from http://simple-evcorr.github.io
 
 Release Notes:
 --------------

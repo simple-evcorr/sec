@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.7 - sec
+# SEC (Simple Event Correlator) 2.7.8 - sec
 # Copyright (C) 2000-2015 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -84,6 +84,7 @@ use vars qw(
   $detach
   $dumpdata
   $dumpfile
+  $dumpfts
   @events
   %event_buffer
   $evstoresize
@@ -169,7 +170,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.7";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.8";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2015 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -192,6 +193,7 @@ Options:
   --debug=<debuglevel>
   --pid=<pidfile>
   --dump=<dumpfile>
+  --dumpfts, --nodumpfts
   --quoting, --noquoting
   --tail, --notail
   --fromstart, --nofromstart
@@ -300,11 +302,12 @@ use constant RESET		=> 41;
 use constant GETWINPOS		=> 42;
 use constant SETWINPOS		=> 43;
 use constant ASSIGN		=> 44;
-use constant FREE		=> 45;
-use constant EVAL		=> 46;
-use constant CALL		=> 47;
-use constant LCALL		=> 48;
-use constant REWRITE		=> 49;
+use constant ASSIGNSQ		=> 45;
+use constant FREE		=> 46;
+use constant EVAL		=> 47;
+use constant CALL		=> 48;
+use constant LCALL		=> 49;
+use constant REWRITE		=> 50;
 use constant IF			=> 100;
 use constant WHILE		=> 101;
 use constant BREAK		=> 102;
@@ -1372,10 +1375,11 @@ sub analyze_action {
     return (SETWINPOS, $timestamp, $conffile, $rule, $event); 
   }
 
-  elsif ($action =~ /^assign\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^(assign|assignsq)\s+(\S+)\s*(.*)/i) {
 
-    $variable = $1;
-    $value = $2;
+    $keyword = lc($1);
+    $variable = $2;
+    $value = $3;
     process_action_parens($value);
 
     if ($variable !~ /^%[[:alpha:]]\w*$/) {
@@ -1387,7 +1391,9 @@ sub analyze_action {
 
     if (!length($value))  { $value = "%s"; }
 
-    return (ASSIGN, substr($variable, 1), $value); 
+    if ($keyword eq "assign") { 
+      return (ASSIGN, substr($variable, 1), $value);
+    } else { return (ASSIGNSQ, substr($variable, 1), $value); }
   }
 
   elsif ($action =~ /^free\s+(\S+)$/i) {
@@ -5739,6 +5745,26 @@ sub execute_assign_action {
   return 3;
 }
 
+sub execute_assignsq_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($variable, $value);
+
+  $variable = $actionlist->[$i+1];
+  $value = $actionlist->[$i+2];
+
+  substitute_var($value, $text);
+
+  $value =~ s/'/'\\''/g;
+  $value = "'" . $value . "'";
+
+  log_msg(LOG_DEBUG, "Assigning '$value' to variable '%$variable'");
+
+  $variables{$variable} = $value;
+
+  return 3;
+}
+
 sub execute_free_action {
 
   my($actionlist, undef, $i) = @_;
@@ -8975,6 +9001,11 @@ sub actionlist2str {
       $i += 3;
     }
 
+    elsif ($actionlist->[$i] == ASSIGNSQ) { 
+      $result .= "assignsq %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
     elsif ($actionlist->[$i] == FREE) { 
       $result .= "free %" . $actionlist->[$i+1]; 
       $i += 2;
@@ -9536,24 +9567,36 @@ sub print_element {
 
 sub dump_data {
 
-  my($i, $key, $ref, $file, $event);
+  my($dfilename, $i, $key, $ref, $file, $event);
   my($time, $user, $system, $cuser, $csystem, $fpos, @stat);
   my($width1, $width2, $width3);
   my($name, %reported_names);
 
-  # verify that dumpfile does not exist and open it
-
-  if (-e $dumpfile) {
-    log_msg(LOG_WARN, "Can't write to dumpfile: $dumpfile exists");
-    return;
-  }
-
-  if (!open(DUMPFILE, ">$dumpfile")) {
-    log_msg(LOG_ERR, "Can't open dumpfile $dumpfile ($!)");
-    return;
-  }
+  # get the current time
 
   $time = time();
+
+  # with --dumpfts command line option, include seconds since epoch
+  # in the dump file name as a suffix
+
+  if ($dumpfts) { 
+    $dfilename = "$dumpfile.$time"; 
+  } else {
+    $dfilename = $dumpfile; 
+  }
+
+  # verify that dumpfile does not exist and open it
+
+  if (-e $dfilename) {
+    log_msg(LOG_WARN, "Can't write to dumpfile: $dfilename exists");
+    return;
+  }
+
+  if (!open(DUMPFILE, ">$dfilename")) {
+    log_msg(LOG_ERR, "Can't open dumpfile $dfilename ($!)");
+    return;
+  }
+
 
   # print program info
 
@@ -9884,6 +9927,7 @@ sub dump_data {
 
   close(DUMPFILE);
 
+  log_msg(LOG_DEBUG, "Dump to $dfilename completed");
 }
 
 
@@ -11057,6 +11101,10 @@ sub check_signals {
 
     log_msg(LOG_NOTICE, "SIGHUP received: full restart of SEC");
 
+    # if -intevents flag was specified, generate the SEC_PRE_RESTART event
+
+    if ($intevents)  { internal_event("SEC_PRE_RESTART"); }
+
     # close all output files and sockets
 
     close_outputs();
@@ -11119,6 +11167,10 @@ sub check_signals {
 
     log_msg(LOG_NOTICE, "SIGABRT received: soft restart of SEC");
 
+    # if -intevents flag was specified, generate the SEC_PRE_SOFTRESTART event
+
+    if ($intevents)  { internal_event("SEC_PRE_SOFTRESTART"); }
+
     # close all output files and sockets
 
     close_outputs();
@@ -11179,7 +11231,7 @@ sub check_signals {
 
   if ($dumpdata) {
 
-    log_msg(LOG_NOTICE, "SIGUSR1 received: dumping data to $dumpfile");
+    log_msg(LOG_NOTICE, "SIGUSR1 received: dumping performance and debug data");
 
     # write info about SEC state to the dump file
 
@@ -11197,6 +11249,10 @@ sub check_signals {
 
     log_msg(LOG_NOTICE, 
             "SIGUSR2 received: closing outputs and restarting logging");
+
+    # if -intevents flag was specified, generate the SEC_PRE_LOGROTATE event
+
+    if ($intevents)  { internal_event("SEC_PRE_LOGROTATE"); }
 
     # close all output files and sockets
 
@@ -11625,12 +11681,13 @@ sub read_options {
   $debuglevel = 6; 
   $pidfile = "";
   $dumpfile = "/tmp/sec.dump";
+  $dumpfts = 0;
   $quoting = 0;
   $tail = 1;
   $fromstart = 0;
   $detach = 0;
   $jointbuf = 0;
-  $keepopen = 0;
+  $keepopen = 1;
   $rwfifo = 1;
   $childterm = 1;
   $intevents = 0;
@@ -11658,6 +11715,7 @@ sub read_options {
               "debug=i", \$debuglevel,
               "pid=s" => \$pidfile,
               "dump=s" => \$dumpfile,
+              "dumpfts!" => \$dumpfts,
               "quoting!" => \$quoting,
               "tail!" => \$tail,
               "fromstart!" => \$fromstart,
@@ -11900,6 +11958,7 @@ $actioncopyfunc[RESET] = \&copy_four_elem_action;
 $actioncopyfunc[GETWINPOS] = \&copy_five_elem_action;
 $actioncopyfunc[SETWINPOS] = \&copy_five_elem_action;
 $actioncopyfunc[ASSIGN] = \&copy_three_elem_action;
+$actioncopyfunc[ASSIGNSQ] = \&copy_three_elem_action;
 $actioncopyfunc[FREE] = \&copy_two_elem_action;
 $actioncopyfunc[EVAL] = \&copy_three_elem_action;
 $actioncopyfunc[CALL] = \&copy_call_lcall_action;
@@ -11955,6 +12014,7 @@ $actionsubstfunc[RESET] = \&subst_reset_action;
 $actionsubstfunc[GETWINPOS] = \&subst_getwpos_action;
 $actionsubstfunc[SETWINPOS] = \&subst_setwpos_action;
 $actionsubstfunc[ASSIGN] = \&subst_event_assign_etc_action;
+$actionsubstfunc[ASSIGNSQ] = \&subst_event_assign_etc_action;
 $actionsubstfunc[FREE] = \&subst_free;
 $actionsubstfunc[EVAL] = \&subst_event_assign_etc_action;
 $actionsubstfunc[CALL] = \&subst_call_lcall_action;
@@ -12010,6 +12070,7 @@ $execactionfunc[RESET] = \&execute_reset_action;
 $execactionfunc[GETWINPOS] = \&execute_getwpos_action;
 $execactionfunc[SETWINPOS] = \&execute_setwpos_action;
 $execactionfunc[ASSIGN] = \&execute_assign_action;
+$execactionfunc[ASSIGNSQ] = \&execute_assignsq_action;
 $execactionfunc[FREE] = \&execute_free_action;
 $execactionfunc[EVAL] = \&execute_eval_action;
 $execactionfunc[CALL] = \&execute_call_action;
