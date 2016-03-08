@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.7.8 - sec.man
-.\" Copyright (C) 2000-2015 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.7.9 - sec.man
+.\" Copyright (C) 2000-2016 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "November 2015" "SEC 2.7.8"
+.TH sec 1 "March 2016" "SEC 2.7.9"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -1643,7 +1643,9 @@ Apart from match variables, SEC supports
 .I action list variables
 in action lists which facilitate data sharing between actions and Perl 
 integration. Each action list variable has a name which must begin with 
-a letter and consist of letters, digits and underscores. In order to refer 
+a letter and consist of letters, digits and underscores. Names of built-in 
+variables usually start with a punctuation mark (.), so that they can be 
+distinguished from user defined variables. In order to refer 
 to an action list variable, its name must be prefixed by a percent sign (%). 
 Unlike match variables, action list variables can only be used in 
 action lists and they are substituted with their values immediately before 
@@ -1652,8 +1654,9 @@ after the current action list has been executed and can be employed in
 action lists of other rules.
 .PP
 The following action list variables are predefined by SEC:
-.PP
-%s - operation description string (the value of the
+.TP
+.I %s 
+operation description string (the value of the
 .I desc
 field after match variables have been substituted with their values).
 Note that for the
@@ -1662,14 +1665,94 @@ field of Pair and PairWithWindow rules, the %s variable is set by evaluating
 the
 .I desc2
 field of the rule.
-.PP
-%t - current time in human-readable format (as returned by the
-.BR date (1)
-utility).
-.PP
-%u - current time in seconds since Epoch (as returned by the
+.TP
+.I %t 
+the time in human-readable format, as returned by the Perl
+.BR localtime ()
+function in the Perl scalar context (e.g., Fri Feb 19 17:54:18 2016).
+.TP
+.I %u 
+the time in seconds since Epoch, as returned by the
 .BR time (2)
-system call).
+system call.
+.TP
+.I %.sec 
+number of seconds after the minute, in the range 00-59 
+(the value consists of two digits and is zero padded on the left).
+.TP
+.I %.min 
+number of minutes after the hour, in the range 00-59 
+(the value consists of two digits and is zero padded on the left).
+.TP
+.I %.hour 
+number of hours past midnight, in the range 00-23 
+(the value consists of two digits and is zero padded on the left).
+.TP
+.I %.hmsstr 
+the time in HH:MM:SS format (hours, minutes and seconds separated by colons, 
+e.g., 09:32:04 or 18:06:02).
+.TP
+.I %.mday 
+day of the month, in the range 01-31 
+(the value consists of two digits and is zero padded on the left).
+.TP
+.I %.mdaystr 
+day of the month as a string
+(the value consists of two characters and is space padded on the left, 
+e.g., " 1", " 4", " 9", or "25").
+.TP
+.I %.mon 
+month, in the range 01-12 
+(the value consists of two digits and is zero padded on the left).
+.TP
+.I %.monstr 
+abbreviated name of the month according to the current locale, 
+as returned by the %b specification of the 
+.BR strftime (3)
+library call
+(e.g., Jan, May, or Sep).
+.TP
+.I %.year 
+year (e.g., 1998 or 2016).
+.TP
+.I %.wday 
+day of the week, in the range 0-6 (0 denotes Sunday).
+.TP 
+.I %.wdaystr 
+abbreviated name of the day of the week according to the current locale, 
+as returned by the %a specification of the
+.BR strftime (3)
+library call
+(e.g., Mon, Wed, or Sat).
+.TP
+.I %.tzname 
+name of the timezone according to the current locale,
+as returned by the %Z specification of the
+.BR strftime (3)
+library call
+(e.g., UTC or EET).
+.TP
+.I %.tzoff 
+timezone offset from UTC, as returned by the %z specification of the
+.BR strftime (3)
+library call
+(e.g., -0500 or +0200).
+.TP
+.I %.tzoff2 
+timezone offset from UTC in +hh:mm/-hh:mm format (e.g., -05:00 or +02:00), 
+provided that the %z specification of the
+.BR strftime (3)
+library call returns the value in +hhmm/-hhmm format (if the value
+does not follow this format, %.tzoff2 is set to an empty string).
+.TP
+.I %.nl 
+newline character.
+.TP
+.I %.cr 
+carriage return character.
+.TP
+.I %.tab 
+tabulation character.
 .PP
 For example, the following action list assigns the current time in 
 human readable format and the content of the $0 match variable to 
@@ -1690,13 +1773,19 @@ and accessing the value of the %text variable in action lists of other rules
 will thus yield the string "Thu Nov 19 10:58:51 2015: This is a test event" 
 (until another value is assigned to %text).
 .PP
-In order to disambiguate the variable from the following text,
-the variable name must be enclosed in braces (e.g., %{s}). Also, when action 
-list variables are substituted with their values, each sequence "%%" is 
-interpreted as a literal percent sign (%) which allows for masking the 
-variables. 
-For example, the string "s%%t" becomes "s%t" after substitution, not 
-"s%<timestamp>". 
+In order to disambiguate the variable from the following text, the variable 
+name must be enclosed in braces. For example, the following action 
+.PP
+action=write - %{.year}-%{.mon}-%{.mday}T%{.hmsstr}%{.tzoff2}
+.PP
+writes a timestamp in ISO 8601 format to standard output, e.g.,
+2016-02-24T07:34:01+02:00 (replacing %{.mday} with %.mday in the above action 
+would mistakenly create a reference to %.mdayT variable).
+.PP
+When action list variables are substituted with their values, each 
+sequence "%%" is interpreted as a literal percent sign (%) which allows 
+for masking the variables. For example, the string "s%%t" becomes "s%t" 
+after substitution, not "s%<timestamp>". 
 .PP
 However, note that if %-prefixed match variables are supported for the
 .I action2
@@ -1724,7 +1813,7 @@ variable, the function can later be invoked through this variable with the
 .I call
 action).
 .PP
-The following actions are supported (optional parameters are enclosed
+SEC supports the following actions (optional parameters are enclosed
 in square brackets):
 .TP 
 .I none
@@ -2093,6 +2182,9 @@ If <offset> is an unsigned integer N, it refers to the N-th rule in the
 configuration file. If <offset> is 0, it refers to the current rule. If
 <offset> begins with the plus (+) or minus (-) sign, it specifies an offset
 from the current rule (e.g., -1 denotes the previous and +1 the next rule).
+Note that since Options rules are only processed when configuration files
+are loaded and they are not applied at runtime, Options rules are excluded 
+when calculating <offset>.
 If <offset> is not given, SEC checks for each rule from the current
 configuration file if an operation with <string> has been started by this 
 rule, and the operation is terminated if it exists.
@@ -4151,8 +4243,12 @@ file name, the rule number, and the operation description string
 (defined by the
 .I desc
 field of the rule).
-If there are N rules in the configuration file, the rule numbers belong to
-the range 0..N-1, and the number of the k-th rule is k-1.
+If there are N rules in the configuration file (excluding Options rules), 
+the rule numbers belong to the range 0..N-1, and the number of the k-th rule 
+is k-1. 
+Since each Options rule is only processed when SEC reads in the configuration 
+file and is not applied at runtime, the Options rules will not receive rule 
+numbers.
 Note that since the configuration file name and rule number are part of 
 the operation ID, different rules can have identical
 .I desc
@@ -5683,7 +5779,6 @@ helped to develop SEC.
 .SH "SEE ALSO"
 .BR cron (8),
 .BR crontab (1),
-.BR date (1),
 .BR fork (2),
 .BR mail (1),
 .BR perl (1),
@@ -5693,5 +5788,6 @@ helped to develop SEC.
 .BR sh (1),
 .BR snmptrap (1),
 .BR stat (2),
+.BR strftime (3),
 .BR syslog (3),
 .BR time (2)

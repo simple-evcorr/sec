@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.8 - sec
-# Copyright (C) 2000-2015 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.7.9 - sec
+# Copyright (C) 2000-2016 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -145,6 +145,7 @@ use vars qw(
   $terminate
   $testonly
   $timeout_script
+  $timevar_update
   %variables
   $version
   $WIN32
@@ -154,7 +155,7 @@ use vars qw(
 ##### Load modules and set some global variables ##### 
 
 use POSIX qw(:errno_h :sys_wait_h SEEK_SET SEEK_CUR SEEK_END 
-             setsid ctermid getpgrp tcgetpgrp);
+             setsid ctermid getpgrp tcgetpgrp strftime);
 use Getopt::Long;
 use Fcntl;
 use Socket;
@@ -170,8 +171,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.8";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2015 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.9";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2016 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -3782,20 +3783,104 @@ sub soft_read_config {
 ################################################
 
 
+# Parameters: -
+# Action: set special action list variables for special characters
+
+sub set_actionlist_char_var {
+
+  # setting %% variable to % ensures that all occurrences of %% are 
+  # substituted with %
+
+  $variables{"%"} = "%";
+
+  # set other action list variables for various special characters
+
+  $variables{".nl"} = "\n";
+  $variables{".cr"} = "\r";
+  $variables{".tab"} = "\t";
+
+}
+
+
+# Parameters: par1 - timestamp (seconds since Epoch)
+# Action: set special action list variables for timestamp par1
+
+sub set_actionlist_time_var {
+
+  my(@ltime) = localtime($_[0]);
+
+  $variables{".sec"} = ($ltime[0] < 10)?("0" . $ltime[0]):$ltime[0];
+
+  $variables{".min"} = ($ltime[1] < 10)?("0" . $ltime[1]):$ltime[1];
+
+  $variables{".hour"} = ($ltime[2] < 10)?("0" . $ltime[2]):$ltime[2];
+
+  $variables{".hmsstr"} = $variables{".hour"} . ":" . $variables{".min"}
+                                              . ":" . $variables{".sec"};
+
+  if ($ltime[3] < 10) {
+    $variables{".mday"} = "0" . $ltime[3];
+    $variables{".mdaystr"} = " " . $ltime[3];
+  } else {
+    $variables{".mday"} = $ltime[3];
+    $variables{".mdaystr"} = $ltime[3];
+  }
+
+  $variables{".mon"} = ($ltime[4] < 9)?("0" . ($ltime[4]+1)):$ltime[4]+1;
+
+  $variables{".monstr"} = strftime("%b", @ltime);
+
+  $variables{".year"} = $ltime[5] + 1900;
+
+  $variables{".wday"} = $ltime[6];
+
+  $variables{".wdaystr"} = strftime("%a", @ltime);
+
+  $variables{".tzname"} = strftime("%Z", @ltime);
+  
+  $variables{".tzoff"} = strftime("%z", @ltime);
+
+  if ($variables{".tzoff"} =~ /^([+-]\d{2})(\d{2})$/) {
+    $variables{".tzoff2"} = "$1:$2";
+  } else {
+    $variables{".tzoff2"} = "";
+  }
+
+}
+
+
 # Parameters: par1 - string
 #             par2 - string
-# Action: all %-variables in string par1 will be replaced with their values
+# Action: all action list variables in string par1 will be replaced with 
+#         their values; string par2 will be assigned to special variable %s
 
-sub substitute_var {
+sub substitute_actionlist_var {
 
   if (index($_[0], "%") == -1)  { return; }
 
-  $variables{"u"} = time();
-  $variables{"t"} = localtime($variables{"u"});
-  $variables{"s"} = $_[1];
-  $variables{"%"} = "%";
+  my($time) = time();
 
-  $_[0] =~ s/%(?:([[:alpha:]]\w*|%)|\{([[:alpha:]]\w*)\})/
+  # if builtin time-based action list variables do not reflect the current
+  # second, set these variables to proper values
+
+  if ($time != $timevar_update) {
+    set_actionlist_time_var($time);
+    $timevar_update = $time;
+  }
+
+  # since %u and %t variables can be modified from actions (e.g., 'assign'),
+  # they are set to proper values before each substitution
+
+  $variables{"u"} = $time;
+  $variables{"t"} = localtime($time);
+
+  # set %s variable to operation description string (second parameter)
+
+  $variables{"s"} = $_[1];
+
+  # substitute all action list variables
+
+  $_[0] =~ s/%(?:(\.?[[:alpha:]]\w*|%)|\{(\.?[[:alpha:]]\w*)\})/
               defined($variables{$+})?$variables{$+}:""/egx;
 
 }
@@ -4004,7 +4089,7 @@ sub execute_logonly_action {
   my($event);
 
   $event = $actionlist->[$i+1];
-  substitute_var($event, $text);
+  substitute_actionlist_var($event, $text);
   log_msg(LOG_NOTICE, $event); 
 
   return 2;
@@ -4023,8 +4108,8 @@ sub execute_write_action {
   $file = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($file, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($file, $text);
+  substitute_actionlist_var($event, $text);
 
   # apart from unexpected local system errors, communication errors are 
   # logged at the debug level, in order to prevent message floods with 
@@ -4098,7 +4183,7 @@ sub execute_closef_action {
   my($file);
 
   $file = $actionlist->[$i+1];
-  substitute_var($file, $text);
+  substitute_actionlist_var($file, $text);
 
   log_msg(LOG_DEBUG, "Closing file '$file'");
 
@@ -4120,8 +4205,8 @@ sub execute_owritecl_action {
   $file = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($file, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($file, $text);
+  substitute_actionlist_var($event, $text);
 
   # apart from unexpected local system errors, communication errors are 
   # logged at the debug level, in order to prevent message floods with 
@@ -4184,8 +4269,8 @@ sub execute_udgram_action {
   $file = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($file, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($file, $text);
+  substitute_actionlist_var($event, $text);
 
   # apart from unexpected local system errors, communication errors with
   # remote peers are logged at the debug level, in order to prevent message 
@@ -4262,7 +4347,7 @@ sub execute_closeudgr_action {
   my($file);
 
   $file = $actionlist->[$i+1];
-  substitute_var($file, $text);
+  substitute_actionlist_var($file, $text);
 
   log_msg(LOG_DEBUG, "Closing unix datagram socket '$file'");
 
@@ -4285,8 +4370,8 @@ sub execute_ustream_action {
   $file = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($file, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($file, $text);
+  substitute_actionlist_var($event, $text);
 
   # apart from unexpected local system errors, communication errors with
   # remote peers are logged at the debug level, in order to prevent message 
@@ -4363,7 +4448,7 @@ sub execute_closeustr_action {
   my($file);
 
   $file = $actionlist->[$i+1];
-  substitute_var($file, $text);
+  substitute_actionlist_var($file, $text);
 
   log_msg(LOG_DEBUG, "Closing unix stream socket '$file'");
 
@@ -4387,8 +4472,8 @@ sub execute_udpsock_action {
   $peer = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($peer, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($peer, $text);
+  substitute_actionlist_var($event, $text);
 
   # apart from unexpected local system errors, communication errors with
   # remote peers are logged at the debug level, in order to prevent message 
@@ -4481,7 +4566,7 @@ sub execute_closeudp_action {
   my($peer);
 
   $peer = $actionlist->[$i+1];
-  substitute_var($peer, $text);
+  substitute_actionlist_var($peer, $text);
 
   log_msg(LOG_DEBUG, "Closing socket for UDP peer '$peer'");
 
@@ -4506,8 +4591,8 @@ sub execute_tcpsock_action {
   $peer = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($peer, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($peer, $text);
+  substitute_actionlist_var($event, $text);
 
   # apart from unexpected local system errors, communication errors with
   # remote peers are logged at the debug level, in order to prevent message 
@@ -4663,7 +4748,7 @@ sub execute_closetcp_action {
   my($peer);
 
   $peer = $actionlist->[$i+1];
-  substitute_var($peer, $text);
+  substitute_actionlist_var($peer, $text);
 
   log_msg(LOG_DEBUG, "Closing socket for TCP peer '$peer'");
 
@@ -4696,7 +4781,7 @@ sub execute_shellcmd_action {
     $text2 = "'" . $text2 . "'"; 
   }
 
-  substitute_var($cmdline, $text2);
+  substitute_actionlist_var($cmdline, $text2);
 
   log_msg(LOG_INFO, "Executing shell command '$cmdline'");
 
@@ -4721,7 +4806,7 @@ sub execute_spawn_action {
     $text2 = "'" . $text2 . "'"; 
   }
 
-  substitute_var($cmdline, $text2);
+  substitute_actionlist_var($cmdline, $text2);
 
   log_msg(LOG_INFO, "Spawning shell command '$cmdline'");
 
@@ -4747,8 +4832,8 @@ sub execute_cspawn_action {
     $text2 = "'" . $text2 . "'"; 
   }
 
-  substitute_var($context, $text2);
-  substitute_var($cmdline, $text2);
+  substitute_actionlist_var($context, $text2);
+  substitute_actionlist_var($cmdline, $text2);
 
   log_msg(LOG_INFO, 
           "Spawning shell command '$cmdline' with context '$context'");
@@ -4766,8 +4851,8 @@ sub execute_pipe_action {
   $event = $actionlist->[$i+1];
   $cmdline = $actionlist->[$i+2];
 
-  substitute_var($event, $text);
-  substitute_var($cmdline, $text);
+  substitute_actionlist_var($event, $text);
+  substitute_actionlist_var($cmdline, $text);
 
   log_msg(LOG_INFO, "Feeding event '$event' to shell command '$cmdline'");
 
@@ -4791,8 +4876,8 @@ sub execute_create_action {
   $lifetime = $actionlist->[$i+2];
   $list = $actionlist->[$i+3];
 
-  substitute_var($context, $text);
-  substitute_var($lifetime, $text);
+  substitute_actionlist_var($context, $text);
+  substitute_actionlist_var($lifetime, $text);
 
   log_msg(LOG_DEBUG, "Creating context '$context'");
 
@@ -4840,7 +4925,7 @@ sub execute_delete_action {
   my($context, $alias);
 
   $context = $actionlist->[$i+1];
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG, "Deleting context '$context'");
 
@@ -4873,7 +4958,7 @@ sub execute_obsolete_action {
   my($context);
 
   $context = $actionlist->[$i+1];
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG, "Obsoleting context '$context'");
 
@@ -4905,8 +4990,8 @@ sub execute_set_action {
   $lifetime = $actionlist->[$i+2];
   $list = $actionlist->[$i+3];
 
-  substitute_var($context, $text);
-  substitute_var($lifetime, $text);
+  substitute_actionlist_var($context, $text);
+  substitute_actionlist_var($lifetime, $text);
 
   log_msg(LOG_DEBUG, "Changing settings for context '$context'");
 
@@ -4954,8 +5039,8 @@ sub execute_alias_action {
   $context = $actionlist->[$i+1];
   $alias = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
-  substitute_var($alias, $text);
+  substitute_actionlist_var($context, $text);
+  substitute_actionlist_var($alias, $text);
 
   log_msg(LOG_DEBUG, "Creating alias '$alias' for context '$context'");
 
@@ -4981,7 +5066,7 @@ sub execute_unalias_action {
   my($alias);
 
   $alias = $actionlist->[$i+1];
-  substitute_var($alias, $text);
+  substitute_actionlist_var($alias, $text);
 
   log_msg(LOG_DEBUG, "Removing alias '$alias'");
 
@@ -5019,8 +5104,8 @@ sub execute_add_action {
   $context = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($context, $text);
+  substitute_actionlist_var($event, $text);
 
   log_msg(LOG_DEBUG, "Adding event(s) '$event' to context '$context'");
 
@@ -5062,8 +5147,8 @@ sub execute_prepend_action {
   $context = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($context, $text);
+  substitute_actionlist_var($event, $text);
 
   log_msg(LOG_DEBUG, "Prepending event(s) '$event' to context '$context'");
 
@@ -5105,8 +5190,8 @@ sub execute_fill_action {
   $context = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($context, $text);
+  substitute_actionlist_var($event, $text);
 
   log_msg(LOG_DEBUG, "Filling context '$context' with event(s) '$event'");
 
@@ -5147,8 +5232,8 @@ sub execute_report_action {
   $context = $actionlist->[$i+1];
   $cmdline = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
-  substitute_var($cmdline, $text);
+  substitute_actionlist_var($context, $text);
+  substitute_actionlist_var($cmdline, $text);
 
   log_msg(LOG_INFO, "Reporting the event store of context '$context' through shell command '$cmdline'");
 
@@ -5182,7 +5267,7 @@ sub execute_copy_action {
   $context = $actionlist->[$i+1];
   $variable = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG,
           "Copying context '$context' to variable '%$variable'");
@@ -5208,7 +5293,7 @@ sub execute_empty_action {
   $context = $actionlist->[$i+1];
   $variable = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG, "Emptying the event store of context '$context'");
 
@@ -5237,7 +5322,7 @@ sub execute_pop_action {
   $context = $actionlist->[$i+1];
   $variable = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG, "Pop the last element of context '$context' event store into variable '%$variable'");
 
@@ -5263,7 +5348,7 @@ sub execute_shift_action {
   $context = $actionlist->[$i+1];
   $variable = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG, "Shift the first element of context '$context' event store into variable '%$variable'");
 
@@ -5289,7 +5374,7 @@ sub execute_exists_action {
   $variable = $actionlist->[$i+1];
   $context = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG, "Checking the presence of context '$context'");
 
@@ -5309,7 +5394,7 @@ sub execute_getsize_action {
   $variable = $actionlist->[$i+1];
   $context = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG, "Finding the size of context '$context' event store");
 
@@ -5334,7 +5419,7 @@ sub execute_getaliases_action {
   $variable = $actionlist->[$i+1];
   $context = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG, 
   "Assigning aliases of context '$context' to variable '%$variable'");
@@ -5358,7 +5443,7 @@ sub execute_getltime_action {
   $variable = $actionlist->[$i+1];
   $context = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG, 
   "Assigning the lifetime of context '$context' to variable '%$variable'");
@@ -5382,7 +5467,7 @@ sub execute_getctime_action {
   $variable = $actionlist->[$i+1];
   $context = $actionlist->[$i+2];
 
-  substitute_var($context, $text);
+  substitute_actionlist_var($context, $text);
 
   log_msg(LOG_DEBUG, 
   "Assigning the creation time of context '$context' to variable '%$variable'");
@@ -5408,8 +5493,8 @@ sub execute_setctime_action {
   $timestamp = $actionlist->[$i+1];
   $context = $actionlist->[$i+2];
 
-  substitute_var($timestamp, $text);
-  substitute_var($context, $text);
+  substitute_actionlist_var($timestamp, $text);
+  substitute_actionlist_var($context, $text);
 
   if ($timestamp =~ /^\s*0*(\d+)\s*$/) { 
 
@@ -5464,7 +5549,7 @@ sub execute_event_action {
   $createafter = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($event, $text);
+  substitute_actionlist_var($event, $text);
 
   @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
@@ -5492,8 +5577,8 @@ sub execute_tevent_action {
   $createafter = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($createafter, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($createafter, $text);
+  substitute_actionlist_var($event, $text);
 
   @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
@@ -5531,9 +5616,9 @@ sub execute_cevent_action {
   $createafter = $actionlist->[$i+2];
   $event = $actionlist->[$i+3];
 
-  substitute_var($context, $text);
-  substitute_var($createafter, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($context, $text);
+  substitute_actionlist_var($createafter, $text);
+  substitute_actionlist_var($event, $text);
 
   @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
@@ -5571,7 +5656,7 @@ sub execute_reset_action {
   $ruleid = $actionlist->[$i+2];
   $event = $actionlist->[$i+3];
 
-  substitute_var($event, $text);
+  substitute_actionlist_var($event, $text);
 
   if (length($ruleid)) {
 
@@ -5618,7 +5703,7 @@ sub execute_getwpos_action {
   $ruleid = $actionlist->[$i+3];
   $event = $actionlist->[$i+4];
 
-  substitute_var($event, $text);
+  substitute_actionlist_var($event, $text);
   $key = gen_key($conffile, $ruleid, $event);
  
   log_msg(LOG_DEBUG, 
@@ -5647,8 +5732,8 @@ sub execute_setwpos_action {
   $ruleid = $actionlist->[$i+3];
   $event = $actionlist->[$i+4];
 
-  substitute_var($timestamp, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($timestamp, $text);
+  substitute_actionlist_var($event, $text);
 
   $key = gen_key($conffile, $ruleid, $event);
 
@@ -5736,7 +5821,7 @@ sub execute_assign_action {
   $variable = $actionlist->[$i+1];
   $value = $actionlist->[$i+2];
 
-  substitute_var($value, $text);
+  substitute_actionlist_var($value, $text);
 
   log_msg(LOG_DEBUG, "Assigning '$value' to variable '%$variable'");
 
@@ -5753,7 +5838,7 @@ sub execute_assignsq_action {
   $variable = $actionlist->[$i+1];
   $value = $actionlist->[$i+2];
 
-  substitute_var($value, $text);
+  substitute_actionlist_var($value, $text);
 
   $value =~ s/'/'\\''/g;
   $value = "'" . $value . "'";
@@ -5788,7 +5873,7 @@ sub execute_eval_action {
   $variable = $actionlist->[$i+1];
   $code = $actionlist->[$i+2];
 
-  substitute_var($code, $text);
+  substitute_actionlist_var($code, $text);
 
   log_msg(LOG_DEBUG,
           "Evaluating code '$code' and setting variable '%$variable'");
@@ -5837,7 +5922,7 @@ sub execute_call_action {
 
   if (ref($variables{$code}) eq "CODE") {
 
-    foreach $value (@params)  { substitute_var($value, $text); }
+    foreach $value (@params)  { substitute_actionlist_var($value, $text); }
     @retval = eval { $variables{$code}->(@params) };
 
     if ($@) {
@@ -5877,7 +5962,7 @@ sub execute_lcall_action {
   log_msg(LOG_DEBUG,
           "Calling code '$codeptr' and setting variable '%$variable'");
 
-  foreach $value (@params)  { substitute_var($value, $text); }
+  foreach $value (@params)  { substitute_actionlist_var($value, $text); }
   @retval = eval { $codeptr->(@params) };
 
   if ($@) {
@@ -5908,8 +5993,8 @@ sub execute_rewrite_action {
   $count = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
 
-  substitute_var($count, $text);
-  substitute_var($event, $text);
+  substitute_actionlist_var($count, $text);
+  substitute_actionlist_var($event, $text);
 
   if ($count =~ /^\s*0*(\d+)\s*$/) {
 
@@ -11151,6 +11236,13 @@ sub check_signals {
     open_input(-1);
     arrange_input_buffers();
 
+    # since all action list variables have been dropped, re-create builtin
+    # action list variables for the current second and special characters
+
+    $timevar_update = time();
+    set_actionlist_time_var($timevar_update);
+    set_actionlist_char_var();
+
     # if -intevents flag was specified, generate the SEC_RESTART event
 
     if ($intevents)  { internal_event("SEC_RESTART"); }
@@ -12210,6 +12302,12 @@ arrange_input_buffers();
 
 @events = ();
 @pending_events = ();
+
+### Initialize builtin action list variables
+
+$timevar_update = time();
+set_actionlist_time_var($timevar_update);
+set_actionlist_char_var();
 
 ### If -intevents flag was specified, create generate the SEC_STARTUP event
 

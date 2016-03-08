@@ -1,3 +1,11 @@
+--- version 2.7.9
+
+* added support for built-in action list variables %.nl, %.cr and %.tab
+  that are set to special characters, and time-related built-in action
+  list variables %.sec, %.min, %.hour, %.hmsstr, %.mday, %.mdaystr, %.mon, 
+  %.monstr, %.year, %.wday, %.wdaystr, %.tzname, %.tzoff and %.tzoff2.
+
+
 --- version 2.7.8
 
 * added support for the --dumpfts and --nodumpfts command line options.
