@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.7.9 - sec.man
+.\" SEC (Simple Event Correlator) 2.7.10 - sec.man
 .\" Copyright (C) 2000-2016 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "March 2016" "SEC 2.7.9"
+.TH sec 1 "June 2016" "SEC 2.7.10"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -1753,6 +1753,10 @@ carriage return character.
 .TP
 .I %.tab 
 tabulation character.
+.TP
+.I %.chr0, ..., %.chr31
+ASCII 0..31 control characters (e.g., %.chr7 is bell and %.chr12 is 
+form feed character).
 .PP
 For example, the following action list assigns the current time in 
 human readable format and the content of the $0 match variable to 

@@ -1,3 +1,9 @@
+--- version 2.7.10
+
+* added support for built-in action list variables %.chr0, ..., %.chr31
+  that are set to ASCII 0..31 control characters.
+
+
 --- version 2.7.9
 
 * added support for built-in action list variables %.nl, %.cr and %.tab
