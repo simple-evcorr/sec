@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.7.10 - sec.man
-.\" Copyright (C) 2000-2016 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.7.11 - sec.man
+.\" Copyright (C) 2000-2017 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "June 2016" "SEC 2.7.10"
+.TH sec 1 "February 2017" "SEC 2.7.11"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -55,6 +55,12 @@ sec \- simple event correlator
 [--pid=<pidfile>]
 .br
 [--dump=<dumpfile>]
+.br
+[--user=<username>]
+.br
+[--group=<groupname> ...]
+.br
+[--umask=<mode>]
 .br
 [--dumpfts | --nodumpfts]
 .br
@@ -269,21 +275,18 @@ thresh=3
 .PP
 type=EventGroup
 .br
-init=create USER_COUNTING
-.br
-end=delete USER_COUNTING
-.br
 ptype=RegExp
 .br
 pattern=3_SSH_LOGIN_FAILURES_FOR_(\\S+)
 .br
-context=!USER_$1_COUNTED
+context=!USER_$1_COUNTED && !COUNTING_OFF
 .br
-count=alias USER_COUNTING USER_$1_COUNTED
+count=create USER_$1_COUNTED 60
 .br
 desc=Repeated SSH login failures for 30 distinct users within 1m
 .br
-action=pipe '%s' /bin/mail -s 'SSH login alert' root@localhost
+action=pipe '%s' /bin/mail -s 'SSH login alert' root@localhost; \\
+       create COUNTING_OFF 3600
 .br
 window=60
 .br
@@ -300,19 +303,15 @@ by SEC, they are treated like regular events received from input sources and
 are matched against rules. 
 The regular expression pattern of the second rule will match the
 3_SSH_LOGIN_FAILURES_FOR_<username> event and start a new event correlation
-operation if no such events have been previously seen. When the operation is 
-initialized, the context USER_COUNTING is created, and when the operation 
-finishes, this context is deleted (as specified by the
-.I init
-and
-.I end
-fields). Also, each time a synthetic event for some user name has matched 
-the rule, a context alias for that user name is created (see the 
+operation if no such events have been previously seen.  
+Also, each time a synthetic event for some user name has matched the rule, 
+a context with the lifetime of 1 minute for that user name is created (see the 
 .I count
-field). Note that this
-prevents further matches for the same user name, since a synthetic event
-for <username> can match the rule only if the context alias 
-USER_<username>_COUNTED *does not* exist (as requested by the
+field). 
+Note that this prevents further matches for the same user name, since 
+a synthetic event for <username> can match the rule only if the context
+USER_<username>_COUNTED *does not* exist (as requested by the boolean
+expression in the
 .I context
 field; see CONTEXTS AND CONTEXT EXPRESSIONS section for more information). 
 The operation started by the rule sends an e-mail warning to the local 
@@ -320,11 +319,16 @@ root-user if 30 synthetic events have been observed within 1 minute (see the
 .I thresh
 and
 .I window
-fields). Note that due to the use of the USER_<username>_COUNTED aliases, all 
+fields). Note that due to the use of the USER_<username>_COUNTED contexts, all 
 synthetic events concern different user names. After sending an e-mail warning,
-the operation will continue to run until the 1 minute event correlation
-window expires. When the operation finishes, the deletion of the 
-USER_COUNTING context also erases the USER_<username>_COUNTED aliases. 
+the operation will also create the context COUNTING_OFF with the lifetime of
+1 hour, and will continue to run until the 1 minute event correlation
+window expires. After the operation has finished, the presence of the
+COUNTING_OFF context will keep the second rule disabled (as requested by 
+the boolean expression in the
+.I context
+field). Therefore, at most one e-mail warning per 1 hour is issued by 
+above rules.
 .PP
 The above examples have presented the event correlation capabilities of SEC 
 in a very brief fashion.
@@ -371,7 +375,9 @@ if SEC has not observed new data in an input file during <input_timeout>
 seconds (or the file was closed <input_timeout> seconds ago), <timeout_script> 
 will be executed with command line parameters 1 and <the name of the input 
 file>. If fresh data become available again, <timeout_script> will be executed
-with command line parameters 0 and <the name of the input file>. Note that
+with command line parameters 0 and <the name of the input file>. 
+Setting <input_timeout> to 0 disables this behavior (this is also the default). 
+Note that
 .B \-\-input_timeout 
 and 
 .B \-\-timeout_script
@@ -385,6 +391,7 @@ respectively.
 if an input file is in the closed state (e.g., SEC fails to open the file at 
 startup, because it has not been created yet), SEC will attempt
 to reopen the file after every <reopen_timeout> seconds until open succeeds. 
+Setting <reopen_timeout> to 0 disables this behavior (this is also the default). 
 This option has no meaning when the
 .B \-\-notail
 option is also specified.
@@ -396,6 +403,7 @@ is a synonym for
 .B \-\-check\-timeout=<check_timeout>
 if SEC has not observed new data in an input file, the file will not be polled
 (both for status and data) during the next <check_timeout> seconds.
+Setting <check_timeout> to 0 disables this behavior (this is also the default). 
 Note that 
 .B \-\-check_timeout
 is a synonym for
@@ -419,7 +427,7 @@ is a synonym for
 .TP
 .B \-\-blocksize=<io_block_size>
 the number of bytes SEC will attempt to read at once from an input file. 
-Default is 1024 (i.e., read from input files by 1KB blocks).
+Default is 8192 bytes (i.e., read from input files by 8KB blocks).
 .TP 
 .B \-\-bufsize=<input_buffer_size>
 set all input buffers to hold <input_buffer_size> lines. 
@@ -432,6 +440,7 @@ Default is 0 (i.e., determine the size of input buffers automatically).
 .TP
 .B \-\-evstoresize=<event_store_size>
 set an upper limit to the number of events in context event stores. 
+Default is 0 which sets no limit.
 .TP 
 .B \-\-cleantime=<clean_time>
 time interval in seconds that specifies how often internal event correlation
@@ -452,7 +461,7 @@ facility <facility>, e.g.,
 (see 
 .BR syslog (3)
 for possible facility values). Warning: be careful with using this option if 
-SEC is employed for monitoring syslog logfiles, because message loops might
+SEC is employed for monitoring syslog log files, because message loops might
 occur.
 .TP
 .B \-\-debug=<debuglevel>
@@ -486,13 +495,40 @@ SEC will store its process ID to <pidfile> at startup.
 .TP
 .B \-\-dump=<dumpfile>
 SEC will use <dumpfile> as its dump file for writing performance and debug
-data. See SIGNALS section for more information. Default is /tmp/sec.dump.
+data. With the
+.B \-\-dumpfts
+option, a timestamp suffix is appended to the dump file name.
+See SIGNALS section for more information. Default is /tmp/sec.dump.
+.TP
+.BR \-\-user=<username> ", " \-\-group=<groupname>
+if SEC is started with effective user ID 0, it will drop root privileges by 
+switching to user <username> and group <groupname>.
+The
+.B \-\-group
+option can't be used without the
+.B \-\-user
+option. If the
+.B \-\-user
+option is given without
+.BR \-\-group ,
+primary group of the user <username> is assumed for <groupname>. 
+If several groups are provided with multiple
+.B \-\-group
+options, SEC switches to the first group with other groups as supplementary 
+groups.
+.TP
+.B \-\-umask=<mode>
+set file mode creation mask to <mode> at SEC startup, where <mode> 
+is a value from the range 0..0777 (see also
+.BR umask (2)). 
+Octal, decimal, hexadecimal, and binary values can be specified for <mode> 
+(e.g., octal mask 0027 can also be expressed as 23, 0x17, and 0b000010111).
 .TP
 .BR \-\-dumpfts ", " \-\-nodumpfts
 if the
 .B \-\-dumpfts
 option is specified, a timestamp suffix (seconds since Epoch) is appended
-to the dump file name when the file is created. Default is
+to the dump file name that reflects the file creation time. Default is
 .BR \-\-nodumpfts . 
 .TP
 .BR \-\-quoting ", " \-\-noquoting 
@@ -3515,18 +3551,42 @@ the operation will run until 13:28:53 and then expire, logging the message
 The
 .B EventGroup
 rule runs event correlation operations for counting repeated instances of
-N different events e1,...,eK during T seconds, and taking an action if 
+N different events e1,...,eN during T seconds, and taking an action if 
 threshold conditions c1,...,cN for *all* events are satisfied (i.e., for 
 each event eK there are at least cK event instances in the window).
+Note that the event correlation window of the EventGroup operation 
+is sliding like the window of the SingleWithThreshold operation.
+.PP
+Event e1 is described with the 
+.I pattern
+and
+.I context
+field, event e2 is described with the
+.I pattern2
+and
+.I context2
+field, etc.
 The values for N and T are defined by the
 .I type
 and 
 .I window
-field, respectively, while values for c1,...,cN are given with the
-.I thresh*
-fields. Values for N and c1,...,cN default to 1. 
-Note that the event correlation window is sliding like the window of
-the SingleWithThreshold operation.
+field, respectively. The value for c1 is given with the 
+.I thresh
+field, the value for c2 is given with the
+.I thresh2
+field, etc. 
+Values for N and c1,...,cN default to 1. 
+.PP
+In order to match an event with the rule, 
+.I pattern
+and
+.I context
+fields are evaluated first. If they don't match the event, then
+.I pattern2
+and
+.I context2
+are evaluated, etc. If all N conditions are tried without a success,
+the event doesn't match the rule.
 .PP
 When an event has matched the rule, SEC evaluates the operation description 
 string given with the 
@@ -3536,7 +3596,8 @@ SEC will create it with the lifetime of T seconds. The operation will
 memorize the occurrence time of the event (current time as returned by the
 .BR time (2)
 system call), and compare the number of memorized occurrence times for each
-eK with the threshold cK. 
+eK with the threshold cK (i.e., the number of observed instances of eK is 
+compared with the threshold cK).
 If all threshold confitions are satisfied, the operation executes the
 action list defined by the
 .I action
@@ -3546,15 +3607,15 @@ the action list if the
 field is set to No (this is the default). 
 However, if
 .I multact
-is set to Yes, the operation will evaluate the threshold conditions on every
-further matching event, executing the action list given with the
+is set to Yes, the operation will re-evaluate the threshold conditions on 
+every further matching event, re-executing the action list given with the
 .I action
 field if all conditions are satisfied, and sliding the event correlation 
 window forward when the window is about to expire (if no events remain in
 the window, the operation will finish).
 .PP
 If the rule definition has an optional action list defined with the
-.I count*
+.I countK
 field for event eK, the operation executes it every time an instance of eK 
 is observed (even if
 .I multact
@@ -4009,11 +4070,16 @@ On the other hand, with
 .BR crontab (1)
 the same specification means 1AM in every last seven days or every Sunday
 in October.
+.PP
 Also, unlike some versions of
 .BR cron (8),
 SEC is not restricted to take action only during the first second of
-the current minute (for example, if SEC is started at the 22th second
-of a minute, the wildcard condition produces a match for this minute).
+the current minute. For example, if SEC is started at the 22th second
+of a minute, the wildcard condition produces a match for this minute.
+As another example, if the time specification matches the current minute
+but the context expression evaluates FALSE during the first half of the
+minute, the Calendar rule will execute the action list in the middle of
+this minute when the expression value becomes TRUE.
 .PP
 The Calendar rule supports the following fields:
 .TP 
@@ -5278,7 +5344,7 @@ action=write - %s
 This section presents an example rulebase for managing Cisco devices.
 It is assumed that the managed devices have syslog 
 logging enabled, and that all syslog messages are sent to a central host 
-and written to logfile(s) that are monitored by SEC.
+and written to log file(s) that are monitored by SEC.
 .PP
 # Set up contexts NIGHT and WEEKEND for nights 
 .br
@@ -5752,7 +5818,7 @@ created contexts, etc.) will be written
 to the SEC dump file.
 .TP 
 .B SIGUSR2
-SEC will reopen its logfile (useful for logfile rotation), and also close
+SEC will reopen its log file (useful for log file rotation), and also close
 its output files and sockets which will be reopened on demand.
 .TP
 .B SIGINT
@@ -5794,4 +5860,5 @@ helped to develop SEC.
 .BR stat (2),
 .BR strftime (3),
 .BR syslog (3),
-.BR time (2)
+.BR time (2),
+.BR umask (2)

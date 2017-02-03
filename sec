@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.10 - sec
-# Copyright (C) 2000-2016 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.7.11 - sec
+# Copyright (C) 2000-2017 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -90,6 +90,7 @@ use vars qw(
   $evstoresize
   @execactionfunc
   $fromstart
+  @groupnames
   $help
   @inputfilepat
   @inputfiles
@@ -142,10 +143,12 @@ use vars qw(
   $syslogf
   $syslogopen
   $tail
-  $terminate
+  %terminate
   $testonly
   $timeout_script
   $timevar_update
+  $umask
+  $username
   %variables
   $version
   $WIN32
@@ -155,7 +158,7 @@ use vars qw(
 ##### Load modules and set some global variables ##### 
 
 use POSIX qw(:errno_h :sys_wait_h SEEK_SET SEEK_CUR SEEK_END 
-             setsid ctermid getpgrp tcgetpgrp strftime);
+             setsid ctermid getpgrp tcgetpgrp setuid setgid strftime);
 use Getopt::Long;
 use Fcntl;
 use Socket;
@@ -171,8 +174,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.10";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2016 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.11";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2017 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -194,6 +197,9 @@ Options:
   --debug=<debuglevel>
   --pid=<pidfile>
   --dump=<dumpfile>
+  --user=<username>
+  --group=<groupname> ...
+  --umask=<mode>
   --dumpfts, --nodumpfts
   --quoting, --noquoting
   --tail, --notail
@@ -353,6 +359,12 @@ use constant SECEVENT_INT_CONTEXT	=> "SEC_INTERNAL_EVENT";
 use constant SYNEVENT_INT_CONTEXT	=> "_INTERNAL_EVENT";
 use constant FILEVENT_INT_CONTEXT_PREF	=> "_FILE_EVENT_";
 
+use constant DEFAULT_POLLTIMEOUT	=> 0.1;
+use constant DEFAULT_SOCKETTIMEOUT	=> 60;
+use constant DEFAULT_BLOCKSIZE		=> 8192;
+use constant DEFAULT_CLEANTIME		=> 1;
+use constant DEFAULT_DUMPFILE		=> "/tmp/sec.dump";
+
 
 ###############################################################
 # ------------------------- FUNCTIONS -------------------------
@@ -377,9 +389,7 @@ sub open_logfile {
     select STDOUT;
     $logopen = 1;
   } else {
-    if (-t STDERR  ||  -f STDERR) { 
-      print STDERR "Can't open logfile $logfile ($!)\n";
-    }
+    print STDERR "Can't open logfile $logfile ($!)\n";
     $logopen = 0;
   }
 }
@@ -394,9 +404,7 @@ sub open_syslog {
   my($progname);
 
   if (!$SYSLOGAVAIL) {
-    if (-t STDERR  ||  -f STDERR) {
-      print STDERR "Can't connect to syslog (no Sys::Syslog)\n";
-    }
+    print STDERR "Can't connect to syslog (no Sys::Syslog)\n";
     $syslogopen = 0;
     return;
   }
@@ -407,9 +415,7 @@ sub open_syslog {
   eval { Sys::Syslog::openlog($progname, "pid", $facility) };
 
   if ($@) {
-    if (-t STDERR  ||  -f STDERR) {
-      print STDERR "Can't connect to syslog ($@)\n";
-    }
+    print STDERR "Can't connect to syslog ($@)\n";
     $syslogopen = 0;
     return;
   }
@@ -672,7 +678,7 @@ sub analyze_pattern {
   my($negate, $lines, $pat2, $ncomp);
   my($evalok, $retval);
 
-  if ($pattype =~ /^(n?)regexp(?:0*([^\D0]\d*))?$/i) {
+  if ($pattype =~ /^(n?)regexp(?:0*([1-9][0-9]*))?$/i) {
 
     if (length($1))  { $negate = 1; }  else { $negate = 0; }
     if (defined($2))  { $lines = $2; }  else { $lines = 1; }
@@ -703,7 +709,7 @@ sub analyze_pattern {
     if ($negate) { return (NREGEXP, $lines, $pat2, $ncomp); } 
       else { return (REGEXP, $lines, $pat2, $ncomp); }
 
-  } elsif ($pattype =~ /^(n?)substr(?:0*([^\D0]\d*))?$/i) {
+  } elsif ($pattype =~ /^(n?)substr(?:0*([1-9][0-9]*))?$/i) {
 
     if (length($1))  { $negate = 1; }  else { $negate = 0; }
     if (defined($2))  { $lines = $2; }  else { $lines = 1; }
@@ -720,7 +726,7 @@ sub analyze_pattern {
     if ($negate) { return (NSUBSTR, $lines, $pat); }
       else { return (SUBSTR, $lines, $pat); }
 
-  } elsif ($pattype =~ /^(n?)perlfunc(?:0*([^\D0]\d*))?$/i) {
+  } elsif ($pattype =~ /^(n?)perlfunc(?:0*([1-9][0-9]*))?$/i) {
 
     if (length($1))  { $negate = 1; }  else { $negate = 0; }
     if (defined($2))  { $lines = $2; }  else { $lines = 1; }
@@ -807,7 +813,7 @@ sub analyze_varmap {
   @varmap = split(/\s*;\s*/, $varmap);
 
   foreach $mapping (@varmap) {
-    if ($mapping =~ /^\s*([[:alpha:]]\w*)(?:\s*=\s*0*(\d+))?\s*$/) {
+    if ($mapping =~ /^\s*([[:alpha:]]\w*)(?:\s*=\s*0*([0-9]+))?\s*$/) {
       $maphash_ref->{"$1"} = $2;
     } else {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
@@ -1251,7 +1257,7 @@ sub analyze_action {
     return (SETCTIME, $timestamp, $context); 
   }
 
-  elsif ($action =~ /^event(?:\s+0*(\d+))?(?:\s+(.*))?$/i) {
+  elsif ($action =~ /^event(?:\s+0*([0-9]+))?(?:\s+(.*))?$/i) {
 
     $createafter = defined($1)?$1:"";
     $event = defined($2)?$2:"";
@@ -1305,7 +1311,7 @@ sub analyze_action {
     return (CEVENT, $context, $createafter, $event); 
   }
 
-  elsif ($action =~ /^reset(?:\s+([+-]?)0*(\d+))?(?:\s+(.*))?$/i) { 
+  elsif ($action =~ /^reset(?:\s+([+-]?)0*([0-9]+))?(?:\s+(.*))?$/i) { 
 
     $sign = defined($1)?$1:"";
     $rule = defined($2)?$2:"";
@@ -1325,7 +1331,7 @@ sub analyze_action {
     return (RESET, $conffile, $rule, $event); 
   }
 
-  elsif ($action =~ /^getwpos\s+(\S+)\s+([+-]?)0*(\d+)(?:\s+(.*))?$/i) { 
+  elsif ($action =~ /^getwpos\s+(\S+)\s+([+-]?)0*([0-9]+)(?:\s+(.*))?$/i) { 
 
     $variable = $1;
     $sign = $2;
@@ -1351,7 +1357,7 @@ sub analyze_action {
     return (GETWINPOS, substr($variable, 1), $conffile, $rule, $event); 
   }
 
-  elsif ($action =~ /^setwpos\s+(\S+)\s+([+-]?)0*(\d+)(?:\s+(.*))?$/i) { 
+  elsif ($action =~ /^setwpos\s+(\S+)\s+([+-]?)0*([0-9]+)(?:\s+(.*))?$/i) { 
 
     $timestamp = $1;
     $sign = $2;
@@ -1948,7 +1954,7 @@ sub eval_timelist {
 
     # check if part has a valid step value (0 is illegal)
  
-    if ($part =~ /^(.+)\/0*(\d+)$/) {
+    if ($part =~ /^(.+)\/0*([0-9]+)$/) {
       $part = $1;
       $step = $2;
       if ($step == 0)  { return 0; }
@@ -1985,7 +1991,7 @@ sub eval_timelist {
 
       # if part does not contain '-', assume it defines a single number
 
-      if ($part =~ /^0*(\d+)$/)  { $part = $1; }  else { return 0; }
+      if ($part =~ /^0*([0-9]+)$/)  { $part = $1; }  else { return 0; }
       if ($part < $min  ||  $part > $max)  { return 0; }
 
       # step value is illegal for a single number
@@ -2010,7 +2016,7 @@ sub eval_timelist {
 
       if (length($range1)) {
 
-        if ($range1 =~ /^0*(\d+)$/)  { $range1 = $1; }  else { return 0; }
+        if ($range1 =~ /^0*([0-9]+)$/)  { $range1 = $1; }  else { return 0; }
         if ($range1 < $min  ||  $range1 > $max)  { return 0; }
 
         $i = $range1 + $offset;
@@ -2019,7 +2025,7 @@ sub eval_timelist {
 
       if (length($range2)) {
 
-        if ($range2 =~ /^0*(\d+)$/)  { $range2 = $1; }  else { return 0; }
+        if ($range2 =~ /^0*([0-9]+)$/)  { $range2 = $1; }  else { return 0; }
         if ($range2 < $min  ||  $range2 > $max)  { return 0; }
 
         $j = $range2 + $offset;
@@ -2408,7 +2414,7 @@ sub check_rule {
     if (contains_matchvars($ref->{"action"}, '$')) 
       { $rule->{"ActVolat"} = 1; }
 
-    if ($ref->{"window"} !~ /^0*(\d+)$/  ||  $1 == 0) { 
+    if ($ref->{"window"} !~ /^0*([0-9]+)$/  ||  $1 == 0) { 
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Invalid time window '", $ref->{"window"}, "'");
       return 0;
@@ -2530,7 +2536,7 @@ sub check_rule {
       { $rule->{"ActVolat2"} = 1; }
 
     if (!exists($ref->{"window"})) { $rule->{"Window"} = 0; }
-    elsif ($ref->{"window"} =~ /^0*(\d+)$/) { $rule->{"Window"} = $1; }
+    elsif ($ref->{"window"} =~ /^0*([0-9]+)$/) { $rule->{"Window"} = $1; }
     else { 
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Invalid time window '", $ref->{"window"}, "'");
@@ -2652,7 +2658,7 @@ sub check_rule {
     if (contains_matchvars($ref->{"action2"}, '$', '%')) 
       { $rule->{"ActVolat2"} = 1; }
 
-    if ($ref->{"window"} !~ /^0*(\d+)$/  ||  $1 == 0) { 
+    if ($ref->{"window"} !~ /^0*([0-9]+)$/  ||  $1 == 0) { 
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Invalid time window '", $ref->{"window"}, "'");
       return 0;
@@ -2737,13 +2743,13 @@ sub check_rule {
         { $rule->{"ActVolat2"} = 1; }
     }
 
-    if ($ref->{"window"} !~ /^0*(\d+)$/  ||  $1 == 0) { 
+    if ($ref->{"window"} !~ /^0*([0-9]+)$/  ||  $1 == 0) { 
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Invalid time window '", $ref->{"window"}, "'");
       return 0;
     } else { $rule->{"Window"} = $1; }
 
-    if ($ref->{"thresh"} !~ /^0*(\d+)$/  ||  $1 == 0) { 
+    if ($ref->{"thresh"} !~ /^0*([0-9]+)$/  ||  $1 == 0) { 
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Invalid threshold '", $ref->{"thresh"}, "'");
       return 0;
@@ -2828,25 +2834,25 @@ sub check_rule {
     if (contains_matchvars($ref->{"action2"}, '$')) 
       { $rule->{"ActVolat2"} = 1; }
 
-    if ($ref->{"window"} !~ /^0*(\d+)$/  ||  $1 == 0) { 
+    if ($ref->{"window"} !~ /^0*([0-9]+)$/  ||  $1 == 0) { 
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Invalid 1st time window '", $ref->{"window"}, "'");
       return 0;
     } else { $rule->{"Window"} = $1; }
 
-    if ($ref->{"window2"} !~ /^0*(\d+)$/  ||  $1 == 0) { 
+    if ($ref->{"window2"} !~ /^0*([0-9]+)$/  ||  $1 == 0) { 
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Invalid 2nd time window '", $ref->{"window2"}, "'");
       return 0;
     } else { $rule->{"Window2"} = $1; }
 
-    if ($ref->{"thresh"} !~ /^0*(\d+)$/  ||  $1 == 0) { 
+    if ($ref->{"thresh"} !~ /^0*([0-9]+)$/  ||  $1 == 0) { 
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Invalid 1st threshold '", $ref->{"thresh"}, "'");
       return 0;
     } else { $rule->{"Threshold"} = $1; }
 
-    if ($ref->{"thresh2"} !~ /^0*(\d+)$/) {
+    if ($ref->{"thresh2"} !~ /^0*([0-9]+)$/) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Invalid 2nd threshold '", $ref->{"thresh2"}, "'");
       return 0;
@@ -2862,7 +2868,7 @@ sub check_rule {
   # EVENT_GROUP rule
   # ------------------------------------------------------------
 
-  elsif ($type =~ /^EVENTGROUP(?:0*\B)?(\d*)$/) {
+  elsif ($type =~ /^EVENTGROUP(?:0*\B)?([0-9]*)$/) {
 
     $evtnum = length($1)?$1:1;
 
@@ -2968,7 +2974,7 @@ sub check_rule {
       }
 
       if (exists($ref->{"thresh$j"})) {
-        if ($ref->{"thresh$j"} !~ /^0*(\d+)$/  ||  $1 == 0) { 
+        if ($ref->{"thresh$j"} !~ /^0*([0-9]+)$/  ||  $1 == 0) { 
           log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
                   "Invalid threshold '", $ref->{"thresh$j"}, "'");
           return 0;
@@ -3019,7 +3025,7 @@ sub check_rule {
         { $rule->{"EndActVolat"} = 1; }
     }
 
-    if ($ref->{"window"} !~ /^0*(\d+)$/  ||  $1 == 0) { 
+    if ($ref->{"window"} !~ /^0*([0-9]+)$/  ||  $1 == 0) { 
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
               "Invalid time window '", $ref->{"window"}, "'");
       return 0;
@@ -3832,19 +3838,19 @@ sub set_actionlist_time_var {
 
   $variables{".mon"} = ($ltime[4] < 9)?("0" . ($ltime[4]+1)):$ltime[4]+1;
 
-  $variables{".monstr"} = strftime("%b", @ltime);
+  $variables{".monstr"} = POSIX::strftime("%b", @ltime);
 
   $variables{".year"} = $ltime[5] + 1900;
 
   $variables{".wday"} = $ltime[6];
 
-  $variables{".wdaystr"} = strftime("%a", @ltime);
+  $variables{".wdaystr"} = POSIX::strftime("%a", @ltime);
 
-  $variables{".tzname"} = strftime("%Z", @ltime);
+  $variables{".tzname"} = POSIX::strftime("%Z", @ltime);
   
-  $variables{".tzoff"} = strftime("%z", @ltime);
+  $variables{".tzoff"} = POSIX::strftime("%z", @ltime);
 
-  if ($variables{".tzoff"} =~ /^([+-]\d{2})(\d{2})$/) {
+  if ($variables{".tzoff"} =~ /^([+-][0-9]{2})([0-9]{2})$/) {
     $variables{".tzoff2"} = "$1:$2";
   } else {
     $variables{".tzoff2"} = "";
@@ -3890,19 +3896,16 @@ sub substitute_actionlist_var {
 }
 
 
-# Parameters: par1 - shell command
+# Parameters: par1 - commandline
 #             par2 - 'collect output' flag
 #             par3 - context
-# Action: par1 will be executed as a shell command in a child
-#         process. After process has been created, subroutine creates an
-#         entry in the %children hash, and returns the pid of the child 
-#         process. If process creation failed, undef is returned. After the 
-#         command has completed, the child process terminates and returns 
-#         command's exit code as its own exit value.
-#         If par2 is defined and non-zero, command's standard output is
-#         returned to the main process through a pipe. If par3 is also
-#         defined, command's standard output is returned with an internal
-#         context par3 (otherwise default internal context is used).
+# Action: commandline par1 is executed with perl exec() in a child process. 
+#         The function creates an entry in the %children hash for the child 
+#         process and returns its pid. If process creation failed, undef is
+#         returned. If par2 is defined and non-zero, standard output of the
+#         commandline is returned to the main process through a pipe. If par3 
+#         is also defined, commandline's standard output is returned with an 
+#         internal context par3 (otherwise default internal context is used).
 
 sub shell_cmd {
 
@@ -3959,24 +3962,29 @@ sub shell_cmd {
 
   if ($collect_output) {
 
-    # connect the standard output of the child process to the pipe
-    # and make the standard output unbuffered
+    # close the read end of the pipe and connect the standard output of 
+    # the child process to the write end of the pipe
 
     close($read);
-
     if (!open(STDOUT, ">&", $write))  { exit(1); }
-    select(STDOUT); 
-    $| = 1;
-
     close($write);
-
   }
 
-  # if we have received SIGTERM, exit
+  # set SIGPIPE handling back to default before calling exec() (SIGPIPE is
+  # ignored and exec() will only reset custom signal handlers to default)
 
-  if ($terminate)  { exit(0); }
+  $SIG{PIPE} = 'DEFAULT';
 
-  # execute the command inside the child process; if exec() fails, exit
+  # set SIGTERM handling back to default (terminate) before calling exec();
+  # if this process has received SIGTERM before default handling became 
+  # active, terminate the process without calling exec()
+
+  $SIG{TERM} = 'DEFAULT'; 
+
+  if (exists($terminate{$$}))  { exit(0); }
+
+  # execute commandline - by default exec() keeps file descriptors 0..2 open 
+  # and closes other descriptors (see $^F special variable in perl docs)
 
   exec("$cmd");
   exit(1);
@@ -3984,20 +3992,23 @@ sub shell_cmd {
 }
 
 
-# Parameters: par1 - shell command for reporting
+# Parameters: par1 - commandline
 #             par2 - reference to a hash or an array
-# Action: par1 will be executed as a shell command in a child process, and
-#         contents of array par2 (or keys of hash par2) are fed to its 
-#         standard input. After process has been created, subroutine creates 
-#         an entry in the %children hash, and returns the pid of the child 
-#         process. If process creation failed, undef is returned. 
-#         After the command has completed, the child process 
-#         terminates and returns command's exit code as its own exit value.
+# Action: this function creates two processes for executing commandline par1. 
+#         The child process writes the contents of array par2 (or keys of hash 
+#         par2) to the standard input of the commandline through a pipe.
+#         Writing is synchronous (blocking) and hence the need for a separate
+#         process. The grandchild has its standard input connected to the read
+#         end of the pipe and executes the commandline with perl exec().
+#         The function creates an entry in the %children hash for the child 
+#         process and returns its pid. If child process creation failed, undef
+#         is returned. After the commandline has completed, the child process 
+#         terminates and returns grandchild exit code for its own exit value.
 
 sub pipe_cmd {
 
   my($cmd, $ref) = @_;
-  my($pid, $elem);
+  my($pid, $read, $write, $elem, $p);
 
   # try to create a child process and return undef, if fork failed;
   # if fork was successful and we are in parent process, return the 
@@ -4026,55 +4037,108 @@ sub pipe_cmd {
   }
 
   # we are in the child process now...
+  # create a pipe for communicating with the commandline
 
-  # if we have received SIGTERM, exit; otherwise fork the command
+  if (!pipe($read, $write))  { exit(1); }
 
-  if ($terminate)  { exit(0); }  else { $pid = open(CMDPIPE, "| $cmd"); }
+  # Fork a process for commandline with pipe connected to its standard input.
+  # open(pipe, "| cmd") with blocking close(pipe) that returns child exit code
+  # are not used - if SIGTERM interrupts blocking close(pipe) and triggers 
+  # exit(0) from its handler, many perl versions produce the warning "refcnt: 
+  # fd -1 < 0", because exit() attempts to close the pipe for the second time.
 
-  if (defined($pid)) {
+  $pid = fork();
+  if (!defined($pid))  { exit(1); }
 
-    # if the main SEC process has sent us SIGTERM meanwhile, send SIGTERM 
-    # to the command and exit; otherwise set the signal handler for SIGTERM
+  if (!$pid) {
 
-    if ($terminate) { 
-      kill('TERM', $pid); 
-      exit(0);
-    } else { 
-      $SIG{TERM} = sub { kill('TERM', $pid); exit(0); }; 
-    }
+    # we are in the grandchild process now... close the write end of 
+    # the pipe and connect the standard input to the read end of the pipe
 
-    # ignore SIGPIPE if the command has died or has closed the pipe
+    close($write);
+    if (!open(STDIN, "<&", $read))  { exit(1); }
+    close($read);
 
-    $SIG{PIPE} = 'IGNORE';
+    # set SIGPIPE handling back to default before calling exec() (SIGPIPE is
+    # ignored and exec() will only reset custom signal handlers to default)
 
-    # write data to pipe
+    $SIG{PIPE} = 'DEFAULT';
 
-    select CMDPIPE;
-    $| = 1;
+    # set SIGTERM handling back to default (terminate) before calling exec();
+    # if this process has received SIGTERM before default handling became 
+    # active, terminate the process without calling exec()
 
-    if (ref($ref) eq "HASH") {
-      while ($elem = each(%{$ref}))  { print CMDPIPE $elem, "\n"; }
-    } else {
-      foreach $elem (@{$ref})  { print CMDPIPE $elem, "\n"; }
-    }
+    $SIG{TERM} = 'DEFAULT'; 
 
-    # In some perl versions the close() function is buggy, and although
-    # SIGPIPE is ignored, close() still sets $? variable to signal an 
-    # error, if the forked command does not read its stdin. To overcome 
-    # this problem, IO::Handle->flush() must be called before close(), 
-    # since this forces the close() function to set $? correctly
+    if (exists($terminate{$$}))  { exit(0); }
 
-    CMDPIPE->flush();
+    # execute commandline - by default exec() keeps file descriptors 0..2 open 
+    # and closes other descriptors (see $^F special variable in perl docs)
 
-    # note that close() does not return until the command has completed
-
-    close(CMDPIPE);
-
-    exit($? >> 8);
-
+    exec("$cmd");
+    exit(1);
   }
 
-  exit(1); 
+  # we are in the child process now (grandchild is our child)...
+  # close the read end of the pipe and make the write end unbuffered
+
+  close($read);
+  select $write;
+  $| = 1;
+
+  # Set a new signal handler for SIGTERM that forwards it to child process 
+  # and exits. Since the handler could be triggered after blocking waitpid() 
+  # has returned and reaped the child from process table, the presence of 
+  # child is verified with nonblocking waitpid() before forwarding SIGTERM.
+  # If the current process has received SIGTERM before the new handler became 
+  # active, forward SIGTERM to child process and exit (child must exist since 
+  # waitpid() has not been called yet for child).
+
+  $SIG{TERM} = sub { my($ret) = waitpid($pid, WNOHANG); 
+                     if ($ret == -1) { exit(0); }
+                     if ($ret != 0 && ($WIN32 || WIFEXITED($?) || 
+                                       WIFSIGNALED($?))) { exit(0); }
+                     kill('TERM', $pid); 
+                     exit(0); }; 
+
+  if (exists($terminate{$$})) { 
+    kill('TERM', $pid); 
+    exit(0);
+  }
+
+  # write data to pipe in blocking mode (ignoring SIGPIPE is inherited from
+  # the main SEC process and writing to pipe is thus safe)
+
+  if (ref($ref) eq "HASH") {
+    while ($elem = each(%{$ref}))  { print $write $elem, "\n"; }
+  } else {
+    foreach $elem (@{$ref})  { print $write $elem, "\n"; }
+  }
+
+  # close the pipe immediately after writing (many commands don't terminate 
+  # without seeing EOF in stdin and without close() there would be deadlock)
+
+  close($write);
+
+  for (;;) {
+
+    # wait for child process in blocking mode; waitpid() returns the pid 
+    # of the exited child process, return value -1 means there is no child 
+    # process with the given pid, while 0 means the child is still running
+
+    $p = waitpid($pid, 0);
+
+    # call exit(1) if according to waitpid() the child does not exist (i.e.,
+    # its exit code has already been collected which should never happen)
+
+    if ($p == -1)  { exit(1); }
+
+    # if the child has exited, return its exit code with exit()
+
+    if ($p != 0 && ($WIN32 || WIFEXITED($?) || WIFSIGNALED($?))) {
+      exit($? >> 8);
+    }
+  }
 
 }
 
@@ -4266,7 +4330,6 @@ sub execute_owritecl_action {
 
 sub execute_udgram_action {
 
-  local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
   my($actionlist, $text, $i) = @_;
   my($file, $event, $handle, $nbytes);
 
@@ -4367,7 +4430,6 @@ sub execute_closeudgr_action {
 
 sub execute_ustream_action {
 
-  local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
   my($actionlist, $text, $i) = @_;
   my($file, $event, $handle, $nbytes);
 
@@ -4468,7 +4530,6 @@ sub execute_closeustr_action {
 
 sub execute_udpsock_action {
 
-  local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
   my($actionlist, $text, $i) = @_;
   my($peer, $handle, $event, $nbytes);
   my($host, $port, $iaddr, $paddr);
@@ -4512,7 +4573,7 @@ sub execute_udpsock_action {
     }
   }
 
-  if ($peer !~ /^(.+):(\d+)$/) {
+  if ($peer !~ /^(.+):([0-9]+)$/) {
     log_msg(LOG_WARN,
     "Can't connect to UDP peer '$peer' for sending event '$event'",
     "(peer not in host:portnumber format)");
@@ -4586,7 +4647,6 @@ sub execute_closeudp_action {
 
 sub execute_tcpsock_action {
 
-  local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
   my($actionlist, $text, $i) = @_;
   my($peer, $handle, $event, $nbytes);
   my($host, $port, $iaddr, $paddr);
@@ -4687,7 +4747,7 @@ sub execute_tcpsock_action {
   # was closed because of an error, recreate the socket and attempt to
   # establish a new connection for transmitting data to remote peer
 
-  if ($peer !~ /^(.+):(\d+)$/) {
+  if ($peer !~ /^(.+):([0-9]+)$/) {
      log_msg(LOG_WARN,
      "Can't connect to TCP peer '$peer' for sending event '$event'",
      "(peer not in host:portnumber format)");
@@ -4885,7 +4945,7 @@ sub execute_create_action {
 
   log_msg(LOG_DEBUG, "Creating context '$context'");
 
-  if ($lifetime =~ /^\s*0*(\d+)\s*$/) {
+  if ($lifetime =~ /^\s*0*([0-9]+)\s*$/) {
 
     $lifetime = $1;
 
@@ -4999,7 +5059,7 @@ sub execute_set_action {
 
   log_msg(LOG_DEBUG, "Changing settings for context '$context'");
 
-  if ($lifetime =~ /^\s*(?:0*(\d+)|-)\s*$/) {
+  if ($lifetime =~ /^\s*(?:0*([0-9]+)|-)\s*$/) {
 
     $lifetime = $1;
 
@@ -5500,7 +5560,7 @@ sub execute_setctime_action {
   substitute_actionlist_var($timestamp, $text);
   substitute_actionlist_var($context, $text);
 
-  if ($timestamp =~ /^\s*0*(\d+)\s*$/) { 
+  if ($timestamp =~ /^\s*0*([0-9]+)\s*$/) { 
 
     $timestamp = $1; 
     $ltime = scalar(localtime($timestamp));
@@ -5586,7 +5646,7 @@ sub execute_tevent_action {
 
   @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
-  if ($createafter =~ /^\s*0*(\d+)\s*$/) {
+  if ($createafter =~ /^\s*0*([0-9]+)\s*$/) {
 
     $createafter = $1;
 
@@ -5626,7 +5686,7 @@ sub execute_cevent_action {
 
   @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
-  if ($createafter =~ /^\s*0*(\d+)\s*$/) {
+  if ($createafter =~ /^\s*0*([0-9]+)\s*$/) {
 
     $createafter = $1;
 
@@ -5741,7 +5801,7 @@ sub execute_setwpos_action {
 
   $key = gen_key($conffile, $ruleid, $event);
 
-  if ($timestamp =~ /^\s*0*(\d+)\s*$/) { 
+  if ($timestamp =~ /^\s*0*([0-9]+)\s*$/) { 
 
     $timestamp = $1; 
     $ltime = scalar(localtime($timestamp));
@@ -6000,7 +6060,7 @@ sub execute_rewrite_action {
   substitute_actionlist_var($count, $text);
   substitute_actionlist_var($event, $text);
 
-  if ($count =~ /^\s*0*(\d+)\s*$/) {
+  if ($count =~ /^\s*0*([0-9]+)\s*$/) {
 
     $count = $1;
 
@@ -7044,15 +7104,15 @@ sub subst_string {
 
     elsif (index($msg, "$token:{") == -1) {    
 
-      $msg =~ s/$token2(?:$token2|(\d+)|\{(\d+)\}|
-                          \+\{([[:alpha:]_][\w!]*|\d+)\})/
+      $msg =~ s/$token2(?:$token2|([0-9]+)|\{([0-9]+)\}|
+                          \+\{([[:alpha:]_][\w!]*|[0-9]+)\})/
       !defined($+)?$token:(defined($subst_ref->{$+})?$subst_ref->{$+}:"")/egx;
 
     } else {
 
-      $msg =~ s/$token2(?:$token2|(\d+)|\{(\d+)\}|
-                          \+\{([[:alpha:]_][\w!]*|\d+)\}|
-                          :\{([[:alpha:]]\w*):([[:alpha:]_][\w!]*|\d+)\})/
+      $msg =~ s/$token2(?:$token2|([0-9]+)|\{([0-9]+)\}|
+                          \+\{([[:alpha:]_][\w!]*|[0-9]+)\}|
+                          :\{([[:alpha:]]\w*):([[:alpha:]_][\w!]*|[0-9]+)\})/
       !defined($+)?$token:
           (!defined($4)?(defined($subst_ref->{$+})?$subst_ref->{$+}:"")
            :(defined($pmatch_cache{$4}->{$+})?$pmatch_cache{$4}->{$+}:""))/egx;
@@ -9656,7 +9716,7 @@ sub print_element {
 
 sub dump_data {
 
-  my($dfilename, $i, $key, $ref, $file, $event);
+  my($dfilename, $i, $key, $ref, $file, $event, $egid, @gidlist, %gids);
   my($time, $user, $system, $cuser, $csystem, $fpos, @stat);
   my($width1, $width2, $width3);
   my($name, %reported_names);
@@ -9700,6 +9760,16 @@ sub dump_data {
   print DUMPFILE "Time of the dump: ", scalar(localtime($time)), "\n";
   print DUMPFILE "Program resource file: ", $rcfile_status, "\n";
   print DUMPFILE "Program options: ", $sec_options, "\n";
+
+  # note that $) can report the same supplementary group ID more than once
+
+  @gidlist = split(' ', $) );
+  $egid = shift @gidlist;
+  %gids = map { $_ => 1 } @gidlist;
+
+  print DUMPFILE "Effective user ID: ", $>, "\n";
+  print DUMPFILE "Effective group ID: ", $egid, "\n";
+  print DUMPFILE "Supplementary group IDs: ", join(" ", keys %gids), "\n";
 
   print DUMPFILE "\n";
 
@@ -10173,10 +10243,11 @@ sub internal_event {
 
 # Parameters: par1 - process ID
 #             par2 - 'read all' flag
-# Action: read available data from process par1 and create events. If par2 
-#         is defined and non-zero, the function will keep reading until all 
-#         available data have been consumed; otherwise the function will 
-#         return when the number of consumed bytes exceeds BATCHREADLIMIT.
+# Action: read available data from the pipe of process par1 and create events
+#         from the data. If par2 is defined and non-zero, the function will 
+#         keep reading until all available data have been consumed, otherwise 
+#         the function will read once. The function will return the number 
+#         bytes read from the pipe.
 
 sub consume_pipe {
 
@@ -10258,7 +10329,7 @@ sub consume_pipe {
 
     }
 
-    if (!$read_all  &&  $total >= BATCHREADLIMIT)  { last; }
+    if (!$read_all)  { last; }
 
   }
 
@@ -10273,23 +10344,35 @@ sub consume_pipe {
 
   }
 
+  return $total;
+
 }
 
 
 # Parameters: -
-# Action: check the status of SEC child processes and process their output
+# Action: check the status of SEC child processes, and read their standard
+#         output if the event buffer is empty (unprocessed data from an exited
+#         process will be appended to the event buffer unconditionally).
+#         If at least one child process returns some bytes, return 1 (even
+#         if these bytes do not constitute a full line), otherwise return 0
 
 sub check_children {
 
-  my($pid, $exitcode);
+  my($pid, $exitcode, $newdata);
 
-  # if the child was started by 'spawn' action, gather the child
-  # standard output and create events (if child has more than PIPE_BUF
-  # bytes to write, we must start reading from pipe before child 
-  # termination, otherwise child would block)
+  $newdata = 0;
 
-  while ($pid = each(%children)) { 
-    if ($children{$pid}->{"open"})  { consume_pipe($pid); }
+  # Check all child processes that have been started by '*spawn' actions
+  # for input data. If the buffer of synthetic events is not empty, polling
+  # of child processes is skipped. If new data from child standard output are 
+  # available through pipe, create synthetic events from the data (provided
+  # that at least one complete line was read). If at least one child has
+  # new data, raise the 'newdata' flag (even if incomplete line was read).
+
+  if (!scalar(@events)) {
+    while ($pid = each(%children)) { 
+      if ($children{$pid}->{"open"} && consume_pipe($pid)) { $newdata = 1; }
+    }
   }
 
   # get the exit status of every terminated child process.
@@ -10316,10 +10399,10 @@ sub check_children {
 
       $exitcode = $? >> 8;
 
-      # if the terminated child was started with the 'spawn' action and
+      # if the terminated child was started with the '*spawn' action and
       # its pipe is still open, read all available data from the pipe
 
-      if ($children{$pid}->{"open"})  { consume_pipe($pid, 1); }
+      if ($children{$pid}->{"open"} && consume_pipe($pid, 1)) { $newdata = 1; }
 
       # if the child exit code is zero and the child was started as 
       # a part of SINGLE_W_SCRIPT rule, execute action list 'Action'
@@ -10356,6 +10439,8 @@ sub check_children {
 
   }
 
+  return $newdata;
+
 }
 
 
@@ -10364,7 +10449,6 @@ sub check_children {
 
 sub check_tcp_conn {
 
-  local $SIG{PIPE} = 'IGNORE'; # ignore SIGPIPE inside this function
   my($time, $peer, $win, $ret, $event, $nbytes, $sockok);
 
   $time = time();
@@ -10444,7 +10528,7 @@ sub read_tcp_sock {
       if (!defined($ret) && $! == EINTR)  { next; }
       if (!defined($ret) || $ret <= 0)  { last; }
 
-      $ret = recv($output_tcpsock{$peer}, $buffer, $bufsize, 0);
+      $ret = recv($output_tcpsock{$peer}, $buffer, $blocksize, 0);
       $nbytes = length($buffer);
 
       if (!defined($ret)) {
@@ -11223,8 +11307,8 @@ sub check_signals {
 
     # open the logfile and connection to the system logger
 
-    if ($logfile)  { open_logfile($logfile); } 
-    if ($syslogf)  { open_syslog($syslogf); }
+    if (defined($logfile))  { open_logfile($logfile); } 
+    if (defined($syslogf))  { open_syslog($syslogf); }
 
     # read configuration from SEC rule files
 
@@ -11282,8 +11366,8 @@ sub check_signals {
 
     # open the logfile and connection to the system logger
 
-    if ($logfile)  { open_logfile($logfile); } 
-    if ($syslogf)  { open_syslog($syslogf); } 
+    if (defined($logfile))  { open_logfile($logfile); } 
+    if (defined($syslogf))  { open_syslog($syslogf); } 
 
     # read configuration from SEC rule files that are either new or
     # have been modified, and store to the array @file_list the names
@@ -11359,8 +11443,8 @@ sub check_signals {
     if ($logopen)  { close(LOGFILE); $logopen = 0; }
     if ($syslogopen) { eval { Sys::Syslog::closelog() }; $syslogopen = 0; }
 
-    if ($logfile)  { open_logfile($logfile); } 
-    if ($syslogf)  { open_syslog($syslogf); }
+    if (defined($logfile))  { open_logfile($logfile); } 
+    if (defined($syslogf))  { open_syslog($syslogf); }
 
     # if -intevents flag was specified, generate the SEC_LOGROTATE event
 
@@ -11392,20 +11476,16 @@ sub check_signals {
 
   # if SIGTERM has arrived, shutdown SEC
 
-  if ($terminate) {
+  if (exists($terminate{$$})) {
 
     log_msg(LOG_NOTICE, "SIGTERM received: shutting down SEC");
 
     # If -intevents flag was specified, generate the SEC_SHUTDOWN event.
-    # Note that the $terminate flag will be set back to zero, as if
-    # SEC_SHUTDOWN event was generated before SIGTERM under normal circum-
-    # stances (when $terminate is set, SEC does not fork any new processes). 
-    # Note also, that after generating SEC_SHUTDOWN event, SEC will sleep for 
-    # TERMTIMEOUT seconds, so that child processes that were triggered by 
-    # SEC_SHUTDOWN have time to create a signal handler for SIGTERM if needed.
+    # After generating SEC_SHUTDOWN event, SEC will sleep for TERMTIMEOUT 
+    # seconds, so that child processes that were triggered by SEC_SHUTDOWN 
+    # have time to create a signal handler for SIGTERM if they wish.
 
     if ($intevents) { 
-      $terminate = 0;
       internal_event("SEC_SHUTDOWN"); 
       if ($childterm)  { sleep(TERMTIMEOUT); }
     }
@@ -11557,18 +11637,19 @@ sub int_handler {
 
 
 # Parameters: -
-# Action: on arrival of SIGTERM clean things up and exit
+# Action: on arrival of SIGTERM set a flag for the current process ID
 
 sub term_handler {
 
   $SIG{TERM} = \&term_handler;
-  $terminate = 1;
+  $terminate{$$} = 1;
   $sigreceived = 1;
 }               
 
 
 ##########################################################
-# Functions related to daemonization and option processing
+# Functions related to daemonization, setting the user and
+# group ID, and option processing
 ##########################################################
 
 
@@ -11651,6 +11732,191 @@ sub daemonize {
 }
 
 
+# Parameters: par1 - effective group ID
+#             par2, par3, .. - IDs of supplementary groups
+# Action: set effective group ID to par1 and supplementary groups to 
+#         par1, par2, par3, etc. Return 1 if supplementary groups were 
+#         successfully set, 0 otherwise.
+
+sub set_supplementary_groups {
+
+  my($egid) = $_[0];
+  my(@supp_gids) = @_;
+  my(%gids, %result, @list, $gid);
+
+  # since perl POSIX module lacks setgroups(), set the $) special variable
+  # accordingly (the first element in the string must be effective group ID, 
+  # while the following elements define supplementary groups) 
+   
+  $) = "$egid " . join(" ", @supp_gids);
+
+  # to verify if setting supplementary groups succeeded, check $) variable
+  # (note that $) can report the same supplementary group ID more than once)
+
+  @list = split(' ', $) );
+
+  # if effective group ID is not properly set, setting the groups has failed
+
+  if ($egid != $list[0])  { return 0; }
+
+  # since POSIX leaves it open whether effective group ID is reported in
+  # the list of supplementary groups, create %result from all gids in $)
+
+  %gids = map { $_ => 1 } @supp_gids;
+  %result = map { $_ => 1 } @list;
+
+  # verify that all requested groups are among supplementary groups
+
+  foreach $gid (keys %gids) {
+    if (!exists($result{$gid}))  { return 0; }
+    delete $result{$gid};
+  }
+
+  # verify that other groups are not among supplementary groups
+
+  if (scalar(%result))  { return 0; }
+
+  return 1;
+
+}
+
+
+# Parameters: -
+# Action: set the user and group ID, and exit if an error is encountered. 
+#         This function logs its error messages to standard error, since
+#         the logfile has to be opened after a call to this function with 
+#         a new user and group ID.
+
+sub set_user_and_group_id {
+
+  my($userid, $groupid, $groupname, $gname, $gid);
+  my(@pwinfo, %supp_gids);
+
+  # --user and --group options are not supported on Windows
+
+  if ($WIN32) {
+    print STDERR "'--user' and '--group' options are not supported on Win32\n";
+    exit(1);
+  }
+
+  # --user and --group options can be used if process is running with euid 0
+
+  if ($>) {
+    print STDERR "'--user' and '--group' options can only be used by root " .
+                 "(current euid is not 0 but $>)\n";
+    exit(1);
+  }
+
+  # find numerical ID for the user name provided with --user option
+
+  @pwinfo = getpwnam($username);
+
+  if (!scalar(@pwinfo)) {
+    print STDERR "User name '$username' does not exist, exiting!\n";
+    exit(1);
+  }
+
+  $userid = $pwinfo[2];
+
+  if (!$userid) {
+    print STDERR 
+    "Can't drop root privileges by setting user to '$username', exiting!\n";
+    exit(1);
+  }
+
+  # Find numerical IDs for group names provided with --group options.
+  # If several --group options were provided, the first group defines the 
+  # group ID. If no --group option was provided, group ID is set to the user's
+  # primary group. Also, each group is treated as a supplementary group.
+
+  %supp_gids = ();
+
+  if (scalar(@groupnames)) {
+
+    foreach $gname (@groupnames) {
+      $gid = getgrnam($gname);
+      if (!defined($gid)) {
+        print STDERR "Group name '$gname' does not exist, exiting!\n";
+        exit(1);
+      }
+      if (!scalar(%supp_gids)) { 
+        $groupname = $gname;
+        $groupid = $gid; 
+      }
+      $supp_gids{$gid} = $gname;
+    } 
+
+  } else { 
+
+    $groupid = $pwinfo[3]; 
+    $groupname = getgrgid($groupid);
+    if (!defined($groupname)) {
+      print STDERR "Group ID '$groupid' does not exist, exiting!\n";
+      exit(1);
+    }
+    $supp_gids{$groupid} = $groupname;
+
+  }
+
+  # Set the group ID with setgid(). This must be done before changing
+  # the user ID, since otherwise there might not be enough privileges for 
+  # successful setgid() call. Although setgid() behavior depends on 
+  # the platform (e.g., behavior on BSD and Linux is different), it always 
+  # sets the effective, real, and saved set-group ID if effective user ID
+  # is 0 (verified above). Also note that some ancient versions of perl do 
+  # not return 'undef' if setgid() fails but rather the value of the $) 
+  # special variable. Therefore, we also check if both effective and real 
+  # group ID are properly set after setgid() has been called (the IDs are 
+  # first elements in strings provided by $) and $( variables).
+ 
+  if (!POSIX::setgid($groupid) || (split(' ', $) ))[0] != $groupid
+                               || (split(' ', $( ))[0] != $groupid) {
+    print STDERR "Can't set group to '$groupname' ($!), exiting!\n";
+    exit(1);
+  }
+
+  # set supplementary groups (this must be done before changing the user ID, 
+  # since otherwise there might not be enough privileges for that)
+  
+  if (!set_supplementary_groups($groupid, keys %supp_gids)) {
+    print STDERR "Can't set supplementary groups to '" .
+                 join(" ", values %supp_gids) . "', exiting!\n";
+    exit(1);
+  }
+
+  # Set the user ID with setuid(). Although setuid() behavior depends on 
+  # the platform (e.g., behavior on BSD and Linux is different), it always 
+  # sets the effective, real, and saved set-user ID if effective user ID
+  # is 0 (verified above). Also note that some ancient versions of perl do 
+  # not return 'undef' if setuid() fails but rather the value of the $> 
+  # special variable. Therefore, we also check if both effective and real 
+  # user ID ($> and $<) are properly set after setuid() has been called. 
+ 
+  if (!POSIX::setuid($userid) || $> != $userid || $< != $userid) {
+    print STDERR "Can't set user to '$username' ($!), exiting!\n";
+    exit(1);
+  }
+
+}
+
+
+# Parameters: -
+# Action: Set the file mode creation mask (if the current platform does 
+#         not support umask(2) system call, umask() returns undef).
+#         This function logs its error messages to standard error, since
+#         the logfile has to be opened after a call to this function with 
+#         a new umask.
+
+sub set_umask {
+
+  if (!defined(umask($umask))) { 
+    print STDERR "'--umask' option is not supported on this platform\n";
+    exit(1);
+  }
+
+}
+
+
 # Parameters: - 
 # Action: scan all rules loaded from configuration files, and set the
 #         --bufsize command line option to the largest number of lines 
@@ -11718,10 +11984,12 @@ sub set_bufsize_option {
 
 # Parameters: -
 # Action: read and process options from command line and resource file
+#         (this function logs its error messages to standard error, since
+#         logging is not activated when the function is called)
 
 sub read_options {
 
-  my(@argv_backup, $option);
+  my(@argv_backup, @values, $option);
 
   # back up the @ARGV array
 
@@ -11749,6 +12017,7 @@ sub read_options {
       $rcfile_status = $ENV{"SECRC"};
 
     } else { 
+      print STDERR "Can't open resource file " . $ENV{"SECRC"} . " ($!)\n";
       $rcfile_status = $ENV{"SECRC"} . " - open failed ($!)"; 
     }
 
@@ -11763,20 +12032,23 @@ sub read_options {
   @conffilepat = ();
   @inputfilepat = ();
   $input_timeout = 0;
-  $timeout_script = "";
+  $timeout_script = undef;
   $reopen_timeout = 0;
   $check_timeout = 0;
-  $poll_timeout = 0.1;
-  $socket_timeout = 60;
-  $blocksize = 1024;
+  $poll_timeout = DEFAULT_POLLTIMEOUT;
+  $socket_timeout = DEFAULT_SOCKETTIMEOUT;
+  $blocksize = DEFAULT_BLOCKSIZE;
   $bufsize = 0;
   $evstoresize = 0;
-  $cleantime = 1;
-  $logfile = "";
-  $syslogf = "";
+  $cleantime = DEFAULT_CLEANTIME;
+  $logfile = undef;
+  $syslogf = undef;
   $debuglevel = 6; 
-  $pidfile = "";
-  $dumpfile = "/tmp/sec.dump";
+  $pidfile = undef;
+  $dumpfile = DEFAULT_DUMPFILE;
+  $username = undef;
+  @groupnames = ();
+  $umask = undef;
   $dumpfts = 0;
   $quoting = 0;
   $tail = 1;
@@ -11793,6 +12065,7 @@ sub read_options {
   $version = 0;
 
   # parse the options given in command line and in SEC resource file
+  # (GetOptions() prints parsing error messages to standard error)
 
   GetOptions( "conf=s" => \@conffilepat,
               "input=s" => \@inputfilepat,
@@ -11811,6 +12084,9 @@ sub read_options {
               "debug=i", \$debuglevel,
               "pid=s" => \$pidfile,
               "dump=s" => \$dumpfile,
+              "user=s" => \$username,
+              "group=s" => \@groupnames,
+              "umask=o" => \$umask,
               "dumpfts!" => \$dumpfts,
               "quoting!" => \$quoting,
               "tail!" => \$tail,
@@ -11829,16 +12105,122 @@ sub read_options {
   # check the values received from command line and resource file
   # and set option variables back to defaults, if necessary
 
-  if (!$timeout_script  ||  $input_timeout < 0)  { $input_timeout = 0; }
-  if ($reopen_timeout < 0)  { $reopen_timeout = 0; }
-  if ($check_timeout < 0)  { $check_timeout = 0; }
-  if ($poll_timeout < 0)  { $poll_timeout = 0.1; }
-  if ($socket_timeout <= 0)  { $socket_timeout = 60; }
-  if ($blocksize <= 0)  { $blocksize = 1024; }
-  if ($bufsize < 0)  { $bufsize = 0; }
-  if ($evstoresize < 0)  { $evstoresize = 0; }
-  if ($cleantime < 0)  { $cleantime = 1; }
-  if ($debuglevel < 1  ||  $debuglevel > 6)  { $debuglevel = 6; }
+  @values = grep(length($_), @conffilepat);
+
+  if (scalar(@values) < scalar(@conffilepat)) {
+    print STDERR "'--conf' option requires a non-empty value\n";
+    @conffilepat = @values;
+  }
+
+  @values = grep(length($_), @inputfilepat);
+
+  if (scalar(@values) < scalar(@inputfilepat)) {
+    print STDERR "'--input' option requires a non-empty value\n";
+    @inputfilepat = @values;
+  }
+
+  if ($input_timeout < 0) { 
+    print STDERR "'--input-timeout' option requires a non-negative value\n";
+    $input_timeout = 0; 
+  }
+
+  if (defined($timeout_script) && !length($timeout_script)) { 
+    print STDERR "'--timeout-script' option requires a non-empty value\n";
+    $timeout_script = undef;
+  }
+
+  if ($input_timeout > 0 && !defined($timeout_script)) {
+    print STDERR 
+          "'--input-timeout' option requires the '--timeout-script' option\n";
+    $input_timeout = 0;
+  }
+
+  if ($reopen_timeout < 0) { 
+    print STDERR "'--reopen-timeout' option requires a non-negative value\n";
+    $reopen_timeout = 0; 
+  }
+
+  if ($check_timeout < 0) { 
+    print STDERR "'--check-timeout' option requires a non-negative value\n";
+    $check_timeout = 0; 
+  }
+
+  if ($poll_timeout < 0) { 
+    print STDERR "'--poll-timeout' option requires a non-negative value\n";
+    $poll_timeout = DEFAULT_POLLTIMEOUT; 
+  }
+
+  if ($socket_timeout <= 0) { 
+    print STDERR "'--socket-timeout' option requires a positive value\n";
+    $socket_timeout = DEFAULT_SOCKETTIMEOUT; 
+  }
+
+  if ($blocksize <= 0) { 
+    print STDERR "'--blocksize' option requires a positive value\n";
+    $blocksize = DEFAULT_BLOCKSIZE; 
+  }
+
+  if ($bufsize < 0) { 
+    print STDERR "'--bufsize' option requires a non-negative value\n";
+    $bufsize = 0; 
+  }
+
+  if ($evstoresize < 0) { 
+    print STDERR "'--evstoresize' option requires a non-negative value\n";
+    $evstoresize = 0; 
+  }
+
+  if ($cleantime < 0) { 
+    print STDERR "'--cleantime' option requires a non-negative value\n";
+    $cleantime = DEFAULT_CLEANTIME; 
+  }
+
+  if (defined($logfile) && !length($logfile)) { 
+    print STDERR "'--log' option requires a non-empty value\n";
+    $logfile = undef;
+  }
+
+  if (defined($syslogf) && !length($syslogf)) { 
+    print STDERR "'--syslog' option requires a non-empty value\n";
+    $syslogf = undef;
+  }
+
+  if ($debuglevel < 1 || $debuglevel > 6) { 
+    print STDERR "'--debug' option requires a value from range 1..6\n";
+    $debuglevel = 6; 
+  }
+
+  if (defined($pidfile) && !length($pidfile)) { 
+    print STDERR "'--pid' option requires a non-empty value\n";
+    $pidfile = undef;
+  }
+
+  if (!length($dumpfile)) { 
+    print STDERR "'--dump' option requires a non-empty value\n";
+    $dumpfile = DEFAULT_DUMPFILE;
+  }
+
+  if (defined($username) && !length($username)) { 
+    print STDERR "'--user' option requires a non-empty value\n";
+    $username = undef;
+  }
+
+  @values = grep(length($_), @groupnames);
+
+  if (scalar(@values) < scalar(@groupnames)) {
+    print STDERR "'--group' option requires a non-empty value\n";
+    @groupnames = @values;
+  }
+
+  if (scalar(@groupnames) && !defined($username)) {
+    print STDERR "'--group' option requires the '--user' option\n";
+    @groupnames = ();
+  }
+
+  if (defined($umask) && ($umask < 0 || $umask > 511)) { 
+    print STDERR "'--umask' option requires a value from range 0..0777\n";
+    $umask = undef;
+  }
 
   # in the case of --bufsize=1, always enable the --jointbuf option,
   # since there is no need to maintain multiple input buffers
@@ -11863,9 +12245,19 @@ sub read_options {
 sub main_loop {
 
   my($line, $evcont, $file);
-  my($context, $conffile);
+  my($context, $conffile, $childdata);
 
   for (;;) {
+
+    # check the status of child processes, and poll them for new events if
+    # the event buffer is empty (if a process has exited, all its remaining
+    # events are read and appended to event buffer even if it is not empty)
+
+    if (scalar(%children)) { 
+      $childdata = check_children(); 
+    } else {
+      $childdata = 0;
+    }
 
     # if there are pending events in the event buffer or the read buffer, 
     # read new line from there, otherwise read new line from input stream.
@@ -11929,7 +12321,8 @@ sub main_loop {
     } elsif (!$file) {
 
       # if -notail mode is active and all input files have been closed, exit;
-      # if no new data was appended to input files, sleep with select()
+      # if no new data was appended to input files, sleep with select(),
+      # unless some child process returned data during last polling round
 
       if (!$tail && !grep($inputsrc{$_}->{"open"}, @inputfiles)) {
 
@@ -11947,7 +12340,10 @@ sub main_loop {
 
       }
 
-      select(undef, undef, undef, $poll_timeout);
+      # sleep if no new data were read from input files or child processes
+
+      if (!$childdata)  { select(undef, undef, undef, $poll_timeout); }
+
     }
 
     # search lists for accomplishing timed tasks and removing obsolete elements
@@ -11956,10 +12352,6 @@ sub main_loop {
       process_lists();
       $lastcleanuptime = time();
     }
-
-    # manage child processes
-
-    if (scalar(%children))  { check_children(); }
 
     # check signal flags
 
@@ -12177,8 +12569,8 @@ $execactionfunc[WHILE] = \&execute_while_action;
 $execactionfunc[BREAK] = \&execute_break_action;
 $execactionfunc[CONTINUE] = \&execute_continue_action;
 
-# create a template that is shared by all internal contexts; note that 
-# the Internal flag blocks actions that modify the internal context
+### create a template that is shared by all internal contexts; note that 
+### the Internal flag blocks actions that modify the internal context
 
 $int_context = { "Time" => time(),
                  "Window" => 0,
@@ -12187,6 +12579,10 @@ $int_context = { "Time" => time(),
                  "Desc" => "SEC internal",
                  "Internal" => 1,
                  "Aliases" => { } };
+
+### ignore SIGPIPE (done before generating any output)
+
+$SIG{PIPE} = 'IGNORE';
 
 ### Read and process SEC options from command line and resource file
 
@@ -12206,16 +12602,24 @@ if ($version) {
   exit(0); 
 }
 
-### Open logfile
+### If requested, change the user and group ID
 
-if ($logfile)  { open_logfile($logfile); }  else { $logopen = 0; }
-if ($syslogf)  { open_syslog($syslogf); }  else { $syslogopen = 0; }
+if (defined($username))  { set_user_and_group_id(); }
+
+### If requested, change the umask
+
+if (defined($umask))  { set_umask(); }
+
+### Start the logging
+
+if (defined($logfile))  { open_logfile($logfile); }  else { $logopen = 0; }
+if (defined($syslogf))  { open_syslog($syslogf); }  else { $syslogopen = 0; }
 
 log_msg(LOG_NOTICE, "$SEC_VERSION");
 
-# If -detach flag was specified, chdir to / for not disturbing future 
-# unmount of current filesystem. Must be done before read_config() to 
-# receive error messages about scripts that would not be found at runtime
+### If --detach flag was specified, chdir to / for not disturbing future 
+### unmount of current filesystem. Must be done before read_config() to 
+### receive error messages about scripts that would not be found at runtime
 
 if ($detach) { 
   log_msg(LOG_NOTICE, "Changing working directory to /");
@@ -12230,8 +12634,8 @@ if ($testonly) {
   if ($config_ok)  { exit(0); }  else { exit(1); }
 }
 
-# if --bufsize command line option has not been provided or --bufsize=0,
-# set --bufsize by analyzing loaded rules
+### if --bufsize command line option has not been provided or --bufsize=0,
+### set --bufsize by analyzing loaded rules
 
 if (!$bufsize)  { set_bufsize_option(); }
 
@@ -12241,13 +12645,13 @@ if ($fromstart) { open_input(0); }
 elsif ($tail) { open_input(-1); } 
 else { open_input(0); }
 
-### Daemonize the process, if -detach flag was specified
+### Daemonize the process, if --detach flag was specified
 
 if ($detach)  { daemonize(); }
 
 ### Create pidfile - must be done after daemonization
 
-if ($pidfile) {
+if (defined($pidfile)) {
   if (open(PIDFILE, ">$pidfile")) {
     print PIDFILE "$$\n";
     close(PIDFILE);
@@ -12283,7 +12687,7 @@ if (override_sigint()) {
   "Interactive process, SIGINT can't be used for changing the logging level");
 } 
 
-$terminate = 0;
+%terminate = ();
 $SIG{TERM} = \&term_handler;
 
 ### Set various global variables
@@ -12313,7 +12717,7 @@ $timevar_update = time();
 set_actionlist_time_var($timevar_update);
 set_actionlist_char_var();
 
-### If -intevents flag was specified, create generate the SEC_STARTUP event
+### If --intevents flag was specified, create generate the SEC_STARTUP event
 
 if ($intevents)  { internal_event("SEC_STARTUP"); }
 

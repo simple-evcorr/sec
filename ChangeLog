@@ -1,3 +1,26 @@
+--- version 2.7.11
+
+* added support for the --user, --group and --umask command line options.
+
+* starting from this version, SIGPIPE signal is ignored globally
+  in all parts of the code.
+
+* improved the handling of SIGTERM signal.
+
+* optimized IO routines, signal handling and exit status collection 
+  for child processes.
+
+* improved command line parsing and error reporting.
+
+* changes in rule parsing routines (only ASCII digits are allowed in
+  numeric rule fields).
+
+* starting from this version, the default value for the --blocksize
+  command line option is 8192.
+
+* fixed a bug in the code which checks the status of TCP sockets.
+
+
 --- version 2.7.10
 
 * added support for built-in action list variables %.chr0, ..., %.chr31
