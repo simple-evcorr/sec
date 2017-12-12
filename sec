@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.11 - sec
+# SEC (Simple Event Correlator) 2.7.12 - sec
 # Copyright (C) 2000-2017 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -174,7 +174,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.11";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.12";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2017 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -1703,19 +1703,14 @@ sub analyze_context_expr {
     return 1;
   }
 
-  # check for possible typos for '!' operator (any preceding illegal symbols)
+  # consider '!' operator a negation if it appears in front of the operand
 
-  $pos = index($context, "!");
+  if ($context =~ /^\s*!(.*)/) {
 
-  if ($pos != -1) {
+    $op1 = $1;
+    if (!analyze_context_expr($op1, \@side1))  { return 0; }
 
-    $op1 = substr($context, 0, $pos);
-    $op2 = substr($context, $pos + 1);
-
-    if ($op1 !~ /^\s*$/)  { return 0; }
-    if (!analyze_context_expr($op2, \@side2))  { return 0; }
-
-    @{$result} = ( @side2, NEGATION );
+    @{$result} = ( @side1, NEGATION );
     return 1;
   }
 
@@ -1822,7 +1817,9 @@ sub analyze_context {
   # convert these expressions recursively, attaching the results to 
   # the current expression. If a parenthesized subexpression is a Perl code,
   # it will not be analyzed recursively but rather treated as a terminal
-  # (backslashes in front of the parentheses are removed)
+  # (backslashes in front of the parentheses are removed). If not all
+  # subexpressions are consumed during the analysis, they have been defined
+  # in invalid locations (e.g., inside context names).
 
   $i = 0;
   $j = scalar(@{$result});
@@ -1893,6 +1890,13 @@ sub analyze_context {
 
     else { ++$i; }
 
+  }
+
+  if (scalar(@expr)) {
+    foreach $subexpr (@expr) {
+      log_msg(LOG_ERR, "Unexpected subexpression '$subexpr' in '$context'");
+    }
+    return 0;
   }
 
   return 1;
@@ -2251,7 +2255,7 @@ sub check_rule {
         { $rule->{"ContPreEval"} = 1; }
       if (!analyze_context($ref->{"context"}, $rule->{"Context"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context"}, "'");
+                "Invalid context expression '", $ref->{"context"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context"}, '$'))
@@ -2320,7 +2324,7 @@ sub check_rule {
         { $rule->{"ContPreEval"} = 1; }
       if (!analyze_context($ref->{"context"}, $rule->{"Context"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context"}, "'");
+                "Invalid context expression '", $ref->{"context"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context"}, '$'))
@@ -2398,7 +2402,7 @@ sub check_rule {
         { $rule->{"ContPreEval"} = 1; }
       if (!analyze_context($ref->{"context"}, $rule->{"Context"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context"}, "'");
+                "Invalid context expression '", $ref->{"context"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context"}, '$'))
@@ -2498,7 +2502,7 @@ sub check_rule {
         { $rule->{"ContPreEval"} = 1; }
       if (!analyze_context($ref->{"context"}, $rule->{"Context"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context"}, "'");
+                "Invalid context expression '", $ref->{"context"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context"}, '$'))
@@ -2510,7 +2514,7 @@ sub check_rule {
         { $rule->{"ContPreEval2"} = 1; }
       if (!analyze_context($ref->{"context2"}, $rule->{"Context2"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context2"}, "'");
+                "Invalid context expression '", $ref->{"context2"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context2"}, '$', '%'))
@@ -2621,7 +2625,7 @@ sub check_rule {
         { $rule->{"ContPreEval"} = 1; }
       if (!analyze_context($ref->{"context"}, $rule->{"Context"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context"}, "'");
+                "Invalid context expression '", $ref->{"context"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context"}, '$'))
@@ -2633,7 +2637,7 @@ sub check_rule {
         { $rule->{"ContPreEval2"} = 1; }
       if (!analyze_context($ref->{"context2"}, $rule->{"Context2"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context2"}, "'");
+                "Invalid context expression '", $ref->{"context2"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context2"}, '$', '%'))
@@ -2716,7 +2720,7 @@ sub check_rule {
         { $rule->{"ContPreEval"} = 1; }
       if (!analyze_context($ref->{"context"}, $rule->{"Context"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context"}, "'");
+                "Invalid context expression '", $ref->{"context"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context"}, '$'))
@@ -2809,7 +2813,7 @@ sub check_rule {
         { $rule->{"ContPreEval"} = 1; }
       if (!analyze_context($ref->{"context"}, $rule->{"Context"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context"}, "'");
+                "Invalid context expression '", $ref->{"context"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context"}, '$'))
@@ -2954,7 +2958,7 @@ sub check_rule {
         if (!analyze_context($ref->{"context$j"}, 
                              $rule->{"ContextList"}->[$i])) { 
           log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                  "Invalid context specification '", $ref->{"context$j"}, "'");
+                  "Invalid context expression '", $ref->{"context$j"}, "'");
           return 0; 
         } 
         if (volatile_context($rule->{"ContextList"}->[$i], '$'))
@@ -3079,7 +3083,7 @@ sub check_rule {
         { $rule->{"ContPreEval"} = 1; }
       if (!analyze_context($ref->{"context"}, $rule->{"Context"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context"}, "'");
+                "Invalid context expression '", $ref->{"context"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context"}, '$'))
@@ -3153,7 +3157,7 @@ sub check_rule {
       check_context_preeval($ref->{"context"});
       if (!analyze_context($ref->{"context"}, $rule->{"Context"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context"}, "'");
+                "Invalid context expression '", $ref->{"context"}, "'");
         return 0; 
       } 
     }
@@ -3214,7 +3218,7 @@ sub check_rule {
         { $rule->{"ContPreEval"} = 1; }
       if (!analyze_context($ref->{"context"}, $rule->{"Context"})) { 
         log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-                "Invalid context specification '", $ref->{"context"}, "'");
+                "Invalid context expression '", $ref->{"context"}, "'");
         return 0; 
       } 
       if (volatile_context($rule->{"Context"}, '$'))

@@ -1,3 +1,9 @@
+--- version 2.7.12
+
+* fixed a bug in context expression parsing routine and improved 
+  the logging of parsing errors.
+
+
 --- version 2.7.11
 
 * added support for the --user, --group and --umask command line options.
