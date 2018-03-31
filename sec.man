@@ -5273,7 +5273,7 @@ continue=TakeNext
 desc=Load the Storable module and terminate if it is not found
 .br
 action=eval %ret (require Storable); \\
-       if %ret ( logonly Storabe loaded ) else ( eval %o exit(1) ) 
+       if %ret ( logonly Storable loaded ) else ( eval %o exit(1) ) 
 .PP
 type=Single
 .br
