@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.7.12 - sec
-# Copyright (C) 2000-2017 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.8.alpha1 - sec
+# Copyright (C) 2000-2018 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -85,6 +85,7 @@ use vars qw(
   $dumpdata
   $dumpfile
   $dumpfts
+  %dyninputfiles
   @events
   %event_buffer
   $evstoresize
@@ -99,6 +100,7 @@ use vars qw(
   %input_buffers
   @input_sources
   $input_timeout
+  $intcontextname
   $intcontexts
   $intevents
   $int_context
@@ -174,8 +176,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.7.12";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2017 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.alpha1";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2018 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -300,21 +302,25 @@ use constant EXISTS		=> 32;
 use constant GETSIZE		=> 33;
 use constant GETALIASES		=> 34;
 use constant GETLIFETIME	=> 35;
-use constant GETCTIME		=> 36;
-use constant SETCTIME		=> 37;
-use constant EVENT		=> 38;
-use constant TEVENT		=> 39;
-use constant CEVENT		=> 40;
-use constant RESET		=> 41;
-use constant GETWINPOS		=> 42;
-use constant SETWINPOS		=> 43;
-use constant ASSIGN		=> 44;
-use constant ASSIGNSQ		=> 45;
-use constant FREE		=> 46;
-use constant EVAL		=> 47;
-use constant CALL		=> 48;
-use constant LCALL		=> 49;
-use constant REWRITE		=> 50;
+use constant SETLIFETIME	=> 36;
+use constant GETCTIME		=> 37;
+use constant SETCTIME		=> 38;
+use constant EVENT		=> 39;
+use constant TEVENT		=> 40;
+use constant CEVENT		=> 41;
+use constant RESET		=> 42;
+use constant GETWINPOS		=> 43;
+use constant SETWINPOS		=> 44;
+use constant ASSIGN		=> 45;
+use constant ASSIGNSQ		=> 46;
+use constant FREE		=> 47;
+use constant EVAL		=> 48;
+use constant CALL		=> 49;
+use constant LCALL		=> 50;
+use constant REWRITE		=> 51;
+use constant ADDINPUT		=> 52;
+use constant DROPINPUT		=> 53;
+use constant SIGEMUL		=> 54;
 use constant IF			=> 100;
 use constant WHILE		=> 101;
 use constant BREAK		=> 102;
@@ -858,17 +864,17 @@ sub process_action_parens {
 sub analyze_action {
 
   my($action, $conffile, $lineno, $ruleid, $action2, $list) = @_;
-  my($keyword, $file, $peer, $cmdline);
+  my($keyword, $file, $fpos, $peer, $cmdline, $signal);
   my($sign, $rule, $count);
   my($actionlist, @action);
   my($actionlist2, @action2);
   my($createafter, $event, $timestamp);
   my($lifetime, $context, $alias);
-  my($variable, $value, $code, $codeptr, $params, $evalok);
+  my($variable, $value, $code, $codeptr, $params, $evalok, $op);
 
   if ($action =~ /^none$/i)  { return NONE; }
 
-  elsif ($action =~ /^logonly(?:\s+(.*))?$/i) { 
+  elsif ($action =~ /^logonly(?:\s+(.*\S))?$/i) { 
 
     $event = defined($1)?$1:"";
     process_action_parens($event);
@@ -877,11 +883,11 @@ sub analyze_action {
     return (LOGONLY, $event); 
   }
 
-  elsif ($action =~ /^(write|writen|owritecl|udgram|ustream)\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^(write|writen|owritecl|udgram|ustream)\s+(\S+)(?:\s+(.*\S))?$/i) {
 
     $keyword = lc($1);
     $file = $2;
-    $event = $3;
+    $event = defined($3)?$3:"";
 
     if ($WIN32 && ($keyword eq "udgram" || $keyword eq "ustream")) {
       log_msg(LOG_ERR, "$keyword action is not supported on Win32");
@@ -905,7 +911,7 @@ sub analyze_action {
     else { return (USTREAM, $file, $event); }
   }
 
-  elsif ($action =~ /^(closef|closeudgr|closeustr)\s+(\S+)$/i) {
+  elsif ($action =~ /^(closef|closeudgr|closeustr|dropinput)\s+(\S+)$/i) {
 
     $keyword = lc($1);
     $file = $2;
@@ -925,14 +931,15 @@ sub analyze_action {
 
     if ($keyword eq "closef") { return (CLOSEF, $file); }
     elsif ($keyword eq "closeudgr") { return (CLOSEUDGR, $file); }
-    else { return (CLOSEUSTR, $file); }
+    elsif ($keyword eq "closeustr") { return (CLOSEUSTR, $file); }
+    else { return (DROPINPUT, $file); }
   }
 
-  elsif ($action =~ /^(udpsock|tcpsock)\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^(udpsock|tcpsock)\s+(\S+)(?:\s+(.*\S))?$/i) {
 
     $keyword = lc($1);
     $peer = $2;
-    $event = $3;
+    $event = defined($3)?$3:"";
 
     process_action_parens($peer, $event);
 
@@ -965,7 +972,7 @@ sub analyze_action {
     else { return (CLOSETCP, $peer); }
   }
 
-  elsif ($action =~ /^shellcmd\s+(.*\S)/i) { 
+  elsif ($action =~ /^shellcmd\s+(.*\S)$/i) { 
 
     $cmdline = $1;
     process_action_parens($cmdline);
@@ -979,7 +986,7 @@ sub analyze_action {
     return (SHELLCOMMAND, $cmdline); 
   }
 
-  elsif ($action =~ /^spawn\s+(.*\S)/i) { 
+  elsif ($action =~ /^spawn\s+(.*\S)$/i) { 
 
     if ($WIN32) {
       log_msg(LOG_ERR, "spawn action is not supported on Win32");
@@ -998,7 +1005,7 @@ sub analyze_action {
     return (SPAWN, $cmdline); 
   }
 
-  elsif ($action =~ /^cspawn\s+(\S+)\s+(.*\S)/i) { 
+  elsif ($action =~ /^cspawn\s+(\S+)\s+(.*\S)$/i) { 
 
     if ($WIN32) {
       log_msg(LOG_ERR, "cspawn action is not supported on Win32");
@@ -1024,7 +1031,7 @@ sub analyze_action {
     return (CSPAWN, $context, $cmdline); 
   }
 
-  elsif ($action =~ /^pipe\s+'([^']*)'(?:\s+(.*))?$/i) {
+  elsif ($action =~ /^pipe\s+'([^']*)'(?:\s+(.*\S))?$/i) {
 
     $event = $1;
     $cmdline = defined($2)?$2:"";
@@ -1035,7 +1042,7 @@ sub analyze_action {
     return (PIPE, $event, $cmdline); 
   }
 
-  elsif ($action =~ /^create(?:\s+(\S*)\s*(\S*)\s*(.*))?$/i) { 
+  elsif ($action =~ /^create(?:\s+(\S+)(?:\s+(\S+)(?:\s+(.*\S))?)?)?$/i) { 
 
     $context = defined($1)?$1:"";
     $lifetime = defined($2)?$2:"";
@@ -1070,11 +1077,11 @@ sub analyze_action {
     else { return (UNALIAS, $context); }
   }
 
-  elsif ($action =~ /^set\s+(\S+)\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^set\s+(\S+)\s+(\S+)(?:\s+(.*\S))?$/i) {
 
     $context = $1;
     $lifetime = $2;
-    $actionlist = $3;
+    $actionlist = defined($3)?$3:"";
 
     process_action_parens($context, $lifetime);
 
@@ -1119,11 +1126,11 @@ sub analyze_action {
     return (ALIAS, $context, $alias); 
   }
 
-  elsif ($action =~ /^(add|prepend|fill)\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^(add|prepend|fill)\s+(\S+)(?:\s+(.*\S))?$/i) {
 
     $keyword = lc($1);
     $context = $2;
-    $event = $3;
+    $event = defined($3)?$3:"";
     process_action_parens($context, $event);
 
     if (!length($context)) {
@@ -1139,10 +1146,10 @@ sub analyze_action {
     else { return (FILL, $context, $event); }
   }
 
-  elsif ($action =~ /^report\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^report\s+(\S+)(?:\s+(.*\S))?$/i) {
 
     $context = $1;
-    $cmdline = $2;
+    $cmdline = defined($2)?$2:"";
     process_action_parens($context, $cmdline);
 
     if (!length($context)) {
@@ -1236,28 +1243,45 @@ sub analyze_action {
     } else { return (GETCTIME, substr($variable, 1), $context); }
   }
 
+  elsif ($action =~ /^setltime\s+(\S+)(?:\s+(\S+))?$/i) {
+
+    $context = $1;
+    $lifetime = defined($2)?$2:"";
+    process_action_parens($context, $lifetime);
+
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for setltime action");
+      return INVALIDVALUE;
+    }
+
+    if (!length($lifetime))  { $lifetime = 0; }
+
+    return (SETLIFETIME, $context, $lifetime); 
+  }
+
   elsif ($action =~ /^setctime\s+(\S+)\s+(\S+)$/i) {
 
     $timestamp = $1;
     $context = $2;
-    process_action_parens($context);
+    process_action_parens($timestamp, $context);
 
     if (!length($timestamp)) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Empty timestamp given for setwpos action");
+              "Empty timestamp given for setctime action");
       return INVALIDVALUE;
     }
 
     if (!length($context)) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Empty context name given for size action");
+              "Empty context name given for setctime action");
       return INVALIDVALUE;
     }
 
     return (SETCTIME, $timestamp, $context); 
   }
 
-  elsif ($action =~ /^event(?:\s+0*([0-9]+))?(?:\s+(.*))?$/i) {
+  elsif ($action =~ /^event(?:\s+0*([0-9]+))?(?:\s+(.*\S))?$/i) {
 
     $createafter = defined($1)?$1:"";
     $event = defined($2)?$2:"";
@@ -1269,10 +1293,10 @@ sub analyze_action {
     return (EVENT, $createafter, $event); 
   }
 
-  elsif ($action =~ /^tevent\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^tevent\s+(\S+)(?:\s+(.*\S))?$/i) {
 
     $createafter = $1;
-    $event = $2;
+    $event = defined($2)?$2:"";
     process_action_parens($createafter, $event);
 
     if (!length($createafter)) {
@@ -1286,11 +1310,11 @@ sub analyze_action {
     return (TEVENT, $createafter, $event); 
   }
 
-  elsif ($action =~ /^cevent\s+(\S+)\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^cevent\s+(\S+)\s+(\S+)(?:\s+(.*\S))?$/i) {
 
     $context = $1;
     $createafter = $2;
-    $event = $3;
+    $event = defined($3)?$3:"";
 
     process_action_parens($context, $createafter, $event);
 
@@ -1311,7 +1335,7 @@ sub analyze_action {
     return (CEVENT, $context, $createafter, $event); 
   }
 
-  elsif ($action =~ /^reset(?:\s+([+-]?)0*([0-9]+))?(?:\s+(.*))?$/i) { 
+  elsif ($action =~ /^reset(?:\s+([+-]?)0*([0-9]+))?(?:\s+(.*\S))?$/i) { 
 
     $sign = defined($1)?$1:"";
     $rule = defined($2)?$2:"";
@@ -1331,7 +1355,7 @@ sub analyze_action {
     return (RESET, $conffile, $rule, $event); 
   }
 
-  elsif ($action =~ /^getwpos\s+(\S+)\s+([+-]?)0*([0-9]+)(?:\s+(.*))?$/i) { 
+  elsif ($action =~ /^getwpos\s+(\S+)\s+([+-]?)0*([0-9]+)(?:\s+(.*\S))?$/i) { 
 
     $variable = $1;
     $sign = $2;
@@ -1357,7 +1381,7 @@ sub analyze_action {
     return (GETWINPOS, substr($variable, 1), $conffile, $rule, $event); 
   }
 
-  elsif ($action =~ /^setwpos\s+(\S+)\s+([+-]?)0*([0-9]+)(?:\s+(.*))?$/i) { 
+  elsif ($action =~ /^setwpos\s+(\S+)\s+([+-]?)0*([0-9]+)(?:\s+(.*\S))?$/i) { 
 
     $timestamp = $1;
     $sign = $2;
@@ -1382,11 +1406,11 @@ sub analyze_action {
     return (SETWINPOS, $timestamp, $conffile, $rule, $event); 
   }
 
-  elsif ($action =~ /^(assign|assignsq)\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^(assign|assignsq)\s+(\S+)(?:\s+(.*\S))?$/i) {
 
     $keyword = lc($1);
     $variable = $2;
-    $value = $3;
+    $value = defined($3)?$3:"";
     process_action_parens($value);
 
     if ($variable !~ /^%[[:alpha:]]\w*$/) {
@@ -1417,7 +1441,7 @@ sub analyze_action {
     return (FREE, substr($variable, 1)); 
   }
 
-  elsif ($action =~ /^eval\s+(\S+)\s+(.*\S)/i) {
+  elsif ($action =~ /^eval\s+(\S+)\s+(.*\S)$/i) {
 
     $variable = $1;
     $code = $2;
@@ -1433,11 +1457,11 @@ sub analyze_action {
     return (EVAL, substr($variable, 1), $code); 
   }
 
-  elsif ($action =~ /^call\s+(\S+)\s+(\S+)\s*(.*)/i) {
+  elsif ($action =~ /^call\s+(\S+)\s+(\S+)(?:\s+(.*\S))?$/i) {
 
     $variable = $1;
     $codeptr = $2;
-    $params = $3;
+    $params = defined($3)?$3:"";
 
     process_action_parens($params);
 
@@ -1459,11 +1483,12 @@ sub analyze_action {
                   substr($codeptr, 1), [ split(' ', $params) ]); 
   }
 
-  elsif ($action =~ /^lcall\s+(\S+)\s*(.*?)\s*->\s*(.*\S)/i) {
+  elsif ($action =~ /^lcall\s+(\S+)\s*(.*?)\s*(->|:>)\s*(.*\S)$/i) {
 
     $variable = $1;
     $params = $2;
-    $code = $3;
+    $op = $3 eq ":>";
+    $code = $4;
 
     process_action_parens($params, $code);
 
@@ -1483,13 +1508,13 @@ sub analyze_action {
       return INVALIDVALUE;
     }
 
-    return (LCALL, substr($variable, 1), $codeptr, [ split(' ', $params) ]); 
+    return (LCALL, substr($variable, 1), $codeptr, [ split(' ', $params) ], $op); 
   }
 
-  elsif ($action =~ /^rewrite\s+(\S+)\s*(.*)/i) { 
+  elsif ($action =~ /^rewrite\s+(\S+)(?:\s+(.*\S))?$/i) { 
 
     $count = $1;
-    $event = $2;
+    $event = defined($2)?$2:"";
     process_action_parens($count, $event);
 
     if (!length($count)) {
@@ -1501,6 +1526,39 @@ sub analyze_action {
     if (!length($event))  { $event = "%s"; }
 
     return (REWRITE, $count, $event); 
+  }
+
+  elsif ($action =~ /^addinput\s+(\S+)(?:\s+(\S+)(?:\s+(\S+))?)?$/i) {
+
+    $file = $1;
+    $fpos = defined($2)?$2:"";
+    $context = defined($3)?$3:"";
+    process_action_parens($file, $fpos, $context);
+
+    if (!length($file)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty filename given for addinput action");
+      return INVALIDVALUE;
+    }
+
+    if (!length($fpos))  { $fpos = "-"; }
+    if (!length($context))  { $context = FILEVENT_INT_CONTEXT_PREF . $file; }
+
+    return (ADDINPUT, $file, $fpos, $context); 
+  }
+
+  elsif ($action =~ /^sigemul\s+(\S+)$/i) {
+
+    $signal = $1;
+    process_action_parens($signal);
+
+    if (!length($signal)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty signal name given for sigemul action");
+      return INVALIDVALUE;
+    }
+
+    return (SIGEMUL, $signal); 
   }
 
   elsif ($action =~ /^if\s/i) {
@@ -5527,6 +5585,56 @@ sub execute_getltime_action {
   return 3;
 }
 
+sub execute_setltime_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($context, $lifetime);
+
+  $context = $actionlist->[$i+1];
+  $lifetime = $actionlist->[$i+2];
+
+  substitute_actionlist_var($context, $text);
+  substitute_actionlist_var($lifetime, $text);
+
+  if ($lifetime =~ /^\s*0*([0-9]+)\s*$/) { 
+
+    $lifetime = $1; 
+
+    log_msg(LOG_DEBUG, 
+            "Setting the lifetime of context '$context' to '$lifetime'"); 
+
+    if (exists($context_list{$context})) { 
+
+      if (!exists($context_list{$context}->{"Internal"})) {
+
+        $context_list{$context}->{"Window"} = $lifetime;
+
+        if ($lifetime &&
+            time() - $context_list{$context}->{"Time"} > $lifetime) {
+
+          log_msg(LOG_DEBUG, 
+          "Context '$context' has become stale after lifetime adjustment");
+
+          valid_context($context);
+        }
+
+      } else {
+        log_msg(LOG_WARN,
+        "Invalid use of setltime action for internal context '$context'");
+      }
+
+    } else {
+      log_msg(LOG_WARN, 
+              "Context '$context' does not exist, can't set lifetime"); 
+    }
+
+  } else {
+    log_msg(LOG_WARN, "Invalid lifetime '$lifetime' for context '$context'");
+  }
+
+  return 3;
+}
+
 sub execute_getctime_action {
 
   my($actionlist, $text, $i) = @_;
@@ -5805,77 +5913,94 @@ sub execute_setwpos_action {
 
   $key = gen_key($conffile, $ruleid, $event);
 
-  if ($timestamp =~ /^\s*0*([0-9]+)\s*$/) { 
-
-    $timestamp = $1; 
-    $ltime = scalar(localtime($timestamp));
-
-    log_msg(LOG_DEBUG, 
-    "Moving event correlation window to '$ltime' for operation '$key'");
-
-    if (exists($corr_list{$key})) {
-
-      $oper = $corr_list{$key};
-      $time = $oper->{"Time"};
-      $time2 = time();
- 
-      if ($timestamp < $time) {
-        log_msg(LOG_WARN, 
-        "Can't move event correlation window backwards to '$ltime'");
-      } elsif ($timestamp > $time2) {
-        log_msg(LOG_WARN, 
-        "Can't move event correlation window into future to '$ltime'");
-      } elsif ($timestamp == $time) {
-        log_msg(LOG_DEBUG, 
-        "Event correlation window is already positioned at '$ltime'");
-      } else {
-
-        if ($oper->{"Type"} == SINGLE_W_THRESHOLD) {
-
-          if (!exists($oper->{"SuppressMode"})) {
-            update_times_swt($oper, $timestamp, 1);
-            if (!scalar(@{$oper->{"Times"}}))  { delete $corr_list{$key}; }
-          } else {
-            $oper->{"Time"} = $timestamp;
-          }
-
-        } elsif ($oper->{"Type"} == SINGLE_W_2_THRESHOLDS) {
-
-          if (!exists($oper->{"2ndPass"})) {
-            update_times_swt($oper, $timestamp, 1);
-            if (!scalar(@{$oper->{"Times"}}))  { delete $corr_list{$key}; }
-          } else {
-            update_times_swt($oper, $timestamp, 1);
-          }
-        
-        } elsif ($oper->{"Type"} == EVENT_GROUP) {
-
-          if (!exists($oper->{"SuppressMode"})) {
-            update_times_eg($oper, $timestamp, 1);
-            if (!scalar(@{$oper->{"AllTimes"}})) {
-              execute_actionlist($oper->{"EndAction"}, $oper->{"Desc"});
-              delete $corr_list{$key};
-            }
-          } else {
-            $oper->{"Time"} = $timestamp;
-          }
-
-        } else { $oper->{"Time"} = $timestamp; }
-
-        if (!exists($corr_list{$key})) {
-          log_msg(LOG_DEBUG, 
-          "Operation '$key' finished its work after window was moved");
-        }
-      }
-
-    } else {
-      log_msg(LOG_WARN, 
-      "Operation '$key' does not exist, can't set window position");
-    }
-
-  } else {
+  if ($timestamp !~ /^\s*0*([0-9]+)\s*$/) { 
     log_msg(LOG_WARN, 
     "Invalid timestamp '$timestamp' for moving the window of operation '$key'");
+    return 5;
+  }
+
+  $timestamp = $1; 
+  $ltime = scalar(localtime($timestamp));
+
+  log_msg(LOG_DEBUG, 
+  "Moving event correlation window to '$ltime' for operation '$key'");
+
+  if (!exists($corr_list{$key})) {
+    log_msg(LOG_WARN, 
+    "Operation '$key' does not exist, can't set window position");
+    return 5;
+  }
+
+  $oper = $corr_list{$key};
+  $time = $oper->{"Time"};
+  $time2 = time();
+ 
+  if (exists($oper->{"InitInProgress"})) {
+    log_msg(LOG_WARN, 
+    "Operation '$key' is initializing, can't set window position");
+    return 5;
+  }
+
+  if (exists($oper->{"DeleteInProgress"})) {
+    log_msg(LOG_WARN, 
+    "Operation '$key' is terminating, can't set window position");
+    return 5;
+  }
+
+  if ($timestamp < $time) {
+    log_msg(LOG_WARN, 
+    "Can't move event correlation window backwards to '$ltime'");
+    return 5;
+  } 
+
+  if ($timestamp > $time2) {
+    log_msg(LOG_WARN, 
+    "Can't move event correlation window into future to '$ltime'");
+    return 5;
+  } 
+
+  if ($timestamp == $time) {
+    log_msg(LOG_DEBUG, 
+    "Event correlation window is already positioned at '$ltime'");
+    return 5;
+  }
+
+  if ($oper->{"Type"} == SINGLE_W_THRESHOLD) {
+
+    if (!exists($oper->{"SuppressMode"})) {
+      update_times_swt($oper, $timestamp, 1);
+      if (!scalar(@{$oper->{"Times"}}))  { delete $corr_list{$key}; }
+    } else {
+      $oper->{"Time"} = $timestamp;
+    }
+
+  } elsif ($oper->{"Type"} == SINGLE_W_2_THRESHOLDS) {
+
+    if (!exists($oper->{"2ndPass"})) {
+      update_times_swt($oper, $timestamp, 1);
+      if (!scalar(@{$oper->{"Times"}}))  { delete $corr_list{$key}; }
+    } else {
+      update_times_swt($oper, $timestamp, 1);
+    }
+        
+  } elsif ($oper->{"Type"} == EVENT_GROUP) {
+
+    if (!exists($oper->{"SuppressMode"})) {
+      update_times_eg($oper, $timestamp, 1);
+      if (!scalar(@{$oper->{"AllTimes"}})) {
+        $oper->{"DeleteInProgress"} = 1;
+        execute_actionlist($oper->{"EndAction"}, $oper->{"Desc"});
+        delete $corr_list{$key};
+      }
+    } else {
+      $oper->{"Time"} = $timestamp;
+    }
+
+  } else { $oper->{"Time"} = $timestamp; }
+
+  if (!exists($corr_list{$key})) {
+    log_msg(LOG_DEBUG, 
+    "Operation '$key' finished its work after window was moved");
   }
 
   return 5;
@@ -6020,17 +6145,25 @@ sub execute_call_action {
 sub execute_lcall_action {
 
   my($actionlist, $text, $i) = @_;
-  my($variable, $codeptr, @params);
+  my($variable, $codeptr, $op, @params);
   my($value, @retval);
 
   $variable = $actionlist->[$i+1];
   $codeptr = $actionlist->[$i+2];
   @params = @{$actionlist->[$i+3]};
+  $op = $actionlist->[$i+4];
 
   log_msg(LOG_DEBUG,
           "Calling code '$codeptr' and setting variable '%$variable'");
 
   foreach $value (@params)  { substitute_actionlist_var($value, $text); }
+
+  if ($op) {
+    foreach $value (@params) { 
+      $value = exists($pmatch_cache{$value})?$pmatch_cache{$value}:undef;
+    }
+  }
+
   @retval = eval { $codeptr->(@params) };
 
   if ($@) {
@@ -6050,7 +6183,7 @@ sub execute_lcall_action {
 
   }
         
-  return 4;
+  return 5;
 }
 
 sub execute_rewrite_action {
@@ -6126,6 +6259,186 @@ sub execute_rewrite_action {
   }
 
   return 3;
+}
+
+sub execute_addinput_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($file, $fpos, $context);
+  my($time, $fh, $dev, $inode, $regfile);
+
+  $file = $actionlist->[$i+1];
+  $fpos = $actionlist->[$i+2];
+  $context = $actionlist->[$i+3];
+
+  substitute_actionlist_var($file, $text);
+  substitute_actionlist_var($fpos, $text);
+  substitute_actionlist_var($context, $text);
+
+  log_msg(LOG_DEBUG, "Adding dynamic input file '" . $file . 
+          "' with context '" . $context . "' to the list of inputs");
+
+  if (exists($dyninputfiles{$file})) {
+    log_msg(LOG_WARN, "Dynamic input file '" . $file . 
+            "' already exists in the list of inputs, can't add");
+    return 4;
+  }
+
+  if (exists($inputsrc{$file})) {
+    log_msg(LOG_WARN, "Input file '" . $file . 
+            "' already exists in the list of inputs, can't add");
+    return 4;
+  }
+
+  if ($fpos !~ /^\s*(-|[0-9]+)\s*$/i) {
+    log_msg(LOG_WARN, 
+            "Invalid file offset '$fpos' specified for input file '$file'");
+    return 4;
+  }
+
+  $fpos = $1;
+
+  # open dynamic input file
+
+  if ($fpos eq "-") {
+    $fpos = -1;
+    log_msg(LOG_DEBUG, "Opening input file '$file' and seeking EOF");
+  } else {
+    log_msg(LOG_DEBUG, "Opening input file '$file' and seeking offset '$fpos'");
+  }
+
+  ($fh, $dev, $inode, $regfile) = open_input_file($file, $fpos);
+
+  $time = time();
+
+  $inputsrc{$file} = { "fh" => $fh,
+                       "open" => defined($fh),
+                       "dev" => $dev,
+                       "inode" => $inode,
+                       "regfile" => $regfile,
+                       "buffer" => "",
+                       "scriptexec" => 0,
+                       "checktime" => 0,
+                       "lastopen" => $time,
+                       "lastread" => $time,
+                       "lines" => 0,
+                       "context" => $context };
+
+  # if the input file open failed because of the missing file, set the 
+  # "read_from_start" flag which enforces reading from the beginning
+  # when the file will appear and another open will be attempted
+
+  if (!defined($fh)  &&  $file ne "-"  &&  ! -e $file) {
+    $inputsrc{$file}->{"read_from_start"} = 1;
+  }
+
+  # add dynamic input file to %dyninputfiles and @inputfiles global lists
+
+  $dyninputfiles{$file} = $context;
+
+  @inputfiles = sort keys %inputsrc;
+
+  # with --nojointbuf command line option, set up a separate
+  # input buffer for the dynamic input file
+
+  if (!$jointbuf) {
+
+    $input_buffers{$file} = {};
+    $input_buffers{$file}->{"Events"} = [];
+    $input_buffers{$file}->{"BufPos"} = 0;
+
+    $input_buffers{$file}->{"BufPos"} = 
+      arrange_input_buffer($input_buffers{$file}->{"Events"}, 
+                           $input_buffers{$file}->{"BufPos"});
+  }
+
+  return 4;
+}
+
+sub execute_dropinput_action {
+
+  my($actionlist, $text, $i) = @_;
+  my(@buf, $file, $j, $n);
+
+  $file = $actionlist->[$i+1];
+
+  substitute_actionlist_var($file, $text);
+
+  log_msg(LOG_DEBUG, 
+          "Dropping dynamic input file '$file' from the list of inputs");
+
+  if (exists($dyninputfiles{$file})) {
+  
+    # Drop dynamic input file from %dyninputfiles, %inputsrc and @inputfiles 
+    # global lists. Note that removing relevant entry from %inputsrc will 
+    # close the file (if it is open).
+
+    delete $dyninputfiles{$file};
+
+    delete $inputsrc{$file};
+
+    @inputfiles = sort keys %inputsrc;
+
+    # with --nojointbuf command line option, drop a separate
+    # input buffer of the dynamic input file
+
+    if (!$jointbuf)  { delete $input_buffers{$file}; }
+
+    # remove all lines for dynamic input file from read buffer
+
+    @buf = ();
+    $n = scalar(@readbuffer);
+
+    for ($j = 0; $j < $n; $j += 2) {
+      if ($file eq $readbuffer[$j+1])  { next; }
+      push @buf, $readbuffer[$j], $readbuffer[$j+1];
+    }
+
+    @readbuffer = @buf;
+
+  } else {
+    log_msg(LOG_WARN, "Dynamic input file '$file' not found, can't drop");
+  }
+
+  return 2;
+}
+
+sub execute_sigemul_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($signal);
+
+  $signal = $actionlist->[$i+1];
+
+  substitute_actionlist_var($signal, $text);
+
+  $signal = uc($signal);
+
+  log_msg(LOG_DEBUG, "Emulating the arrival of '$signal' signal");
+
+  if ($signal eq "HUP") { 
+    $refresh = 1; 
+    $sigreceived = 1;
+  } elsif ($signal eq "ABRT") { 
+    $softrefresh = 1; 
+    $sigreceived = 1;
+  } elsif ($signal eq "USR1") { 
+    $dumpdata = 1; 
+    $sigreceived = 1;
+  } elsif ($signal eq "USR2") { 
+    $openlog = 1; 
+    $sigreceived = 1;
+  } elsif ($signal eq "INT") { 
+    ++$debuglevelinc; 
+    $sigreceived = 1; 
+  } elsif ($signal eq "TERM") { 
+    $terminate{$$} = 1; 
+    $sigreceived = 1;
+  } else {
+    log_msg(LOG_WARN, "The arrival of '$signal' signal can't be emulated");
+  }
+
+  return 2;
 }
 
 sub execute_if_action {
@@ -6666,6 +6979,9 @@ sub match_regexp {
         defined($input_sources[$bufpos])?$input_sources[$bufpos]:"synthetic";
     }
 
+    # create the $+{_intcontext} variable
+    $subst_ref->{"_intcontext"} = $intcontextname;
+
     # add the $<name> match variables to the variable hash,
     # and add match variable values to pattern match cache
     if (scalar(%{$varmap_ref})) {
@@ -6714,7 +7030,7 @@ sub match_nregexp {
 
   if ($line !~ /$regexp/) { 
     # erase the previous content of the match variable hash, and
-    # create the $0 and $+{_inputsrc} variables
+    # create the $0, $+{_inputsrc} and $+{_intcontext} variables
     if ($bufsize == 1) {
       $source = defined($input_sources[0])?$input_sources[0]:"synthetic";
     } elsif ($jointbuf) {
@@ -6724,7 +7040,9 @@ sub match_nregexp {
       $source = 
         defined($input_sources[$bufpos])?$input_sources[$bufpos]:"synthetic";
     }
-    %{$subst_ref} = ( "0" => $line, "_inputsrc" => $source );
+    %{$subst_ref} = ( "0" => $line, 
+                      "_inputsrc" => $source, 
+                      "_intcontext" => $intcontextname );
     return 1; 
   } 
 
@@ -6805,7 +7123,7 @@ sub match_perlfunc {
       foreach $match (@matches)  { $subst_ref->{$i++} = $match; }
     }
 
-    # create the $0 and $+{_inputsrc} variables
+    # create the $0, $+{_inputsrc} and $+{_intcontext} variables
     if ($bufsize == 1) {
       $line = $input_buffer[0];
       $source = defined($input_sources[0])?$input_sources[0]:"synthetic";
@@ -6826,6 +7144,7 @@ sub match_perlfunc {
     }
     $subst_ref->{"0"} = $line;
     $subst_ref->{"_inputsrc"} = $source;
+    $subst_ref->{"_intcontext"} = $intcontextname;
 
     # add the $<name> match variables to the variable hash,
     # and add match variable values to pattern match cache
@@ -6892,7 +7211,7 @@ sub match_nperlfunc {
   if ($size > 1 || ($size == 1 && $matches[0]))  { return 0; }
 
   # erase the previous content of the match variable hash, and
-  # create the $0 and $+{_inputsrc} variables
+  # create the $0, $+{_inputsrc} and $+{_intcontext} variables
   if ($bufsize == 1) {
     $line = $input_buffer[0];
     $source = defined($input_sources[0])?$input_sources[0]:"synthetic";
@@ -6911,7 +7230,9 @@ sub match_nperlfunc {
     $line = join("\n", @{$buffer}[$bufptr - $linecount + 1 .. $bufptr]);
     $source = "synthetic";
   }
-  %{$subst_ref} = ( "0" => $line, "_inputsrc" => $source );
+  %{$subst_ref} = ( "0" => $line, 
+                    "_inputsrc" => $source,
+                    "_intcontext" => $intcontextname );
 
   return 1; 
 }
@@ -6974,13 +7295,22 @@ sub copy_create_set_action {
   return 4;
 }
 
-sub copy_call_lcall_action {
+sub copy_call_action {
 
   my($src_ref, $dest_ref, $i) = @_;
 
   push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], 
                      $src_ref->[$i++], [ @{$src_ref->[$i]} ];
   return 4; 
+}
+
+sub copy_lcall_action {
+
+  my($src_ref, $dest_ref, $i) = @_;
+
+  push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], $src_ref->[$i++], 
+                     [ @{$src_ref->[$i++]} ], $src_ref->[$i];
+  return 5; 
 }
 
 sub copy_if_action {
@@ -7285,12 +7615,20 @@ sub subst_setwpos_action {
   return 5;
 }
 
-sub subst_call_lcall_action {
+sub subst_call_action {
 
   my($subst_ref, undef, $actionlist, $token, $i) = @_;
 
   subst_string($subst_ref, @{$actionlist->[$i+3]}, $token);
   return 4;
+}
+
+sub subst_lcall_action {
+
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
+
+  subst_string($subst_ref, @{$actionlist->[$i+3]}, $token);
+  return 5;
 }
 
 sub subst_if_action {
@@ -7938,11 +8276,12 @@ sub process_singlewiththreshold_rule {
   # return if the number of events in the list is below threshold
   if (scalar(@{$oper->{"Times"}}) < $rule->{"Threshold"})  { return; }
 
-  # if the threshold condition is met, execute the rule action,
-  # and go to suppressing mode
-
-  execute_actionlist($oper->{"Action"}, $desc);
+  # if the threshold condition is met, go to suppressing mode
   $oper->{"SuppressMode"} = 1;
+
+  # execute the rule action (if setwpos action gets executed for
+  # the operation, it will appear in suppressing mode)
+  execute_actionlist($oper->{"Action"}, $desc);
 
 }
 
@@ -8041,14 +8380,16 @@ sub process_singlewith2thresholds_rule {
     # return if the number of events in the list is below threshold
     if (scalar(@{$oper->{"Times"}}) < $rule->{"Threshold"})  { return; }
 
-    # if the threshold condition is met, execute the rule action,
-    # and go to falling threshold mode
+    # if the threshold condition is met, go to falling threshold mode
 
-    execute_actionlist($oper->{"Action"}, $desc);
     $oper->{"2ndPass"} = 1;
     $oper->{"Time"} = $time;
     $oper->{"Window"} = $rule->{"Window2"};
     @{$oper->{"Times"}} = ();
+
+    # execute the rule action (if setwpos action gets executed for
+    # the operation, it will appear in falling threshold mode)
+    execute_actionlist($oper->{"Action"}, $desc);
 
   } else {
 
@@ -8107,6 +8448,7 @@ sub process_eventgroup_rule {
       update_times_eg($oper, $time - $oper->{"Window"});
 
       if (!scalar(@{$oper->{"AllTimes"}})) {
+        $oper->{"DeleteInProgress"} = 1;
         execute_actionlist($oper->{"EndAction"}, $desc);
         delete $corr_list{$key};
       } else {
@@ -8117,6 +8459,7 @@ sub process_eventgroup_rule {
 
       # if the operation is in event suppressing mode, terminate it
 
+      $oper->{"DeleteInProgress"} = 1;
       execute_actionlist($oper->{"EndAction"}, $desc);
       delete $corr_list{$key};
     }
@@ -8178,11 +8521,24 @@ sub process_eventgroup_rule {
     for ($i = 0; $i < $rule->{"EventNumber"}; ++$i) {
       $corr_list{$key}->{"TimesList"}->[$i] = [];
     }
+ 
+    $corr_list{$key}->{"InitInProgress"} = 1;
 
     execute_actionlist($initaction, $desc);
+
+    # if the init action terminated the operation, return
+    if (!exists($corr_list{$key}))  { return; }
+
+    delete $corr_list{$key}->{"InitInProgress"};
   } 
 
   $oper = $corr_list{$key};
+
+  # record data about the current event into occurrence time lists (done before count 
+  # action is executed, so that the action would see the current event in the window)
+
+  push @{$oper->{"AllTimes"}}, [$time, $index];
+  push @{$oper->{"TimesList"}->[$index]}, $time;
 
   # execute count action for the given event type
 
@@ -8194,13 +8550,11 @@ sub process_eventgroup_rule {
 
   execute_actionlist($countaction, $desc);
 
+  # if the count action terminated the operation, return
+  if (!exists($corr_list{$key}))  { return; }
+
   # if the operation is in event suppressing mode, return
   if (exists($oper->{"SuppressMode"}))  { return; }
-
-  # record data about the current event into occurrence time lists
-
-  push @{$oper->{"AllTimes"}}, [$time, $index];
-  push @{$oper->{"TimesList"}->[$index]}, $time;
 
   # check threshold conditions for all event types - if for some event type 
   # the number of events is below threshold, return
@@ -8210,11 +8564,13 @@ sub process_eventgroup_rule {
         $rule->{"ThresholdList"}->[$i])  { return; }
   }
 
-  # if all threshold conditions are met, execute the rule action,
-  # and go to suppressing mode if specified by the rule
+  # if all threshold conditions are met, go to suppressing mode if specified by 
+  # the rule, and execute the rule action (if setwpos action gets executed for
+  # the operation, it will appear in suppressing mode if specified by the rule)
+
+  if (!exists($rule->{"MultipleActions"}))  { $oper->{"SuppressMode"} = 1; }
 
   execute_actionlist($oper->{"Action"}, $desc);
-  if (!exists($rule->{"MultipleActions"}))  { $oper->{"SuppressMode"} = 1; }
 
 }
 
@@ -8876,6 +9232,7 @@ sub process_lists {
         update_times_eg($oper, $time - $oper->{"Window"});
 
         if (!scalar(@{$oper->{"AllTimes"}})) {
+          $oper->{"DeleteInProgress"} = 1;
           execute_actionlist($oper->{"EndAction"}, $oper->{"Desc"});
           delete $corr_list{$key};
         } else {
@@ -8887,6 +9244,7 @@ sub process_lists {
         # if the operation window has expired and the operation is in 
         # event suppressing mode, terminate it
  
+        $oper->{"DeleteInProgress"} = 1;
         execute_actionlist($oper->{"EndAction"}, $oper->{"Desc"});
         delete $corr_list{$key};
       }
@@ -9106,13 +9464,18 @@ sub actionlist2str {
       $i += 3;
     }
 
+    elsif ($actionlist->[$i] == SETLIFETIME) { 
+      $result .= "setltime " . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
     elsif ($actionlist->[$i] == GETCTIME) { 
       $result .= "getctime %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
       $i += 3;
     }
 
     elsif ($actionlist->[$i] == SETCTIME) { 
-      $result .= "setctime %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $result .= "setctime " . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
       $i += 3;
     }
 
@@ -9177,14 +9540,31 @@ sub actionlist2str {
 
     elsif ($actionlist->[$i] == LCALL) { 
       $result .= "lcall %" . $actionlist->[$i+1] 
-                 . " " . join(" ", @{$actionlist->[$i+3]}) 
-                 . " -> " . $actionlist->[$i+2]; 
-      $i += 4;
+                 . " " . join(" ", @{$actionlist->[$i+3]}) . " ";
+      if ($actionlist->[$i+4])  { $result .= ":>" }  else { $result .= "->" }
+      $result .= " " . $actionlist->[$i+2]; 
+      $i += 5;
     }
 
     elsif ($actionlist->[$i] == REWRITE) { 
       $result .= "rewrite " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
       $i += 3;
+    } 
+
+    elsif ($actionlist->[$i] == ADDINPUT) { 
+      $result .= "addinput " . $actionlist->[$i+1] . " " . $actionlist->[$i+2]
+                 . " " . $actionlist->[$i+3];
+      $i += 4;
+    } 
+
+    elsif ($actionlist->[$i] == DROPINPUT) { 
+      $result .= "dropinput " . $actionlist->[$i+1];
+      $i += 2;
+    } 
+
+    elsif ($actionlist->[$i] == SIGEMUL) { 
+      $result .= "sigemul " . $actionlist->[$i+1];
+      $i += 2;
     } 
 
     elsif ($actionlist->[$i] == IF) {
@@ -10209,14 +10589,14 @@ sub arrange_input_buffers {
 sub internal_event {
 
   my($text) = $_[0];
-  my($context, $conffile);
+  my($conffile);
 
-  $context = SECEVENT_INT_CONTEXT;
+  $intcontextname = SECEVENT_INT_CONTEXT;
 
-  log_msg(LOG_INFO, "Creating SEC internal context '$context'");
+  log_msg(LOG_INFO, "Creating SEC internal context '$intcontextname'");
 
-  $int_context->{"Aliases"}->{$context} = 1;
-  $context_list{$context} = $int_context; 
+  $int_context->{"Aliases"}->{$intcontextname} = 1;
+  $context_list{$intcontextname} = $int_context; 
 
   log_msg(LOG_INFO, "Creating SEC internal event '$text'");
 
@@ -10237,10 +10617,11 @@ sub internal_event {
 
   ++$processedlines;
 
-  log_msg(LOG_INFO, "Deleting SEC internal context '$context'");
+  log_msg(LOG_INFO, "Deleting SEC internal context '$intcontextname'");
 
-  delete $context_list{$context};
-  delete $int_context->{"Aliases"}->{$context};
+  delete $context_list{$intcontextname};
+  delete $int_context->{"Aliases"}->{$intcontextname};
+  $intcontextname = undef;
 
 }
 
@@ -10556,9 +10937,9 @@ sub read_tcp_sock {
 
 
 # Parameters: par1 - name of the input file
-#             par2 - file position
-# Action: Input file will be opened and file position will be moved to 
-#         position par2 (-1 means "seek EOF" and 0 means "don't seek at all").
+#             par2 - file offset
+# Action: Input file will be opened and file offset will be moved to 
+#         offset par2 (-1 means "seek EOF" and 0 means "don't seek at all").
 #         Return the filehandle, device ID, inode number, and file type flag
 #         for the input file if open succeeded; otherwise return 'undef'.
 
@@ -10654,11 +11035,17 @@ sub open_input_file {
 
   } else { @stat = ("-", "-"); }
 
-  # if input filehandle is connected to a regular file, set the file type
-  # flag to 1; also, if $fpos == -1 or $fpos > 0, seek the given position 
-  # in the file
+  # If input filehandle is connected to a regular file, set the file type
+  # flag to 1. Also, if $fpos == -1 or $fpos > 0, seek the given offset 
+  # in the file. If $fpos is greater than the file size, EOF will be seeked.
 
   if (-f $input) {
+
+    if ($fpos > $stat[7]) {
+      log_msg(LOG_NOTICE,
+              "Offset $fpos beyond EOF, seeking EOF in input file $file");
+      $fpos = -1; 
+    }
 
     if ($fpos == -1) {
 
@@ -10673,7 +11060,7 @@ sub open_input_file {
 
       while (!sysseek($input, $fpos, SEEK_SET)) {
         if ($! == EINTR)  { next; }
-        log_msg(LOG_ERR, "Can't seek position $fpos in input file $file ($!)");
+        log_msg(LOG_ERR, "Can't seek offset $fpos in input file $file ($!)");
         close($input);
         return undef;
       }
@@ -10689,12 +11076,12 @@ sub open_input_file {
 }
 
 
-# Parameters: par1 - file position
+# Parameters: par1 - file offset
 #             par2 - flag (optional)
 # Action: evaluate the inputfile patterns given in commandline, form the 
 #         list of inputfiles and save it to global array @inputfiles. Each
-#         input file will then be opened and file position will be moved to
-#         position par1 (-1 means "seek EOF" and 0 means "don't seek at all").
+#         input file will then be opened and file offset will be moved to
+#         offset par1 (-1 means "seek EOF" and 0 means "don't seek at all").
 #         If -intcontexts option is active, also set up internal contexts.
 #         If flag par2 is set, input files which are already open will not
 #         be closed and reopened, and their status data will be retained
@@ -10747,6 +11134,18 @@ sub open_input {
                            (FILEVENT_INT_CONTEXT_PREF . $inputfile);
     }
 
+  }
+
+  # Merge dynamic input files with input files provided in command line
+
+  foreach $inputfile (keys %dyninputfiles) {
+    if (exists($fcont{$inputfile})) {
+      log_msg(LOG_NOTICE, "Dynamic input file", $inputfile, 
+        "has been provided in command line and is no longer regarded dynamic");
+      delete $dyninputfiles{$inputfile};
+    } else {
+      $fcont{$inputfile} = $dyninputfiles{$inputfile};
+    }
   }
 
   # Open the input files
@@ -10829,14 +11228,13 @@ sub open_input {
 # Action: check if input file has been removed, recreated or truncated.
 #         Return 1 if input file has changed and should be reopened; 
 #         return 0 if the file has not changed or should not be
-#         reopened right now. If system calls of this procedure
-#         are interrupted by a signal, return 0 also. If system call
-#         on the input file fails, close the file and return undef.
+#         reopened right now. If system call on the input file fails, 
+#         close the file and return undef.
 
 sub input_shuffled {
 
   my($file) = $_[0];
-  my(@stat, $fpos);
+  my(@stat, @stat2, $fpos, $bytes);
 
   # standard input is always intact (it can't be recreated or truncated)
 
@@ -10849,41 +11247,55 @@ sub input_shuffled {
 
   if (!scalar(@stat))  { return 0; }
 
-  # check if i-node numbers of filehandle and input file are different
-  # (this check will be skipped on Windows).
+  # if the input file is a regular file, get the current read offset
+
+  if ($inputsrc{$file}->{"regfile"}) {
+    for (;;) {
+      $fpos = sysseek($inputsrc{$file}->{"fh"}, 0, SEEK_CUR);
+      if (defined($fpos))  { last; }
+      if ($! == EINTR)  { next; }
+      log_msg(LOG_ERR, 
+        "Can't seek filehandle of input file $file ($!), closing the file");
+      close($inputsrc{$file}->{"fh"});
+      $inputsrc{$file}->{"open"} = 0;
+      return undef;
+    }
+  }
+
+  # Check if device or inode numbers of filehandle and input file match
+  # (this check will be skipped on Windows). If numbers don't match and
+  # filehandle refers to a regular file, find the size of the file and if
+  # read offset is smaller, read remaining bytes into file's IO buffer.
 
   if (!$WIN32 && 
       ($inputsrc{$file}->{"dev"} != $stat[0] || 
        $inputsrc{$file}->{"inode"} != $stat[1])) { 
+
+    if ($inputsrc{$file}->{"regfile"}) {
+
+      @stat2 = stat($inputsrc{$file}->{"fh"});
+      
+      if (scalar(@stat2)) {
+        $bytes = $stat2[7] - $fpos;
+      } else {
+        $bytes = 0;
+      }
+ 
+      if ($bytes > 0) {
+        sysread($inputsrc{$file}->{"fh"}, $inputsrc{$file}->{"buffer"},
+                $bytes, length($inputsrc{$file}->{"buffer"}));
+      }
+    }
+
     log_msg(LOG_NOTICE, "Input file $file has been recreated");
     return 1; 
   }
 
-  # Check if file size has decreased
+  # If input file is a regular file, check if file size has decreased
 
-  if ($inputsrc{$file}->{"regfile"}) {
-
-    $fpos = sysseek($inputsrc{$file}->{"fh"}, 0, SEEK_CUR);
-
-    if (!defined($fpos)) {
-
-      if ($! == EINTR)  { return 0; }
-
-      log_msg(LOG_ERR, 
-        "Can't seek filehandle of input file $file ($!), closing the file");
-
-      close($inputsrc{$file}->{"fh"});
-      $inputsrc{$file}->{"open"} = 0;
-
-      return undef;
-
-    }
-
-    if ($fpos > $stat[7]) { 
-      log_msg(LOG_NOTICE, "Input file $file has been truncated");
-      return 1; 
-    }
-
+  if ($inputsrc{$file}->{"regfile"}  &&  $fpos > $stat[7]) {
+    log_msg(LOG_NOTICE, "Input file $file has been truncated");
+    return 1; 
   }
 
   return 0;
@@ -11178,8 +11590,7 @@ sub read_line {
 
       if ($inputsrc{$file}->{"open"}  &&  input_shuffled($file)) {
 
-        log_msg(LOG_NOTICE,
-                "Shuffled $file, reopening and processing from the start");
+        log_msg(LOG_NOTICE, "Reopening $file and processing from the start");
 
         close($inputsrc{$file}->{"fh"});
 
@@ -11299,6 +11710,11 @@ sub check_signals {
     # clear pending events
 
     @pending_events = ();
+
+    # drop the names of dynamic input files (they will be closed when 
+    # open_input() is called later in this function)
+
+    %dyninputfiles = ();
 
     # close the logfile and connection to the system logger
 
@@ -12249,7 +12665,7 @@ sub read_options {
 sub main_loop {
 
   my($line, $evcont, $file);
-  my($context, $conffile, $childdata);
+  my($conffile, $childdata);
 
   for (;;) {
 
@@ -12280,9 +12696,9 @@ sub main_loop {
     if (defined($line)) {
 
       if ($intcontexts) {
-        $context = defined($file)?$inputsrc{$file}->{"context"}:$evcont;
-        $int_context->{"Aliases"}->{$context} = 1;
-        $context_list{$context} = $int_context;
+        $intcontextname = defined($file)?$inputsrc{$file}->{"context"}:$evcont;
+        $int_context->{"Aliases"}->{$intcontextname} = 1;
+        $context_list{$intcontextname} = $int_context;
       }
 
       # update input buffers (they are implemented as circular buffers, since
@@ -12315,8 +12731,9 @@ sub main_loop {
       }
 
       if ($intcontexts) { 
-        delete $context_list{$context}; 
-        delete $int_context->{"Aliases"}->{$context};
+        delete $context_list{$intcontextname}; 
+        delete $int_context->{"Aliases"}->{$intcontextname};
+        $intcontextname = undef;
       }
 
       if (defined($file))  { ++$inputsrc{$file}->{"lines"}; }
@@ -12441,6 +12858,7 @@ $actioncopyfunc[EXISTS] = \&copy_three_elem_action;
 $actioncopyfunc[GETSIZE] = \&copy_three_elem_action;
 $actioncopyfunc[GETALIASES] = \&copy_three_elem_action;
 $actioncopyfunc[GETLIFETIME] = \&copy_three_elem_action;
+$actioncopyfunc[SETLIFETIME] = \&copy_three_elem_action;
 $actioncopyfunc[GETCTIME] = \&copy_three_elem_action;
 $actioncopyfunc[SETCTIME] = \&copy_three_elem_action;
 $actioncopyfunc[EVENT] = \&copy_three_elem_action;
@@ -12453,9 +12871,12 @@ $actioncopyfunc[ASSIGN] = \&copy_three_elem_action;
 $actioncopyfunc[ASSIGNSQ] = \&copy_three_elem_action;
 $actioncopyfunc[FREE] = \&copy_two_elem_action;
 $actioncopyfunc[EVAL] = \&copy_three_elem_action;
-$actioncopyfunc[CALL] = \&copy_call_lcall_action;
-$actioncopyfunc[LCALL] = \&copy_call_lcall_action;
+$actioncopyfunc[CALL] = \&copy_call_action;
+$actioncopyfunc[LCALL] = \&copy_lcall_action;
 $actioncopyfunc[REWRITE] = \&copy_three_elem_action;
+$actioncopyfunc[ADDINPUT] = \&copy_four_elem_action;
+$actioncopyfunc[DROPINPUT] = \&copy_two_elem_action;
+$actioncopyfunc[SIGEMUL] = \&copy_two_elem_action;
 $actioncopyfunc[IF] = \&copy_if_action;
 $actioncopyfunc[WHILE] = \&copy_while_action;
 $actioncopyfunc[BREAK] = \&copy_one_elem_action;
@@ -12497,6 +12918,7 @@ $actionsubstfunc[EXISTS] = \&subst_event_assign_etc_action;
 $actionsubstfunc[GETSIZE] = \&subst_event_assign_etc_action;
 $actionsubstfunc[GETALIASES] = \&subst_event_assign_etc_action;
 $actionsubstfunc[GETLIFETIME] = \&subst_event_assign_etc_action;
+$actionsubstfunc[SETLIFETIME] = \&subst_three_elem_action;
 $actionsubstfunc[GETCTIME] = \&subst_event_assign_etc_action;
 $actionsubstfunc[SETCTIME] = \&subst_three_elem_action;
 $actionsubstfunc[EVENT] = \&subst_event_assign_etc_action;
@@ -12509,9 +12931,12 @@ $actionsubstfunc[ASSIGN] = \&subst_event_assign_etc_action;
 $actionsubstfunc[ASSIGNSQ] = \&subst_event_assign_etc_action;
 $actionsubstfunc[FREE] = \&subst_free;
 $actionsubstfunc[EVAL] = \&subst_event_assign_etc_action;
-$actionsubstfunc[CALL] = \&subst_call_lcall_action;
-$actionsubstfunc[LCALL] = \&subst_call_lcall_action;
+$actionsubstfunc[CALL] = \&subst_call_action;
+$actionsubstfunc[LCALL] = \&subst_lcall_action;
 $actionsubstfunc[REWRITE] = \&subst_three_elem_action;
+$actionsubstfunc[ADDINPUT] = \&subst_four_elem_action;
+$actionsubstfunc[DROPINPUT] = \&subst_two_elem_action;
+$actionsubstfunc[SIGEMUL] = \&subst_two_elem_action;
 $actionsubstfunc[IF] = \&subst_if_action;
 $actionsubstfunc[WHILE] = \&subst_while_action;
 $actionsubstfunc[BREAK] = \&subst_none_break_continue;
@@ -12553,6 +12978,7 @@ $execactionfunc[EXISTS] = \&execute_exists_action;
 $execactionfunc[GETSIZE] = \&execute_getsize_action;
 $execactionfunc[GETALIASES] = \&execute_getaliases_action;
 $execactionfunc[GETLIFETIME] = \&execute_getltime_action;
+$execactionfunc[SETLIFETIME] = \&execute_setltime_action;
 $execactionfunc[GETCTIME] = \&execute_getctime_action;
 $execactionfunc[SETCTIME] = \&execute_setctime_action;
 $execactionfunc[EVENT] = \&execute_event_action;
@@ -12568,6 +12994,9 @@ $execactionfunc[EVAL] = \&execute_eval_action;
 $execactionfunc[CALL] = \&execute_call_action;
 $execactionfunc[LCALL] = \&execute_lcall_action;
 $execactionfunc[REWRITE] = \&execute_rewrite_action;
+$execactionfunc[ADDINPUT] = \&execute_addinput_action;
+$execactionfunc[DROPINPUT] = \&execute_dropinput_action;
+$execactionfunc[SIGEMUL] = \&execute_sigemul_action;
 $execactionfunc[IF] = \&execute_if_action;
 $execactionfunc[WHILE] = \&execute_while_action;
 $execactionfunc[BREAK] = \&execute_break_action;

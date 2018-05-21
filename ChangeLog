@@ -1,3 +1,23 @@
+--- version 2.8.alpha1
+
+* added support for dynamic input files, and 'addinput' and 'dropinput'
+  actions for managing dynamic inputs.
+
+* added support for signal emulation and 'sigemul' action.
+
+* added support for 'setltime' action.
+
+* starting from this version, the 'lcall' action supports the :> operator.
+
+* added support for $+{_intcontext} match variable.
+
+* improved input file rotation handling.
+
+* improved action list parsing.
+
+* bugfixes for 'setwpos' action.
+
+
 --- version 2.7.12
 
 * fixed a bug in context expression parsing routine and improved 
