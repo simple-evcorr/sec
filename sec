@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.8.alpha1 - sec
+# SEC (Simple Event Correlator) 2.8.alpha2 - sec
 # Copyright (C) 2000-2018 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -84,6 +84,7 @@ use vars qw(
   $detach
   $dumpdata
   $dumpfile
+  $dumpfjson
   $dumpfts
   %dyninputfiles
   @events
@@ -104,6 +105,7 @@ use vars qw(
   $intcontexts
   $intevents
   $int_context
+  $JSONAVAIL
   $jointbuf
   $keepopen
   $lastcleanuptime
@@ -166,9 +168,10 @@ use Fcntl;
 use Socket;
 use IO::Handle;
 
-# check if Sys::Syslog is available
+# check if Sys::Syslog and JSON modules are available
 
 $SYSLOGAVAIL = eval { require Sys::Syslog };
+$JSONAVAIL = eval { require JSON };
 
 # check if the platform is win32
 
@@ -176,7 +179,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.alpha1";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.alpha2";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2018 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -203,6 +206,7 @@ Options:
   --group=<groupname> ...
   --umask=<mode>
   --dumpfts, --nodumpfts
+  --dumpfjson, --nodumpfjson
   --quoting, --noquoting
   --tail, --notail
   --fromstart, --nofromstart
@@ -410,7 +414,7 @@ sub open_syslog {
   my($progname);
 
   if (!$SYSLOGAVAIL) {
-    print STDERR "Can't connect to syslog (no Sys::Syslog)\n";
+    print STDERR "Can't connect to syslog (no Sys::Syslog module)\n";
     $syslogopen = 0;
     return;
   }
@@ -10359,7 +10363,7 @@ sub dump_data {
   print DUMPFILE "Pattern match cache:\n";
   print DUMPFILE '=' x 60, "\n";
 
-  while (($key, $ref) = each (%pmatch_cache)) { 
+  while (($key, $ref) = each(%pmatch_cache)) { 
     print DUMPFILE "Match: ", $key, "\n";
     foreach $name (sort keys %{$ref}) {
       print DUMPFILE "$name = ", 
@@ -10451,13 +10455,13 @@ sub dump_data {
     
   print DUMPFILE "Total: $i elements\n\n";
 
-  # print the values of user-defined variables
+  # print the values of action list variables
 
   $i = 0;
   print DUMPFILE "Action list variables:\n";
   print DUMPFILE '=' x 60, "\n";
 
-  foreach $key (sort(keys %variables)) {
+  foreach $key (sort keys %variables) {
     if (defined($variables{$key})) {
       print DUMPFILE "%$key = '", $variables{$key}, "'\n";
     } else {
@@ -10467,6 +10471,505 @@ sub dump_data {
   }
     
   print DUMPFILE "Total: $i elements\n\n";
+
+  close(DUMPFILE);
+
+  log_msg(LOG_DEBUG, "Dump to $dfilename completed");
+}
+
+
+# Parameters: par1 - reference to hash where element will be stored
+#             par2 - list element key
+#             par3 - reference to list element
+# Action: store given list element to the hash par1
+
+sub convert_element {
+
+  my($ref, $key, $oper) = @_;
+  my($rule, $conffile, $id, $elem, $i, $j);
+
+  $ref->{"key"} = $key;
+  $ref->{"starttime"} = $oper->{"StartTime"};
+  $ref->{"windowstart"} = $oper->{"Time"};
+
+  if ($oper->{"Window"}) {
+    $ref->{"windowend"} = $oper->{"Time"} + $oper->{"Window"};
+  }
+
+  $conffile = $oper->{"File"};
+  $id = $oper->{"ID"};
+  $rule = $configuration{$conffile}->[$id];
+
+  $ref->{"configfile"} = $conffile;
+  $ref->{"ruleid"} = $id;
+
+  if ($oper->{"Type"} == SINGLE_W_SUPPRESS) {
+ 
+    $ref->{"type"} = "SingleWithSuppress";
+
+    $ref->{"pattern"} = pattern2str($rule->{"PatType"},
+                        $rule->{"PatLines"}, $rule->{"Pattern"});
+
+    $ref->{"context"} = context2str($rule->{"Context"});
+
+    $ref->{"continue"} = continue2str($rule->{"WhatNext"}, 
+                         $rule->{"GotoRule"});
+    
+    $ref->{"desc"} = $oper->{"Desc"};
+    $ref->{"action"} = actionlist2str($oper->{"Action"});
+
+    $ref->{"window"} = $rule->{"Window"};
+
+  }
+
+  elsif ($oper->{"Type"} == PAIR) {
+
+    $ref->{"type"} = "Pair";
+
+    $ref->{"pattern"} = pattern2str($rule->{"PatType"},
+                        $rule->{"PatLines"}, $rule->{"Pattern"});
+
+    $ref->{"context"} = context2str($rule->{"Context"});
+
+    $ref->{"continue"} = continue2str($rule->{"WhatNext"}, 
+                         $rule->{"GotoRule"});
+    
+    $ref->{"desc"} = $oper->{"Desc"};
+    $ref->{"action"} = actionlist2str($oper->{"Action"});
+
+    $ref->{"pattern2"} = pattern2str($rule->{"PatType2"},
+                         $rule->{"PatLines2"}, $rule->{"Pattern2"});
+
+    $ref->{"context2"} = context2str($rule->{"Context2"});
+
+    $ref->{"continue2"} = continue2str($rule->{"WhatNext2"}, 
+                          $rule->{"GotoRule2"});
+    
+    $ref->{"desc2"} = $oper->{"Desc2"};
+    $ref->{"action2"} = actionlist2str($oper->{"Action2"});
+
+    $ref->{"window"} = $rule->{"Window"};
+
+  }
+
+  elsif ($oper->{"Type"} == PAIR_W_WINDOW) {
+
+    $ref->{"type"} = "PairWithWindow";
+
+    $ref->{"pattern"} = pattern2str($rule->{"PatType"},
+                        $rule->{"PatLines"}, $rule->{"Pattern"});
+
+    $ref->{"context"} = context2str($rule->{"Context"});
+
+    $ref->{"continue"} = continue2str($rule->{"WhatNext"}, 
+                         $rule->{"GotoRule"});
+    
+    $ref->{"desc"} = $oper->{"Desc"};
+    $ref->{"action"} = actionlist2str($oper->{"Action"});
+
+    $ref->{"pattern2"} = pattern2str($rule->{"PatType2"},
+                         $rule->{"PatLines2"}, $rule->{"Pattern2"});
+
+    $ref->{"context2"} = context2str($rule->{"Context2"});
+
+    $ref->{"continue2"} = continue2str($rule->{"WhatNext2"}, 
+                          $rule->{"GotoRule2"});
+    
+    $ref->{"desc2"} = $oper->{"Desc2"};
+    $ref->{"action2"} = actionlist2str($oper->{"Action2"});
+
+    $ref->{"window"} = $rule->{"Window"};
+
+  }
+
+  elsif ($oper->{"Type"} == SINGLE_W_THRESHOLD) {
+
+    $ref->{"type"} = "SingleWithThreshold";
+
+    $ref->{"pattern"} = pattern2str($rule->{"PatType"},
+                        $rule->{"PatLines"}, $rule->{"Pattern"});
+
+    $ref->{"context"} = context2str($rule->{"Context"});
+
+    $ref->{"continue"} = continue2str($rule->{"WhatNext"}, 
+                         $rule->{"GotoRule"});
+    
+    $ref->{"desc"} = $oper->{"Desc"};
+    $ref->{"action"} = actionlist2str($oper->{"Action"});
+    $ref->{"action2"} = actionlist2str($oper->{"Action2"});
+
+    $ref->{"window"} = $rule->{"Window"};
+    $ref->{"threshold"} = $rule->{"Threshold"};
+
+    if (exists($oper->{"SuppressMode"})) { 
+      $ref->{"status"} = "threshold reached";
+    } else { 
+      $ref->{"status"} = "checking for threshold";
+    }
+
+    $ref->{"eventtimes"} = $oper->{"Times"};
+
+  }
+
+  elsif ($oper->{"Type"} == SINGLE_W_2_THRESHOLDS) {
+
+    $ref->{"type"} = "SingleWith2Thresholds";
+
+    $ref->{"pattern"} = pattern2str($rule->{"PatType"},
+                        $rule->{"PatLines"}, $rule->{"Pattern"});
+
+    $ref->{"context"} = context2str($rule->{"Context"});
+
+    $ref->{"continue"} = continue2str($rule->{"WhatNext"}, 
+                         $rule->{"GotoRule"});
+    
+    $ref->{"desc"} = $oper->{"Desc"};
+    $ref->{"action"} = actionlist2str($oper->{"Action"});
+
+    $ref->{"window"} = $rule->{"Window"};
+    $ref->{"threshold"} = $rule->{"Threshold"};
+
+    $ref->{"desc2"} = $oper->{"Desc2"};
+    $ref->{"action2"} = actionlist2str($oper->{"Action2"});
+
+    $ref->{"window2"} = $rule->{"Window2"};
+    $ref->{"threshold2"} = $rule->{"Threshold2"};
+
+    if (exists($oper->{"2ndPass"})) { 
+      $ref->{"status"} = "checking for 2nd threshold";
+    } else { 
+      $ref->{"status"} = "checking for 1st threshold";
+    }
+
+    $ref->{"eventtimes"} = $oper->{"Times"};
+
+  }
+
+  elsif ($oper->{"Type"} == EVENT_GROUP) {
+
+    $ref->{"type"} = "EventGroup" . $rule->{"EventNumber"};
+
+    for ($i = 0; $i < $rule->{"EventNumber"}; ++$i) {
+
+      $j = ($i==0)?"":($i+1);
+
+      $ref->{"pattern$j"} = pattern2str($rule->{"PatTypeList"}->[$i],
+                                        $rule->{"PatLinesList"}->[$i], 
+                                        $rule->{"PatternList"}->[$i]);
+
+      $ref->{"context$j"} = context2str($rule->{"ContextList"}->[$i]);
+
+      $ref->{"continue$j"} = continue2str($rule->{"WhatNextList"}->[$i], 
+                                          $rule->{"GotoRuleList"}->[$i]);
+    
+      $ref->{"count$j"} = actionlist2str($rule->{"CountActionList"}->[$i]);
+
+      $ref->{"threshold$j"} = $rule->{"ThresholdList"}->[$i];
+    }
+
+    $ref->{"init"} = actionlist2str($oper->{"InitAction"});
+    $ref->{"slide"} = actionlist2str($oper->{"SlideAction"});
+    $ref->{"end"} = actionlist2str($oper->{"EndAction"});
+
+    $ref->{"desc"} = $oper->{"Desc"};
+    $ref->{"action"} = actionlist2str($oper->{"Action"});
+
+    $ref->{"window"} = $rule->{"Window"};
+
+    if (exists($oper->{"SuppressMode"})) { 
+      $ref->{"status"} = "thresholds reached";
+    } else { 
+      $ref->{"status"} = "checking for thresholds";
+    }
+
+    $ref->{"eventtimes"} = [];
+    $ref->{"eventpatterns"} = [];
+
+    foreach $elem (@{$oper->{"AllTimes"}}) {
+      push @{$ref->{"eventtimes"}}, $elem->[0];
+      push @{$ref->{"eventpatterns"}}, $elem->[1]+1;
+    }
+
+  }
+
+  else { $ref->{"status"} = "Unknown operation type in the list"; }
+
+}
+
+
+# Parameters: -
+# Action: save some information about the current state of the program
+#         to dump file.
+
+sub dump_data_json {
+
+  my($dfilename, $i, $key, $ref, $file, $egid, @gidlist, %gids);
+  my($time, $user, $system, $cuser, $csystem, $fpos, @stat);
+  my($name, %reported_names, %data, $json);
+
+  if (!$JSONAVAIL) {
+    log_msg(LOG_ERR, "Can't create dumpfile $dfilename (no JSON module)");
+    return;
+  }
+
+  # get the current time
+
+  $time = time();
+
+  # with --dumpfts command line option, include seconds since epoch
+  # in the dump file name as a suffix
+
+  if ($dumpfts) { 
+    $dfilename = "$dumpfile.$time"; 
+  } else {
+    $dfilename = $dumpfile; 
+  }
+
+  # verify that dumpfile does not exist and open it
+
+  if (-e $dfilename) {
+    log_msg(LOG_WARN, "Can't write to dumpfile: $dfilename exists");
+    return;
+  }
+
+  if (!open(DUMPFILE, ">$dfilename")) {
+    log_msg(LOG_ERR, "Can't open dumpfile $dfilename ($!)");
+    return;
+  }
+
+  %data = ();
+
+  # program info
+
+  $data{"program"} = {};
+
+  $data{"program"}->{"version"} = $SEC_VERSION;
+  $data{"program"}->{"startuptime"} = $startuptime;
+  $data{"program"}->{"confloadtime"} = $lastconfigload;
+  $data{"program"}->{"dumptime"} = $time;
+  $data{"program"}->{"rcfile"} = $rcfile_status;
+  $data{"program"}->{"options"} = $sec_options;
+
+  # note that $) can report the same supplementary group ID more than once
+
+  @gidlist = split(' ', $) );
+  $egid = shift @gidlist;
+  %gids = map { $_ => 1 } @gidlist;
+
+  $data{"program"}->{"euid"} = $>;
+  $data{"program"}->{"egid"} = $egid;
+  $data{"program"}->{"sgid"} = [ keys %gids ];
+
+  # environment info
+
+  $data{"env"} = \%ENV;
+
+  # performance statistics
+
+  $data{"perf"} = {};
+
+  ($user, $system, $cuser, $csystem) = times();
+
+  $data{"perf"}->{"runtime"} = $time - $startuptime;
+  $data{"perf"}->{"user"} = $user;
+  $data{"perf"}->{"system"} = $system;
+  $data{"perf"}->{"childuser"} = $cuser;
+  $data{"perf"}->{"childsystem"} = $csystem;
+  $data{"perf"}->{"lines"} = $processedlines;
+
+  # rule usage statistics
+
+  $data{"rulestats"} = {};
+
+  foreach $file (@conffiles) {
+
+    $data{"rulestats"}->{$file} = {};
+    $data{"rulestats"}->{$file}->{"loadtime"} = $config_ltimes{$file};
+    $data{"rulestats"}->{$file}->{"stats"} = [];
+
+    foreach $ref (@{$configuration{$file}}) {
+      push @{$data{"rulestats"}->{$file}->{"stats"}}, 
+                                 { "ruleline" => $ref->{"LineNo"}, 
+                                   "matches" => $ref->{"MatchCount"},
+                                   "desc" => $ref->{"Desc"} };
+    }
+
+  }
+
+  # input sources
+
+  $data{"inputs"} = {};
+
+  foreach $file (@inputfiles) {
+
+    $data{"inputs"}->{$file} = {};
+    $data{"inputs"}->{$file}->{"file"} = $file; 
+
+    if ($inputsrc{$file}->{"open"}) { 
+      $data{"inputs"}->{$file}->{"status"} = "Open";
+      if ($inputsrc{$file}->{"regfile"}) {
+        $fpos = sysseek($inputsrc{$file}->{"fh"}, 0, SEEK_CUR);
+        @stat = stat($inputsrc{$file}->{"fh"});
+        $data{"inputs"}->{$file}->{"type"} = "regular file";
+        # sysseek returns a string "0 but true" for offset 0, 
+        # so force numeric context by adding 0
+        $data{"inputs"}->{$file}->{"offset"} = defined($fpos)?$fpos+0:"undef"; 
+        $data{"inputs"}->{$file}->{"size"} = scalar(@stat)?$stat[7]:"undef"; 
+      } else {
+        $data{"inputs"}->{$file}->{"type"} = "pipe";
+      }
+      $data{"inputs"}->{$file}->{"dev"} = $inputsrc{$file}->{"dev"}; 
+      $data{"inputs"}->{$file}->{"inode"} = $inputsrc{$file}->{"inode"}; 
+    } else { 
+      $data{"inputs"}->{$file}->{"status"} = "Closed";
+    }
+
+    $data{"inputs"}->{$file}->{"lines"} = $inputsrc{$file}->{"lines"};
+
+    if ($intcontexts) {
+      $data{"inputs"}->{$file}->{"context"} = $inputsrc{$file}->{"context"};
+    }
+
+  }
+
+  # content of input buffer(s)
+
+  $data{"buffer"} = {};
+
+  if ($jointbuf) {
+
+    $data{"buffer"}->{"bufmode"} = "joint buffer for all input sources";
+    $data{"buffer"}->{"bufsize"} = $bufsize;
+    $data{"buffer"}->{"lastlines"} = [];
+    $data{"buffer"}->{"lastinputs"} = [];
+
+    for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
+      push @{$data{"buffer"}->{"lastlines"}}, $input_buffer[$i];
+    }
+
+    for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
+      if (defined($input_sources[$i])) {
+        push @{$data{"buffer"}->{"lastinputs"}}, $input_sources[$i];
+      } else {
+        push @{$data{"buffer"}->{"lastinputs"}}, "synthetic event";
+      }
+    }
+
+  } else {
+
+    $data{"buffer"}->{"bufmode"} = "separate buffer for each input source";
+    $data{"buffer"}->{"bufsize"} = $bufsize;
+    $data{"buffer"}->{"lastlines"} = {};
+
+    foreach $file (keys %input_buffers) {
+
+      $data{"buffer"}->{"lastlines"}->{$file} = [];
+
+      for ($i = $input_buffers{$file}->{"BufPos"} - $bufsize + 1; 
+           $i <= $input_buffers{$file}->{"BufPos"}; ++$i) {
+        push @{$data{"buffer"}->{"lastlines"}->{$file}},
+             $input_buffers{$file}->{"Events"}->[$i];
+      }
+    }
+
+    $data{"buffer"}->{"lastsynevents"} = [];
+
+    for ($i = $event_buffer{"BufPos"} - $bufsize + 1; 
+         $i <= $event_buffer{"BufPos"}; ++$i) {
+      push @{$data{"buffer"}->{"lastsynevents"}}, 
+           $event_buffer{"Events"}->[$i];
+    }
+  }
+
+  # content of pending event buffer
+
+  $i = 0;
+  $data{"pendingevents"} = [];
+
+  foreach $ref (@pending_events) { 
+    $data{"pendingevents"}->[$i] = {};
+    $data{"pendingevents"}->[$i]->{"event"} = $ref->[1];
+    $data{"pendingevents"}->[$i]->{"time"} = $ref->[0];
+    if ($intcontexts) { 
+      $data{"pendingevents"}->[$i]->{"context"} = $ref->[2];
+    }
+    ++$i;
+  }
+
+  # content of pattern match cache
+
+  $data{"pmatchcache"} = \%pmatch_cache;
+
+  # list of active event correlation operations
+
+  $data{"operations"} = {};
+
+  while (($key, $ref) = each(%corr_list)) { 
+    $data{"operations"}->{$key} = {};
+    convert_element($data{"operations"}->{$key}, $key, $ref);
+  }
+
+  # list of active contexts
+
+  $i = 0;
+  %reported_names = ();
+  $data{"contexts"} = [];
+
+  while (($key, $ref) = each(%context_list)) { 
+
+    if (exists($reported_names{$key}))  { next; }
+
+    $data{"contexts"}->[$i]->{"name"} = [ keys %{$ref->{"Aliases"}} ];
+
+    foreach $name (keys %{$ref->{"Aliases"}}) {
+      $reported_names{$name} = 1;
+    }
+
+    $data{"contexts"}->[$i]->{"creationtime"} = $ref->{"Time"};
+    $data{"contexts"}->[$i]->{"lifetime"} = $ref->{"Window"};
+
+    if (scalar(@{$ref->{"Action"}})) {
+      $data{"contexts"}->[$i]->{"action"} = actionlist2str($ref->{"Action"});
+    }
+
+    $data{"contexts"}->[$i]->{"buffer"} = $ref->{"Buffer"};
+
+    ++$i;
+  }
+
+  # list of running children
+
+  $data{"children"} = {};
+
+  while (($key, $ref) = each(%children)) { 
+    $data{"children"}->{$key} = {};
+    $data{"children"}->{$key}->{"pid"} = $key; 
+    $data{"children"}->{$key}->{"cmdline"} = $ref->{"cmd"}; 
+    if ($ref->{"open"}) { 
+      $data{"children"}->{$key}->{"status"} = "Connected to pipe input";
+      if ($intcontexts && exists($ref->{"context"}))
+        { $data{"children"}->{$key}->{"context"} = $ref->{"context"}; }
+    }
+  }
+
+  # values of action list variables
+
+  $data{"variables"} = \%variables;
+
+  # The 'allow_unknown' option will convert unexpected values 
+  # (such as code references held by action list variables) to json 
+  # null values (without this option encode() will croak). Also, 
+  # the 'utf8' option will generate json in utf8 format.
+
+  eval { $json = JSON->new->utf8->allow_unknown->encode(\%data); };
+
+  if ($@) {
+    log_msg(LOG_ERR, "Can't create JSON data for dumpfile ($@)");
+    close(DUMPFILE);
+    return;
+  }
+
+  if (defined($json))  { print DUMPFILE $json; }
 
   close(DUMPFILE);
 
@@ -11701,7 +12204,7 @@ sub check_signals {
 
     if ($childterm)  { child_cleanup(); }
 
-    # clear correlation operations, contexts and user-defined variables
+    # clear correlation operations, contexts and action list variables
 
     %corr_list = ();
     %context_list = (); 
@@ -11835,7 +12338,7 @@ sub check_signals {
 
     # write info about SEC state to the dump file
 
-    dump_data();
+    if ($dumpfjson)  { dump_data_json(); }  else { dump_data(); }
 
     # set the signal flag back to zero
 
@@ -12470,6 +12973,7 @@ sub read_options {
   @groupnames = ();
   $umask = undef;
   $dumpfts = 0;
+  $dumpfjson = 0;
   $quoting = 0;
   $tail = 1;
   $fromstart = 0;
@@ -12508,6 +13012,7 @@ sub read_options {
               "group=s" => \@groupnames,
               "umask=o" => \$umask,
               "dumpfts!" => \$dumpfts,
+              "dumpfjson!" => \$dumpfjson,
               "quoting!" => \$quoting,
               "tail!" => \$tail,
               "fromstart!" => \$fromstart,

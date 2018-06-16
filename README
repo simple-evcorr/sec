@@ -1,4 +1,4 @@
-SEC (Simple Event Correlator) 2.8.alpha1
+SEC (Simple Event Correlator) 2.8.alpha2
 
 Introduction:
 -------------
@@ -29,7 +29,9 @@ to run SEC with at least Perl 5.8 (see http://www.perl.org for the latest
 stable release). 
 SEC uses Perl Getopt, POSIX, Fcntl, Socket, IO::Handle, and Sys::Syslog 
 modules which are included in the standard Perl installation (the presence
-of Sys::Syslog is optional).
+of Sys::Syslog is optional). Since the 2.8 version, SEC also employs Perl
+JSON module for producing dumpfiles in JSON format, but the presence of this 
+module is optional.
 
 Files in this package:
 ----------------------
@@ -52,8 +54,8 @@ Risto Vaarandi (ristov at users d0t s0urcef0rge d0t net)
 
 Acknowledgments:
 ----------------
-This work is supported by SEB.
-The author thanks the following people for supplying software patches,
+The author thanks SEB Estonia for supporting this work.
+The author also thanks the following people for supplying software patches,
 documentation fixes, and suggesting new features:
 Al Sorrell, Brian Mielke, David Lang, James Brown, Jon Frazier, Mark D. Nagel, 
 Peter Eckel, Rick Casey, and William Gertz.

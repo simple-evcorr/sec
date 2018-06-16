@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.8.alpha1 - sec.man
+.\" SEC (Simple Event Correlator) 2.8.alpha2 - sec.man
 .\" Copyright (C) 2000-2018 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "May 2018" "SEC 2.8.alpha1"
+.TH sec 1 "June 2018" "SEC 2.8.alpha2"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -63,6 +63,8 @@ sec \- simple event correlator
 [--umask=<mode>]
 .br
 [--dumpfts | --nodumpfts]
+.br
+[--dumpfjson | --nodumpfjson]
 .br
 [--quoting | --noquoting]
 .br
@@ -497,7 +499,9 @@ SEC will store its process ID to <pidfile> at startup.
 SEC will use <dumpfile> as its dump file for writing performance and debug
 data. With the
 .B \-\-dumpfts
-option, a timestamp suffix is appended to the dump file name.
+option, a timestamp suffix is appended to the dump file name. With the
+.B \-\-dumpfjson
+option, dump file is produced in JSON format.
 See SIGNALS section for more information. Default is /tmp/sec.dump.
 .TP
 .BR \-\-user=<username> ", " \-\-group=<groupname>
@@ -530,6 +534,14 @@ if the
 option is specified, a timestamp suffix (seconds since Epoch) is appended
 to the dump file name that reflects the file creation time. Default is
 .BR \-\-nodumpfts . 
+.TP
+.BR \-\-dumpfjson ", " \-\-nodumpfjson
+if the
+.B \-\-dumpfjson
+option is specified, dump file is produced in JSON format. 
+Note that this option requires the presence of Perl JSON module.
+Default is
+.BR \-\-nodumpfjson . 
 .TP
 .BR \-\-quoting ", " \-\-noquoting 
 if the
@@ -6280,8 +6292,8 @@ variable to C when reading this man page (e.g., env LANG=C man sec).
 .SH AUTHOR
 Risto Vaarandi (ristov at users d0t s0urcef0rge d0t net)
 .SH ACKNOWLEDGMENTS
-This work is supported by SEB.
-The author thanks the following people for supplying software patches,
+The author thanks SEB Estonia for supporting this work.
+The author also thanks the following people for supplying software patches,
 documentation fixes, and suggesting new features:
 Al Sorrell, Brian Mielke, David Lang, James Brown, Jon Frazier, Mark D. Nagel, 
 Peter Eckel, Rick Casey, and William Gertz. 
