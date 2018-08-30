@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.8.alpha2 - sec.man
+.\" SEC (Simple Event Correlator) 2.8.0 - sec.man
 .\" Copyright (C) 2000-2018 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "June 2018" "SEC 2.8.alpha2"
+.TH sec 1 "August 2018" "SEC 2.8.0"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -1000,14 +1000,15 @@ the current input source, the variable is set to Perl undefined value.
 .sp
 For example, the following pattern matches the SSH "Connection from" event,
 and sets $0 to the entire event line, both $1 and $+{ip} to the IP address 
-of the remote node, and $2 to the port number at the remote node. If the matching
-event comes from input file /var/log/messages with internal context MSGS, 
-the $+{_inputsrc} and $+{_intcontext} variables are set to strings "/var/log/messages" 
-and "MSGS", respectively:
+of the remote node, and $2 to the port number at the remote node:
 .sp
 ptype=RegExp
 .br
 pattern=sshd\\[\\d+\\]: Connection from (?<ip>[\\d.]+) port (\\d+)
+.sp
+If the matching event comes from input file /var/log/messages with internal 
+context MSGS, the $+{_inputsrc} and $+{_intcontext} variables are set to 
+strings "/var/log/messages" and "MSGS", respectively.
 .sp
 Also, SEC allows for match caching and for the creation of additional named 
 match variables through variable maps which are defined with the
@@ -2760,8 +2761,8 @@ Emulates the arrival of signal <signal> and triggers its handler.
 The <signal> parameter must evaluate to one of the following strings:
 HUP, ABRT, USR1, USR2, INT, or TERM. For example, the action
 .I sigemul USR1
-generates the SEC dump file. See the SIGNALS section for detailed information
-on signals that are handled by SEC.
+triggers the generation of SEC dump file. See the SIGNALS section for
+detailed information on signals that are handled by SEC.
 .TP
 .I if %<var> ( <action list> ) [ else ( <action list2> ) ]
 If the action list variable %<var> evaluates true in the Perl boolean context
@@ -6292,7 +6293,7 @@ variable to C when reading this man page (e.g., env LANG=C man sec).
 .SH AUTHOR
 Risto Vaarandi (ristov at users d0t s0urcef0rge d0t net)
 .SH ACKNOWLEDGMENTS
-The author thanks SEB Estonia for supporting this work.
+The author is grateful to SEB Estonia for supporting this work.
 The author also thanks the following people for supplying software patches,
 documentation fixes, and suggesting new features:
 Al Sorrell, Brian Mielke, David Lang, James Brown, Jon Frazier, Mark D. Nagel, 

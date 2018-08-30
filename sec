@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.8.alpha2 - sec
+# SEC (Simple Event Correlator) 2.8.0 - sec
 # Copyright (C) 2000-2018 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -179,7 +179,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.alpha2";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.0";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2018 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -10538,9 +10538,9 @@ sub convert_element {
     $ref->{"action"} = actionlist2str($oper->{"Action"});
 
     $ref->{"pattern2"} = pattern2str($rule->{"PatType2"},
-                         $rule->{"PatLines2"}, $rule->{"Pattern2"});
+                         $rule->{"PatLines2"}, $oper->{"Pattern2"});
 
-    $ref->{"context2"} = context2str($rule->{"Context2"});
+    $ref->{"context2"} = context2str($oper->{"Context2"});
 
     $ref->{"continue2"} = continue2str($rule->{"WhatNext2"}, 
                           $rule->{"GotoRule2"});
@@ -10568,9 +10568,9 @@ sub convert_element {
     $ref->{"action"} = actionlist2str($oper->{"Action"});
 
     $ref->{"pattern2"} = pattern2str($rule->{"PatType2"},
-                         $rule->{"PatLines2"}, $rule->{"Pattern2"});
+                         $rule->{"PatLines2"}, $oper->{"Pattern2"});
 
-    $ref->{"context2"} = context2str($rule->{"Context2"});
+    $ref->{"context2"} = context2str($oper->{"Context2"});
 
     $ref->{"continue2"} = continue2str($rule->{"WhatNext2"}, 
                           $rule->{"GotoRule2"});
@@ -10844,10 +10844,9 @@ sub dump_data_json {
     $data{"buffer"}->{"lastinputs"} = [];
 
     for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
-      push @{$data{"buffer"}->{"lastlines"}}, $input_buffer[$i];
-    }
 
-    for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
+      push @{$data{"buffer"}->{"lastlines"}}, $input_buffer[$i];
+
       if (defined($input_sources[$i])) {
         push @{$data{"buffer"}->{"lastinputs"}}, $input_sources[$i];
       } else {
@@ -13200,6 +13199,10 @@ sub main_loop {
 
     if (defined($line)) {
 
+      # with --intcontexts option, set up internal context and store its
+      # name to $intcontextname global variable (this variable will be used
+      # for setting the $+{_intcontext} match variable)
+
       if ($intcontexts) {
         $intcontextname = defined($file)?$inputsrc{$file}->{"context"}:$evcont;
         $int_context->{"Aliases"}->{$intcontextname} = 1;
@@ -13235,6 +13238,8 @@ sub main_loop {
         if (process_rules($conffile)) { last; }
       }
 
+      # with --intcontexts option, drop previously created internal context
+
       if ($intcontexts) { 
         delete $context_list{$intcontextname}; 
         delete $int_context->{"Aliases"}->{$intcontextname};
@@ -13246,7 +13251,7 @@ sub main_loop {
 
     } elsif (!$file) {
 
-      # if -notail mode is active and all input files have been closed, exit;
+      # if --notail mode is active and all input files have been closed, exit;
       # if no new data was appended to input files, sleep with select(),
       # unless some child process returned data during last polling round
 
