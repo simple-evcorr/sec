@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.8.0 - sec
+# SEC (Simple Event Correlator) 2.8.1 - sec
 # Copyright (C) 2000-2018 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -179,7 +179,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.0";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.1";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2018 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -412,12 +412,6 @@ sub open_syslog {
 
   my($facility) = $_[0];
   my($progname);
-
-  if (!$SYSLOGAVAIL) {
-    print STDERR "Can't connect to syslog (no Sys::Syslog module)\n";
-    $syslogopen = 0;
-    return;
-  }
 
   $progname = $0;
   $progname =~ s/.*\///;
@@ -10707,11 +10701,6 @@ sub dump_data_json {
   my($time, $user, $system, $cuser, $csystem, $fpos, @stat);
   my($name, %reported_names, %data, $json);
 
-  if (!$JSONAVAIL) {
-    log_msg(LOG_ERR, "Can't create dumpfile $dfilename (no JSON module)");
-    return;
-  }
-
   # get the current time
 
   $time = time();
@@ -13104,6 +13093,11 @@ sub read_options {
     $logfile = undef;
   }
 
+  if (defined($syslogf) && !$SYSLOGAVAIL) { 
+    print STDERR "'--syslog' option requires Perl Sys::Syslog module\n";
+    $syslogf = undef;
+  }
+
   if (defined($syslogf) && !length($syslogf)) { 
     print STDERR "'--syslog' option requires a non-empty value\n";
     $syslogf = undef;
@@ -13144,6 +13138,11 @@ sub read_options {
   if (defined($umask) && ($umask < 0 || $umask > 511)) { 
     print STDERR "'--umask' option requires a value from range 0..0777\n";
     $umask = undef;
+  }
+
+  if ($dumpfjson && !$JSONAVAIL) {
+    print STDERR "'--dumpfjson' option requires Perl JSON module\n";
+    $dumpfjson = 0;
   }
 
   # in the case of --bufsize=1, always enable the --jointbuf option,

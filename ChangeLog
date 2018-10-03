@@ -1,3 +1,10 @@
+--- version 2.8.1
+
+* fixed a bug in dump file creation routine (a perl warning message was
+  written to standard error if --dumpfjson command line option was used
+  without Perl JSON module being present).
+
+
 --- version 2.8.0
 
 * added support for dynamic input files, and 'addinput' and 'dropinput'
