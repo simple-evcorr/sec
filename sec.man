@@ -3692,7 +3692,7 @@ match variables have to be used in the
 .I desc2
 field, in order to refer to the original values of $1 (root) and $2
 (192.168.1.104) when the operation was created.
-.SS SINGLEWITHTHRESHOLD RULE
+.SS "SINGLEWITHTHRESHOLD RULE"
 The
 .B SingleWithThreshold
 rule runs event correlation operations for counting repeated instances of the
@@ -3986,7 +3986,7 @@ to 12:28:53.
 Since there will be no further SYS-3-CPUHOG messages for Router1,
 the operation will run until 13:28:53 and then expire, logging the message
 "Router Router1 CPU load has been normal for 1h" before finishing.
-.SS EVENTGROUP RULE
+.SS "EVENTGROUP RULE"
 The
 .B EventGroup
 rule runs event correlation operations for counting repeated instances of
@@ -4407,7 +4407,6 @@ about 10.1.2.7 to root@localhost. After that, the operation silently consumes
 all further matching events for 10.1.2.7 until 19:02:06, and then terminates. 
 Immediately before termination, the operation deletes the context OPER_10.1.2.7
 which also drops its alias name LOGIN_FAILED_risto_10.1.2.7.
-.PP
 .SS "SUPPRESS RULE"
 The
 .B Suppress
@@ -4444,6 +4443,8 @@ Also note that this rule does not start an event correlation operation,
 and the optional
 .I desc
 field is merely used for describing the rule.
+Finally, in order to end event processing, so that no further rules from
+any of the configuration files would be tried, use the Jump rule.
 .PP
 .B Examples:
 .PP
@@ -4612,6 +4613,25 @@ sets. If the
 field is set to Yes, set names are assumed to be constants and will not
 be searched for match variables at runtime.
 .PP
+If the
+.I cfset
+field is not present and the
+.I continue
+field is set to GoTo, the Jump rule can be used for skipping rules inside
+the current configuration file. If both
+.I cfset
+and
+.I continue
+are not present (or 
+.I continue
+is set to DontCont), Jump is identical to Suppress rule.
+Finally, if
+.I cfset
+is not present and
+.I continue
+is set to EndMatch, processing of the matching event ends (i.e., 
+no further rules from any of the configuration files will be tried).
+.PP
 The Jump rule supports the following fields:
 .TP 
 .I type
@@ -4656,17 +4676,6 @@ Also note that this rule does not start event correlation operations,
 and the optional
 .I desc
 field is merely used for describing the rule.
-.PP
-Finally, if the
-.I cfset
-field is not present and the
-.I continue
-field is set to GoTo, the Jump rule can be used for skipping rules inside
-the current configuration file; if both
-.I cfset
-and
-.I continue
-are not present, Jump is identical to Suppress.
 .PP
 .B Examples:
 .PP
