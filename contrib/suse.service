@@ -5,7 +5,7 @@ After=syslog.target
 [Service]
 Type=forking
 PIDFile=/run/sec.pid
-ExecStart=/bin/bash -c '[ -e /etc/sysconfig/sec ] && . /etc/sysconfig/sec; exec /usr/bin/sec -detach -pid=/run/sec.pid $${SEC_OPTS}
+ExecStart=/bin/bash -c '[ -e /etc/sysconfig/sec ] && . /etc/sysconfig/sec; exec /usr/bin/sec -detach -pid=/run/sec.pid $${SEC_OPTS}'
 
 [Install]
 WantedBy=multi-user.target
