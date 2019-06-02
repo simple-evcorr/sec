@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.8.1 - sec
-# Copyright (C) 2000-2018 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.8.2 - sec
+# Copyright (C) 2000-2019 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -179,8 +179,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.1";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2018 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.2";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2019 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -325,6 +325,7 @@ use constant REWRITE		=> 51;
 use constant ADDINPUT		=> 52;
 use constant DROPINPUT		=> 53;
 use constant SIGEMUL		=> 54;
+use constant VARIABLESET	=> 55;
 use constant IF			=> 100;
 use constant WHILE		=> 101;
 use constant BREAK		=> 102;
@@ -867,7 +868,7 @@ sub analyze_action {
   my($actionlist, @action);
   my($actionlist2, @action2);
   my($createafter, $event, $timestamp);
-  my($lifetime, $context, $alias);
+  my($lifetime, $context, $alias, $entry);
   my($variable, $value, $code, $codeptr, $params, $evalok, $op);
 
   if ($action =~ /^none$/i)  { return NONE; }
@@ -1557,6 +1558,28 @@ sub analyze_action {
     }
 
     return (SIGEMUL, $signal); 
+  }
+
+  elsif ($action =~ /^varset\s+(\S+)\s+(\S+)$/i) {
+
+    $variable = $1;
+    $entry = $2;
+    process_action_parens($entry);
+
+    if ($variable !~ /^%[[:alpha:]]\w*$/) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+                       "Variable $variable does not have the form",
+                       "%<letter>[<letter>|<digit>|<underscore>]...");
+      return INVALIDVALUE;
+    }
+
+    if (!length($entry)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty pattern match cache entry name given for varset action");
+      return INVALIDVALUE;
+    }
+
+    return (VARIABLESET, substr($variable, 1), $entry); 
   }
 
   elsif ($action =~ /^if\s/i) {
@@ -6439,6 +6462,27 @@ sub execute_sigemul_action {
   return 2;
 }
 
+sub execute_varset_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($entry, $variable, $value);
+
+  $variable = $actionlist->[$i+1];
+  $entry = $actionlist->[$i+2];
+
+  substitute_actionlist_var($entry, $text);
+
+  log_msg(LOG_DEBUG, 
+          "Checking the presence of pattern match cache entry '$entry'");
+
+  $value = (exists($pmatch_cache{$entry}))?1:0; 
+  $variables{$variable} = $value;
+
+  log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
+
+  return 3;
+}
+
 sub execute_if_action {
 
   my($actionlist, $text, $i) = @_;
@@ -7442,12 +7486,16 @@ sub subst_string {
 
     } else {
 
+      # calling defined($pmatch_cache{$4}->{$+}) will create $pmatch_cache{$4}
+      # if it doesn't exist, thus exists($pmatch_cache{$4}) is called first
+
       $msg =~ s/$token2(?:$token2|([0-9]+)|\{([0-9]+)\}|
                           \+\{([[:alpha:]_][\w!]*|[0-9]+)\}|
                           :\{([[:alpha:]]\w*):([[:alpha:]_][\w!]*|[0-9]+)\})/
       !defined($+)?$token:
-          (!defined($4)?(defined($subst_ref->{$+})?$subst_ref->{$+}:"")
-           :(defined($pmatch_cache{$4}->{$+})?$pmatch_cache{$4}->{$+}:""))/egx;
+          (!defined($4)?(defined($subst_ref->{$+})?$subst_ref->{$+}:""):
+            ((exists($pmatch_cache{$4}) && defined($pmatch_cache{$4}->{$+}))?
+              $pmatch_cache{$4}->{$+}:""))/egx;
     }
   }
 
@@ -9564,6 +9612,11 @@ sub actionlist2str {
       $result .= "sigemul " . $actionlist->[$i+1];
       $i += 2;
     } 
+
+    elsif ($actionlist->[$i] == VARIABLESET) { 
+      $result .= "varset %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    }
 
     elsif ($actionlist->[$i] == IF) {
       $result .= "if %" . $actionlist->[$i+1] . " (";
@@ -13386,6 +13439,7 @@ $actioncopyfunc[REWRITE] = \&copy_three_elem_action;
 $actioncopyfunc[ADDINPUT] = \&copy_four_elem_action;
 $actioncopyfunc[DROPINPUT] = \&copy_two_elem_action;
 $actioncopyfunc[SIGEMUL] = \&copy_two_elem_action;
+$actioncopyfunc[VARIABLESET] = \&copy_three_elem_action;
 $actioncopyfunc[IF] = \&copy_if_action;
 $actioncopyfunc[WHILE] = \&copy_while_action;
 $actioncopyfunc[BREAK] = \&copy_one_elem_action;
@@ -13446,6 +13500,7 @@ $actionsubstfunc[REWRITE] = \&subst_three_elem_action;
 $actionsubstfunc[ADDINPUT] = \&subst_four_elem_action;
 $actionsubstfunc[DROPINPUT] = \&subst_two_elem_action;
 $actionsubstfunc[SIGEMUL] = \&subst_two_elem_action;
+$actionsubstfunc[VARIABLESET] = \&subst_event_assign_etc_action;
 $actionsubstfunc[IF] = \&subst_if_action;
 $actionsubstfunc[WHILE] = \&subst_while_action;
 $actionsubstfunc[BREAK] = \&subst_none_break_continue;
@@ -13506,6 +13561,7 @@ $execactionfunc[REWRITE] = \&execute_rewrite_action;
 $execactionfunc[ADDINPUT] = \&execute_addinput_action;
 $execactionfunc[DROPINPUT] = \&execute_dropinput_action;
 $execactionfunc[SIGEMUL] = \&execute_sigemul_action;
+$execactionfunc[VARIABLESET] = \&execute_varset_action;
 $execactionfunc[IF] = \&execute_if_action;
 $execactionfunc[WHILE] = \&execute_while_action;
 $execactionfunc[BREAK] = \&execute_break_action;

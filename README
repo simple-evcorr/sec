@@ -1,4 +1,4 @@
-SEC (Simple Event Correlator) 2.8.1
+SEC (Simple Event Correlator) 2.8.2
 
 Introduction:
 -------------
@@ -17,7 +17,7 @@ wide variety of other ways.
 Availability:
 -------------
 This program is distributed under the terms of GNU General Public License, 
-and can be downloaded from http://simple-evcorr.github.io
+and can be downloaded from https://simple-evcorr.github.io
 
 Release Notes:
 --------------
@@ -25,7 +25,7 @@ SEC has been tested primarily on Linux and Solaris, but since it is written
 in Perl and does not use any platform dependent subroutines, it should also
 work on other OS platforms.
 Because SEC is not tested against ancient Perl releases, it is recommended 
-to run SEC with at least Perl 5.8 (see http://www.perl.org for the latest 
+to run SEC with at least Perl 5.8 (see https://www.perl.org for the latest 
 stable release). 
 SEC uses Perl Getopt, POSIX, Fcntl, Socket, IO::Handle, and Sys::Syslog 
 modules which are included in the standard Perl installation (the presence

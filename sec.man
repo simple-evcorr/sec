@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.8.1 - sec.man
-.\" Copyright (C) 2000-2018 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.8.2 - sec.man
+.\" Copyright (C) 2000-2019 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "October 2018" "SEC 2.8.1"
+.TH sec 1 "June 2019" "SEC 2.8.2"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -2763,6 +2763,16 @@ HUP, ABRT, USR1, USR2, INT, or TERM. For example, the action
 .I sigemul USR1
 triggers the generation of SEC dump file. See the SIGNALS section for
 detailed information on signals that are handled by SEC.
+.TP
+.I varset %<var> <entry>
+If the pattern match cache entry <entry> exists, set the action list variable 
+%<var> to 1, otherwise set %<var> to 0. For example, if pattern match cache
+contains the entry with the name SSH but not the entry with the name NTP, 
+the action
+.I varset %ssh SSH
+will set the %ssh action list variable to 1, while the action
+.I varset %ntp NTP
+will set the %ntp action list variable to 0.
 .TP
 .I if %<var> ( <action list> ) [ else ( <action list2> ) ]
 If the action list variable %<var> evaluates true in the Perl boolean context

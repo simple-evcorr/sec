@@ -4,7 +4,7 @@
 #   and its symbolic link
 # /(usr/)sbin/rcsec
 #
-# LSB compatible service control script; see http://www.linuxbase.org/spec/
+# LSB compatible service control script; see https://www.linuxbase.org/spec/
 # Contributed by Malcolm J Lewis <malcolmlewis@opensuse.org> 
 #
 ### BEGIN INIT INFO
