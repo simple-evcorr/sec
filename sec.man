@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.8.2 - sec.man
-.\" Copyright (C) 2000-2019 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.8.3 - sec.man
+.\" Copyright (C) 2000-2020 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "June 2019" "SEC 2.8.2"
+.TH sec 1 "May 2020" "SEC 2.8.3"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -61,6 +61,8 @@ sec \- simple event correlator
 [--group=<groupname> ...]
 .br
 [--umask=<mode>]
+.br
+[--ruleperf | --noruleperf]
 .br
 [--dumpfts | --nodumpfts]
 .br
@@ -527,6 +529,13 @@ is a value from the range 0..0777 (see also
 .BR umask (2)). 
 Octal, decimal, hexadecimal, and binary values can be specified for <mode> 
 (e.g., octal mask 0027 can also be expressed as 23, 0x17, and 0b000010111).
+.TP
+.BR \-\-ruleperf ", " \-\-noruleperf
+if the
+.B \-\-ruleperf
+option is specified, performance data (e.g., total consumed CPU time)
+is collected for each rule and reported in dump file. Default is
+.BR \-\-noruleperf .
 .TP
 .BR \-\-dumpfts ", " \-\-nodumpfts
 if the
@@ -5726,9 +5735,9 @@ code itself, user-defined Perl code is executed in the main::SEC namespace
 By using the main:: prefix, SEC data structures can be accessed and modified. 
 For example, the following rules restore and save contexts with names MY_*
 on SEC startup and shutdown, using Perl Storable module for saving and restoring
-relevant elements of %main::context_list hash (since code references can't be
-saved/restored with Storable, the following example assumes that context action 
-lists do not contain 
+relevant elements of %main::context_list hash (since the following example
+does not handle code references with Storable module, it is assumed that
+context action lists do not contain 
 .I lcall 
 actions):
 .PP

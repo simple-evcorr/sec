@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.8.2 - sec
-# Copyright (C) 2000-2019 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.8.3 - sec
+# Copyright (C) 2000-2020 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -133,6 +133,7 @@ use vars qw(
   @readbuffer
   $refresh
   $reopen_timeout
+  $ruleperf
   $rwfifo
   $SEC_COPYRIGHT
   $SEC_LICENSE
@@ -179,8 +180,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.2";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2019 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.3";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2020 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -205,6 +206,7 @@ Options:
   --user=<username>
   --group=<groupname> ...
   --umask=<mode>
+  --ruleperf, --noruleperf
   --dumpfts, --nodumpfts
   --dumpfjson, --nodumpfjson
   --quoting, --noquoting
@@ -2309,6 +2311,8 @@ sub check_rule {
               "Desc" => $ref->{"desc"},
               "Action" => [],
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     if (exists($ref->{"continue"})) { 
@@ -2378,6 +2382,8 @@ sub check_rule {
               "Action" => [],
               "Action2" => [],
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     if (exists($ref->{"continue"})) { 
@@ -2456,6 +2462,8 @@ sub check_rule {
               "Desc" => $ref->{"desc"},
               "Action" => [],
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     if (exists($ref->{"continue"})) { 
@@ -2536,6 +2544,8 @@ sub check_rule {
               "Action2" => [],
               "Operations" => {},
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     if (exists($ref->{"continue"})) { 
@@ -2659,6 +2669,8 @@ sub check_rule {
               "Action2" => [],
               "Operations" => {},
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     if (exists($ref->{"continue"})) { 
@@ -2774,6 +2786,8 @@ sub check_rule {
               "Action" => [],
               "Action2" => [],
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     if (exists($ref->{"continue"})) { 
@@ -2867,6 +2881,8 @@ sub check_rule {
               "Action" => [],
               "Action2" => [],
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     if (exists($ref->{"continue"})) { 
@@ -2999,6 +3015,8 @@ sub check_rule {
               "SlideAction" => [],
               "EndAction" => [],
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     for ($i = 0; $i < $evtnum; ++$i) {
@@ -3146,6 +3164,8 @@ sub check_rule {
               "VarMap" => {},
               "Context" => [],
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     ($rule->{"PatType"}, $rule->{"PatLines"}, $rule->{"Pattern"}) = 
@@ -3221,6 +3241,8 @@ sub check_rule {
               "Desc" => $ref->{"desc"},
               "Action" => [],
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     if (!analyze_timespec($ref->{"time"}, 
@@ -3272,6 +3294,8 @@ sub check_rule {
               "VarMap" => {},
               "Context" => [],
               "MatchCount" => 0,
+              "EventCount" => 0,
+              "CPUtime" => 0,
               "LineNo" => $lineno };
 
     if (exists($ref->{"continue"})) { 
@@ -6639,7 +6663,8 @@ sub valid_context {
 
 # Parameters: par1 - reference to a context expression
 # Action: calculate the truth value of the context expression par1;
-#         return 1 if it is TRUE, and return 0 if it is FALSE.
+#         return 1 if it is TRUE, 0 if it is FALSE, and undef if
+#         the context expression is empty.
 
 sub tval_context_expr {
 
@@ -9040,25 +9065,63 @@ sub match_eventgroup_rule {
 sub process_rules {
 
   my($conffile, $trace) = @_;
-  my($i, $n, $rule);
+  my($i, $n, $rule, $cpu_total, $cpu_user, $cpu_sys);
 
   $i = 0;
   $n = scalar(@{$configuration{$conffile}});
 
-  while ($i < $n) { 
+  # with --ruleperf option, collect CPU time data when rules are processed
 
-    $rule = $configuration{$conffile}->[$i];
+  if ($ruleperf) {
 
-    # skip the CALENDAR rule
-    if ($rule->{"Type"} == CALENDAR)  { ++$i; next; }
+    while ($i < $n) { 
 
-    # match the i-th rule against input
-    $i = $matchrulefunc[$rule->{"Type"}]->($conffile, $i, $trace);
+      $rule = $configuration{$conffile}->[$i];
 
-    # if the rule matching function returned -1 for the offset of 
-    # the next rule to be matched, terminate all matching and return 1
+      # skip the CALENDAR rule
+      if ($rule->{"Type"} == CALENDAR)  { ++$i; next; }
 
-    if ($i == -1)  { return 1; }
+      # find CPU time of the process before the rule is processed
+
+      ($cpu_user, $cpu_sys) = times();
+      $cpu_total = $cpu_user + $cpu_sys;
+
+      # match the i-th rule against input
+      $i = $matchrulefunc[$rule->{"Type"}]->($conffile, $i, $trace);
+
+      # find CPU time of the process after the rule has been processed
+      # and calculate CPU time spent for processing the rule
+
+      ($cpu_user, $cpu_sys) = times();
+      $rule->{"CPUtime"} += $cpu_user + $cpu_sys - $cpu_total;
+
+      # increment the counter of total events processed by the rule
+      ++$rule->{"EventCount"};
+
+      # if the rule matching function returned -1 for the offset of 
+      # the next rule to be matched, terminate all matching and return 1
+
+      if ($i == -1)  { return 1; }
+    }
+
+  } else {
+
+    while ($i < $n) { 
+
+      $rule = $configuration{$conffile}->[$i];
+
+      # skip the CALENDAR rule
+      if ($rule->{"Type"} == CALENDAR)  { ++$i; next; }
+
+      # match the i-th rule against input
+      $i = $matchrulefunc[$rule->{"Type"}]->($conffile, $i, $trace);
+
+      # if the rule matching function returned -1 for the offset of 
+      # the next rule to be matched, terminate all matching and return 1
+
+      if ($i == -1)  { return 1; }
+    }
+
   }
 
   return 0;
@@ -9075,7 +9138,7 @@ sub process_lists {
   my($key, $rule, $oper);
   my($time, @time, $pevt, $event, $context, @buffer);
   my($minute, $hour, $day, $month, $year, $weekday);
-  my($lastdayofmonth, $shortyear);
+  my($lastdayofmonth, $shortyear, $cpu_total, $cpu_user, $cpu_sys);
 
   # remove obsolete elements from %context_list
 
@@ -9145,24 +9208,42 @@ sub process_lists {
     if (!exists($rule->{"Weekdays"}->{$weekday}))  { next; }
     if (!exists($rule->{"Years"}->{$shortyear}))  { next; }
 
-    # check the context expression of the rule
-    
-    if (scalar(@{$rule->{"Context"}})) {
-      if (!tval_context_expr($rule->{"Context"}))  { next; }  
+    # with --ruleperf option, find process CPU time before rule is processed
+
+    if ($ruleperf) {
+      ($cpu_user, $cpu_sys) = times();
+      $cpu_total = $cpu_user + $cpu_sys;
     }
 
-    # execute the action list of the calendar event 
-    # and save current time
+    # if the rule has no context expression, or the context expression
+    # exists and evaluates true, execute the action list of the calendar 
+    # event and save current time
 
-    execute_actionlist($rule->{"Action"}, $rule->{"Desc"});
+    if (!scalar(@{$rule->{"Context"}}) || 
+        tval_context_expr($rule->{"Context"})) {
 
-    $rule->{"LastActionMinute"} = $minute;
-    $rule->{"LastActionHour"} = $hour;
-    $rule->{"LastActionDay"} = $day;
-    $rule->{"LastActionMonth"} = $month;
-    $rule->{"LastActionYear"} = $year;
+      execute_actionlist($rule->{"Action"}, $rule->{"Desc"});
 
-    ++$rule->{"MatchCount"};
+      $rule->{"LastActionMinute"} = $minute;
+      $rule->{"LastActionHour"} = $hour;
+      $rule->{"LastActionDay"} = $day;
+      $rule->{"LastActionMonth"} = $month;
+      $rule->{"LastActionYear"} = $year;
+
+      ++$rule->{"MatchCount"};
+    }
+
+    # with --ruleperf option, find process CPU time after rule has been
+    # processed and calculate CPU time spent for processing the rule, 
+    # and increment the counter of total events processed by the rule
+
+    if ($ruleperf) {
+
+      ($cpu_user, $cpu_sys) = times();
+      $rule->{"CPUtime"} += $cpu_user + $cpu_sys - $cpu_total;
+
+      ++$rule->{"EventCount"};
+    }
   }
 
   # accomplish clock-based tasks that are associated with elements of
@@ -9815,11 +9896,11 @@ sub context2str {
 
 
 # Parameters: par1 - filehandle
-#             par2 - list element key
-#             par3 - reference to list element
-# Action: print given list element to the filehandle
+#             par2 - key of event correlation operation
+#             par3 - reference to event correlation operation
+# Action: print given event correlation operation to the filehandle
 
-sub print_element {
+sub print_operation {
 
   my($handle, $key, $oper) = @_;
   my($rule, $conffile, $id, $time, $elem, $i, $j);
@@ -10153,7 +10234,7 @@ sub dump_data {
 
   my($dfilename, $i, $key, $ref, $file, $event, $egid, @gidlist, %gids);
   my($time, $user, $system, $cuser, $csystem, $fpos, @stat);
-  my($width1, $width2, $width3);
+  my($len, $width1, $width2, $width3, $width4, $width5);
   my($name, %reported_names);
 
   # get the current time
@@ -10247,28 +10328,34 @@ sub dump_data {
                     scalar(localtime($config_ltimes{$file})), ")\n";
     print DUMPFILE '-' x 60, "\n";
 
-    $width1 = length(scalar(@{$configuration{$file}}));
+    $width1 = length(sprintf("%u", scalar(@{$configuration{$file}})));
     $width2 = $width3 = 0;
+    if ($ruleperf) { $width4 = $width5 = 0; }
 
     foreach $ref (@{$configuration{$file}}) {
-      if (length($ref->{"LineNo"}) > $width2) { 
-        $width2 = length($ref->{"LineNo"}); 
-      }
-      if (length($ref->{"MatchCount"}) > $width3) { 
-        $width3 = length($ref->{"MatchCount"}); 
+      $len = length(sprintf("%u", $ref->{"LineNo"}));
+      if ($len > $width2) { $width2 = $len; }
+      $len = length(sprintf("%u", $ref->{"MatchCount"}));
+      if ($len > $width3) { $width3 = $len; }
+      if ($ruleperf) {
+        $len = length(sprintf("%.2f", $ref->{"CPUtime"}));
+        if ($len > $width4) { $width4 = $len; }
+        $len = length(sprintf("%u", $ref->{"EventCount"}));
+        if ($len > $width5) { $width5 = $len; }
       }
     }
 
     $i = 1;
 
     foreach $ref (@{$configuration{$file}}) {
-      print  DUMPFILE "Rule ";
-      printf DUMPFILE "%*s", $width1, $i;
-      print  DUMPFILE " line "; 
-      printf DUMPFILE "%*s", $width2, $ref->{"LineNo"}; 
-      print  DUMPFILE " matched "; 
-      printf DUMPFILE "%*s", $width3, $ref->{"MatchCount"}; 
-      print  DUMPFILE " events (", $ref->{"Desc"}, ")\n";
+      printf DUMPFILE "Rule %*u line %*u matched %*u events",
+        $width1, $i, $width2, $ref->{"LineNo"}, $width3, $ref->{"MatchCount"};
+      if ($ruleperf) {
+        printf DUMPFILE 
+          ", %*.*f seconds of CPU time spent for processing %*u events",
+          $width4, 2, $ref->{"CPUtime"}, $width5, $ref->{"EventCount"};
+      }
+      print  DUMPFILE " (", $ref->{"Desc"}, ")\n";
       ++$i;
     }
 
@@ -10429,7 +10516,7 @@ sub dump_data {
   print DUMPFILE '=' x 60, "\n";
 
   while (($key, $ref) = each(%corr_list)) { 
-    print_element(*DUMPFILE, $key, $ref);
+    print_operation(*DUMPFILE, $key, $ref);
     print DUMPFILE '-' x 60, "\n";
     ++$i; 
   }
@@ -10525,19 +10612,22 @@ sub dump_data {
 }
 
 
-# Parameters: par1 - reference to hash where element will be stored
-#             par2 - list element key
-#             par3 - reference to list element
-# Action: store given list element to the hash par1
+# Parameters: par1 - reference to hash where operation will be stored
+#             par2 - key of event correlation operation
+#             par3 - reference to event correlation operation
+# Action: store given event correlation operation to the hash par1, so 
+#         that it can be converted into JSON format (since perl is typeless 
+#         language, numeric context is set for some fields by adding 0, in 
+#         order to ensure their conversion into JSON numbers).
 
-sub convert_element {
+sub convert_operation {
 
   my($ref, $key, $oper) = @_;
   my($rule, $conffile, $id, $elem, $i, $j);
 
   $ref->{"key"} = $key;
-  $ref->{"starttime"} = $oper->{"StartTime"};
-  $ref->{"windowstart"} = $oper->{"Time"};
+  $ref->{"starttime"} = $oper->{"StartTime"} + 0;
+  $ref->{"windowstart"} = $oper->{"Time"} + 0;
 
   if ($oper->{"Window"}) {
     $ref->{"windowend"} = $oper->{"Time"} + $oper->{"Window"};
@@ -10548,7 +10638,7 @@ sub convert_element {
   $rule = $configuration{$conffile}->[$id];
 
   $ref->{"configfile"} = $conffile;
-  $ref->{"ruleid"} = $id;
+  $ref->{"ruleid"} = $id + 0;
 
   if ($oper->{"Type"} == SINGLE_W_SUPPRESS) {
  
@@ -10565,7 +10655,7 @@ sub convert_element {
     $ref->{"desc"} = $oper->{"Desc"};
     $ref->{"action"} = actionlist2str($oper->{"Action"});
 
-    $ref->{"window"} = $rule->{"Window"};
+    $ref->{"window"} = $rule->{"Window"} + 0;
 
   }
 
@@ -10595,7 +10685,7 @@ sub convert_element {
     $ref->{"desc2"} = $oper->{"Desc2"};
     $ref->{"action2"} = actionlist2str($oper->{"Action2"});
 
-    $ref->{"window"} = $rule->{"Window"};
+    $ref->{"window"} = $rule->{"Window"} + 0;
 
   }
 
@@ -10625,7 +10715,7 @@ sub convert_element {
     $ref->{"desc2"} = $oper->{"Desc2"};
     $ref->{"action2"} = actionlist2str($oper->{"Action2"});
 
-    $ref->{"window"} = $rule->{"Window"};
+    $ref->{"window"} = $rule->{"Window"} + 0;
 
   }
 
@@ -10645,8 +10735,8 @@ sub convert_element {
     $ref->{"action"} = actionlist2str($oper->{"Action"});
     $ref->{"action2"} = actionlist2str($oper->{"Action2"});
 
-    $ref->{"window"} = $rule->{"Window"};
-    $ref->{"threshold"} = $rule->{"Threshold"};
+    $ref->{"window"} = $rule->{"Window"} + 0;
+    $ref->{"threshold"} = $rule->{"Threshold"} + 0;
 
     if (exists($oper->{"SuppressMode"})) { 
       $ref->{"status"} = "threshold reached";
@@ -10654,7 +10744,11 @@ sub convert_element {
       $ref->{"status"} = "checking for threshold";
     }
 
-    $ref->{"eventtimes"} = $oper->{"Times"};
+    $ref->{"eventtimes"} = [];
+
+    foreach $elem (@{$oper->{"Times"}}) { 
+      push @{$ref->{"eventtimes"}}, $elem + 0; 
+    }
 
   }
 
@@ -10673,14 +10767,14 @@ sub convert_element {
     $ref->{"desc"} = $oper->{"Desc"};
     $ref->{"action"} = actionlist2str($oper->{"Action"});
 
-    $ref->{"window"} = $rule->{"Window"};
-    $ref->{"threshold"} = $rule->{"Threshold"};
+    $ref->{"window"} = $rule->{"Window"} + 0;
+    $ref->{"threshold"} = $rule->{"Threshold"} + 0;
 
     $ref->{"desc2"} = $oper->{"Desc2"};
     $ref->{"action2"} = actionlist2str($oper->{"Action2"});
 
-    $ref->{"window2"} = $rule->{"Window2"};
-    $ref->{"threshold2"} = $rule->{"Threshold2"};
+    $ref->{"window2"} = $rule->{"Window2"} + 0;
+    $ref->{"threshold2"} = $rule->{"Threshold2"} + 0;
 
     if (exists($oper->{"2ndPass"})) { 
       $ref->{"status"} = "checking for 2nd threshold";
@@ -10688,7 +10782,11 @@ sub convert_element {
       $ref->{"status"} = "checking for 1st threshold";
     }
 
-    $ref->{"eventtimes"} = $oper->{"Times"};
+    $ref->{"eventtimes"} = [];
+
+    foreach $elem (@{$oper->{"Times"}}) { 
+      push @{$ref->{"eventtimes"}}, $elem + 0; 
+    }
 
   }
 
@@ -10711,7 +10809,7 @@ sub convert_element {
     
       $ref->{"count$j"} = actionlist2str($rule->{"CountActionList"}->[$i]);
 
-      $ref->{"threshold$j"} = $rule->{"ThresholdList"}->[$i];
+      $ref->{"threshold$j"} = $rule->{"ThresholdList"}->[$i] + 0;
     }
 
     $ref->{"init"} = actionlist2str($oper->{"InitAction"});
@@ -10721,7 +10819,7 @@ sub convert_element {
     $ref->{"desc"} = $oper->{"Desc"};
     $ref->{"action"} = actionlist2str($oper->{"Action"});
 
-    $ref->{"window"} = $rule->{"Window"};
+    $ref->{"window"} = $rule->{"Window"} + 0;
 
     if (exists($oper->{"SuppressMode"})) { 
       $ref->{"status"} = "thresholds reached";
@@ -10733,8 +10831,8 @@ sub convert_element {
     $ref->{"eventpatterns"} = [];
 
     foreach $elem (@{$oper->{"AllTimes"}}) {
-      push @{$ref->{"eventtimes"}}, $elem->[0];
-      push @{$ref->{"eventpatterns"}}, $elem->[1]+1;
+      push @{$ref->{"eventtimes"}}, $elem->[0] + 0;
+      push @{$ref->{"eventpatterns"}}, $elem->[1] + 1;
     }
 
   }
@@ -10746,7 +10844,9 @@ sub convert_element {
 
 # Parameters: -
 # Action: save some information about the current state of the program
-#         to dump file.
+#         to dump file in JSON format (since perl is typeless language,
+#         numeric context is set for some fields by adding 0, in order
+#         to ensure their conversion into JSON numbers).
 
 sub dump_data_json {
 
@@ -10786,9 +10886,9 @@ sub dump_data_json {
   $data{"program"} = {};
 
   $data{"program"}->{"version"} = $SEC_VERSION;
-  $data{"program"}->{"startuptime"} = $startuptime;
-  $data{"program"}->{"confloadtime"} = $lastconfigload;
-  $data{"program"}->{"dumptime"} = $time;
+  $data{"program"}->{"startuptime"} = $startuptime + 0;
+  $data{"program"}->{"confloadtime"} = $lastconfigload + 0;
+  $data{"program"}->{"dumptime"} = $time + 0;
   $data{"program"}->{"rcfile"} = $rcfile_status;
   $data{"program"}->{"options"} = $sec_options;
 
@@ -10798,9 +10898,9 @@ sub dump_data_json {
   $egid = shift @gidlist;
   %gids = map { $_ => 1 } @gidlist;
 
-  $data{"program"}->{"euid"} = $>;
-  $data{"program"}->{"egid"} = $egid;
-  $data{"program"}->{"sgid"} = [ keys %gids ];
+  $data{"program"}->{"euid"} = $> + 0;
+  $data{"program"}->{"egid"} = $egid + 0;
+  $data{"program"}->{"sgid"} = [ map { $_ + 0 } keys %gids ];
 
   # environment info
 
@@ -10813,11 +10913,11 @@ sub dump_data_json {
   ($user, $system, $cuser, $csystem) = times();
 
   $data{"perf"}->{"runtime"} = $time - $startuptime;
-  $data{"perf"}->{"user"} = $user;
-  $data{"perf"}->{"system"} = $system;
-  $data{"perf"}->{"childuser"} = $cuser;
-  $data{"perf"}->{"childsystem"} = $csystem;
-  $data{"perf"}->{"lines"} = $processedlines;
+  $data{"perf"}->{"user"} = $user + 0;
+  $data{"perf"}->{"system"} = $system + 0;
+  $data{"perf"}->{"childuser"} = $cuser + 0;
+  $data{"perf"}->{"childsystem"} = $csystem + 0;
+  $data{"perf"}->{"lines"} = $processedlines + 0;
 
   # rule usage statistics
 
@@ -10826,14 +10926,20 @@ sub dump_data_json {
   foreach $file (@conffiles) {
 
     $data{"rulestats"}->{$file} = {};
-    $data{"rulestats"}->{$file}->{"loadtime"} = $config_ltimes{$file};
+    $data{"rulestats"}->{$file}->{"loadtime"} = $config_ltimes{$file} + 0;
     $data{"rulestats"}->{$file}->{"stats"} = [];
 
     foreach $ref (@{$configuration{$file}}) {
       push @{$data{"rulestats"}->{$file}->{"stats"}}, 
-                                 { "ruleline" => $ref->{"LineNo"}, 
-                                   "matches" => $ref->{"MatchCount"},
+                                 { "ruleline" => $ref->{"LineNo"} + 0, 
+                                   "matches" => $ref->{"MatchCount"} + 0,
                                    "desc" => $ref->{"Desc"} };
+      if ($ruleperf) {
+        $data{"rulestats"}->{$file}->{"stats"}->[-1]->{"events"} =
+                                                $ref->{"EventCount"} + 0;
+        $data{"rulestats"}->{$file}->{"stats"}->[-1]->{"cputime"} =
+                                                $ref->{"CPUtime"} + 0;
+      }
     }
 
   }
@@ -10855,18 +10961,23 @@ sub dump_data_json {
         $data{"inputs"}->{$file}->{"type"} = "regular file";
         # sysseek returns a string "0 but true" for offset 0, 
         # so force numeric context by adding 0
-        $data{"inputs"}->{$file}->{"offset"} = defined($fpos)?$fpos+0:"undef"; 
-        $data{"inputs"}->{$file}->{"size"} = scalar(@stat)?$stat[7]:"undef"; 
+        if (defined($fpos)) { 
+          $data{"inputs"}->{$file}->{"offset"} = $fpos + 0; 
+        } 
+        if (scalar(@stat)) { 
+          $data{"inputs"}->{$file}->{"size"} = $stat[7] + 0;
+        } 
       } else {
         $data{"inputs"}->{$file}->{"type"} = "pipe";
       }
+      # in the case of stdin, dev and inode equal to string value "-"
       $data{"inputs"}->{$file}->{"dev"} = $inputsrc{$file}->{"dev"}; 
       $data{"inputs"}->{$file}->{"inode"} = $inputsrc{$file}->{"inode"}; 
     } else { 
       $data{"inputs"}->{$file}->{"status"} = "Closed";
     }
 
-    $data{"inputs"}->{$file}->{"lines"} = $inputsrc{$file}->{"lines"};
+    $data{"inputs"}->{$file}->{"lines"} = $inputsrc{$file}->{"lines"} + 0;
 
     if ($intcontexts) {
       $data{"inputs"}->{$file}->{"context"} = $inputsrc{$file}->{"context"};
@@ -10881,7 +10992,7 @@ sub dump_data_json {
   if ($jointbuf) {
 
     $data{"buffer"}->{"bufmode"} = "joint buffer for all input sources";
-    $data{"buffer"}->{"bufsize"} = $bufsize;
+    $data{"buffer"}->{"bufsize"} = $bufsize + 0;
     $data{"buffer"}->{"lastlines"} = [];
     $data{"buffer"}->{"lastinputs"} = [];
 
@@ -10899,7 +11010,7 @@ sub dump_data_json {
   } else {
 
     $data{"buffer"}->{"bufmode"} = "separate buffer for each input source";
-    $data{"buffer"}->{"bufsize"} = $bufsize;
+    $data{"buffer"}->{"bufsize"} = $bufsize + 0;
     $data{"buffer"}->{"lastlines"} = {};
 
     foreach $file (keys %input_buffers) {
@@ -10930,7 +11041,7 @@ sub dump_data_json {
   foreach $ref (@pending_events) { 
     $data{"pendingevents"}->[$i] = {};
     $data{"pendingevents"}->[$i]->{"event"} = $ref->[1];
-    $data{"pendingevents"}->[$i]->{"time"} = $ref->[0];
+    $data{"pendingevents"}->[$i]->{"time"} = $ref->[0] + 0;
     if ($intcontexts) { 
       $data{"pendingevents"}->[$i]->{"context"} = $ref->[2];
     }
@@ -10947,7 +11058,7 @@ sub dump_data_json {
 
   while (($key, $ref) = each(%corr_list)) { 
     $data{"operations"}->{$key} = {};
-    convert_element($data{"operations"}->{$key}, $key, $ref);
+    convert_operation($data{"operations"}->{$key}, $key, $ref);
   }
 
   # list of active contexts
@@ -10966,8 +11077,8 @@ sub dump_data_json {
       $reported_names{$name} = 1;
     }
 
-    $data{"contexts"}->[$i]->{"creationtime"} = $ref->{"Time"};
-    $data{"contexts"}->[$i]->{"lifetime"} = $ref->{"Window"};
+    $data{"contexts"}->[$i]->{"creationtime"} = $ref->{"Time"} + 0;
+    $data{"contexts"}->[$i]->{"lifetime"} = $ref->{"Window"} + 0;
 
     if (scalar(@{$ref->{"Action"}})) {
       $data{"contexts"}->[$i]->{"action"} = actionlist2str($ref->{"Action"});
@@ -10984,7 +11095,7 @@ sub dump_data_json {
 
   while (($key, $ref) = each(%children)) { 
     $data{"children"}->{$key} = {};
-    $data{"children"}->{$key}->{"pid"} = $key; 
+    $data{"children"}->{$key}->{"pid"} = $key + 0; 
     $data{"children"}->{$key}->{"cmdline"} = $ref->{"cmd"}; 
     if ($ref->{"open"}) { 
       $data{"children"}->{$key}->{"status"} = "Connected to pipe input";
@@ -13013,6 +13124,7 @@ sub read_options {
   $username = undef;
   @groupnames = ();
   $umask = undef;
+  $ruleperf = 0;
   $dumpfts = 0;
   $dumpfjson = 0;
   $quoting = 0;
@@ -13052,6 +13164,7 @@ sub read_options {
               "user=s" => \$username,
               "group=s" => \@groupnames,
               "umask=o" => \$umask,
+              "ruleperf!" => \$ruleperf,
               "dumpfts!" => \$dumpfts,
               "dumpfjson!" => \$dumpfjson,
               "quoting!" => \$quoting,
