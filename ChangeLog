@@ -1,3 +1,26 @@
+--- version 2.9.alpha1
+
+* added support for 'cmdexec', 'spawnexec', 'cspawnexec', 'pipeexec'
+  and 'reportexec' actions.
+
+* added support for 'shell' field in SingleWithScript rules.
+
+* added support for 'egptype' and 'egpattern' fields in EventGroup rules.
+
+* added support for %.sp built-in action list variable.
+
+* added ipv6 support for 'tcpsock' and 'udpsock' actions.
+
+* bugfixes for 'write', 'writen', 'owritecl', 'udgram', 'ustream',
+  'udpsock' and 'tcpsock' actions.
+
+* starting from this version, a program provided with --timeout-script
+  command line option is executed without shell interpretation.
+
+* starting from this version, SEC uses Perl JSON::PP module instead of 
+  JSON module (JSON::PP is included in the standard Perl installation).
+
+
 --- version 2.8.3
 
 * added support for collecting rule performance data, and

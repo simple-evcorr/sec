@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.8.3 - sec
-# Copyright (C) 2000-2020 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.9.alpha1 - sec
+# Copyright (C) 2000-2021 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -111,8 +111,10 @@ use vars qw(
   $lastcleanuptime
   $lastconfigload
   $logfile
+  $loghandle
   $logopen
   @maincfiles
+  @matchegrpfunc
   @matchfunc
   @matchrulefunc
   $openlog
@@ -169,10 +171,10 @@ use Fcntl;
 use Socket;
 use IO::Handle;
 
-# check if Sys::Syslog and JSON modules are available
+# check if Sys::Syslog and JSON::PP modules are available
 
 $SYSLOGAVAIL = eval { require Sys::Syslog };
-$JSONAVAIL = eval { require JSON };
+$JSONAVAIL = eval { require JSON::PP };
 
 # check if the platform is win32
 
@@ -180,8 +182,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.8.3";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2020 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.alpha1";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2021 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -287,47 +289,52 @@ use constant CLOSEUDP		=> 11;
 use constant TCPSOCK		=> 12;
 use constant CLOSETCP		=> 13;
 use constant SHELLCOMMAND	=> 14;
-use constant SPAWN		=> 15;
-use constant CSPAWN		=> 16;
-use constant PIPE		=> 17;
-use constant CREATECONTEXT	=> 18;
-use constant DELETECONTEXT	=> 19;
-use constant OBSOLETECONTEXT	=> 20;
-use constant SETCONTEXT		=> 21;
-use constant ALIAS		=> 22;
-use constant UNALIAS		=> 23;
-use constant ADD		=> 24;
-use constant PREPEND		=> 25;
-use constant FILL		=> 26;
-use constant REPORT		=> 27;
-use constant COPYCONTEXT	=> 28;
-use constant EMPTYCONTEXT	=> 29;
-use constant POP		=> 30;
-use constant SHIFT		=> 31;
-use constant EXISTS		=> 32;
-use constant GETSIZE		=> 33;
-use constant GETALIASES		=> 34;
-use constant GETLIFETIME	=> 35;
-use constant SETLIFETIME	=> 36;
-use constant GETCTIME		=> 37;
-use constant SETCTIME		=> 38;
-use constant EVENT		=> 39;
-use constant TEVENT		=> 40;
-use constant CEVENT		=> 41;
-use constant RESET		=> 42;
-use constant GETWINPOS		=> 43;
-use constant SETWINPOS		=> 44;
-use constant ASSIGN		=> 45;
-use constant ASSIGNSQ		=> 46;
-use constant FREE		=> 47;
-use constant EVAL		=> 48;
-use constant CALL		=> 49;
-use constant LCALL		=> 50;
-use constant REWRITE		=> 51;
-use constant ADDINPUT		=> 52;
-use constant DROPINPUT		=> 53;
-use constant SIGEMUL		=> 54;
-use constant VARIABLESET	=> 55;
+use constant COMMANDEXEC	=> 15;
+use constant SPAWN		=> 16;
+use constant SPAWNEXEC		=> 17;
+use constant CSPAWN		=> 18;
+use constant CSPAWNEXEC		=> 19;
+use constant PIPE		=> 20;
+use constant PIPEEXEC		=> 21;
+use constant CREATECONTEXT	=> 22;
+use constant DELETECONTEXT	=> 23;
+use constant OBSOLETECONTEXT	=> 24;
+use constant SETCONTEXT		=> 25;
+use constant ALIAS		=> 26;
+use constant UNALIAS		=> 27;
+use constant ADD		=> 28;
+use constant PREPEND		=> 29;
+use constant FILL		=> 30;
+use constant REPORT		=> 31;
+use constant REPORTEXEC		=> 32;
+use constant COPYCONTEXT	=> 33;
+use constant EMPTYCONTEXT	=> 34;
+use constant POP		=> 35;
+use constant SHIFT		=> 36;
+use constant EXISTS		=> 37;
+use constant GETSIZE		=> 38;
+use constant GETALIASES		=> 39;
+use constant GETLIFETIME	=> 40;
+use constant SETLIFETIME	=> 41;
+use constant GETCTIME		=> 42;
+use constant SETCTIME		=> 43;
+use constant EVENT		=> 44;
+use constant TEVENT		=> 45;
+use constant CEVENT		=> 46;
+use constant RESET		=> 47;
+use constant GETWINPOS		=> 48;
+use constant SETWINPOS		=> 49;
+use constant ASSIGN		=> 50;
+use constant ASSIGNSQ		=> 51;
+use constant FREE		=> 52;
+use constant EVAL		=> 53;
+use constant CALL		=> 54;
+use constant LCALL		=> 55;
+use constant REWRITE		=> 56;
+use constant ADDINPUT		=> 57;
+use constant DROPINPUT		=> 58;
+use constant SIGEMUL		=> 59;
+use constant VARIABLESET	=> 60;
 use constant IF			=> 100;
 use constant WHILE		=> 101;
 use constant BREAK		=> 102;
@@ -390,16 +397,16 @@ use constant DEFAULT_DUMPFILE		=> "/tmp/sec.dump";
 
 # Parameters: par1 - name of the logfile
 # Action: logfile will be opened. Filehandle of the logfile will be
-#         saved to the global filehandle LOGFILE.
+#         saved to the global filehandle $loghandle.
 
 sub open_logfile {
 
   my($logfile) = $_[0];
 
-  if (open(LOGFILE, ">>$logfile")) { 
-    select LOGFILE;
+  if (open($loghandle, ">>$logfile")) { 
+    select($loghandle);
     $| = 1;
-    select STDOUT;
+    select(STDOUT);
     $logopen = 1;
   } else {
     print STDERR "Can't open logfile $logfile ($!)\n";
@@ -435,7 +442,7 @@ sub open_syslog {
 #             par2, par3, ... - strings to be logged
 # Action: if par1 is smaller or equal to the current logging level (i.e.,
 #         the message must be logged), then strings par2, par3, ... 
-#         will be equipped with timestamp and written to LOGFILE and/or 
+#         will be equipped with timestamp and written to $loghandle and/or 
 #         forwarded to the system logger as a single line. If STDERR is 
 #         connected to terminal, message will also be written there.
 
@@ -454,7 +461,7 @@ sub log_msg {
 
   if ($logopen) {
     $ltime = localtime(time());
-    print LOGFILE "$ltime: $msg\n"; 
+    print $loghandle "$ltime: $msg\n"; 
   }
 
   # if call to syslog() fails (e.g., because syslog daemon is going through 
@@ -836,6 +843,70 @@ sub analyze_varmap {
 }
 
 
+# Parameters: par1 - event group pattern type (string)
+#             par2 - event group pattern
+#             par3 - the name of the configuration file
+#             par4 - line number in configuration file
+# Action: par1 and par2 will be analyzed and tuple of integers
+#         (pattern type, compiled pattern) will be returned.
+#         If errors are found when analyzing par1 and par2, error message 
+#         about improper line par4 in configuration file will be logged.
+
+sub analyze_eventgroup_pattern {
+
+  my($pattype, $pat, $conffile, $lineno) = @_;
+  my($negate, $pat2);
+  my($evalok, $retval);
+
+  if ($pattype =~ /^(n?)regexp$/i) {
+
+    if (length($1))  { $negate = 1; }  else { $negate = 0; }
+
+    $pat2 = eval { qr/$pat/ };
+
+    if ($@) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Invalid regular expression '$pat':", $@);
+      return (INVALIDVALUE, INVALIDVALUE);
+    }
+
+    if ($negate) { return (NREGEXP, $pat2); } 
+      else { return (REGEXP, $pat2); }
+
+  } elsif ($pattype =~ /^(n?)substr$/i) {
+
+    if (length($1))  { $negate = 1; }  else { $negate = 0; }
+
+    subst_specchar($pat);
+
+    if ($negate) { return (NSUBSTR, $pat); } 
+      else { return (SUBSTR, $pat); }
+
+  } elsif ($pattype =~ /^(n?)perlfunc$/i) {
+
+    if (length($1))  { $negate = 1; }  else { $negate = 0; }
+
+    ($evalok, $retval) = SEC::call_eval($pat, 0);
+
+    if (!$evalok || !defined($retval) || ref($retval) ne "CODE") {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Invalid function '$pat', eval didn't return a code reference:", 
+              defined($retval)?"$retval":"undef");
+      return (INVALIDVALUE, INVALIDVALUE);
+    }
+
+    if ($negate) { return (NPERLFUNC, $retval); } 
+      else { return (PERLFUNC, $retval); }
+
+  }
+
+  log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+          "Invalid event group pattern type '$pattype'");
+  return (INVALIDVALUE, INVALIDVALUE);
+
+}
+
+
 # Parameters: par1, par2, .. - strings
 # Action: for each string, remove the outer pair of parens and backslashes 
 #         from the front of other parens
@@ -973,74 +1044,88 @@ sub analyze_action {
     else { return (CLOSETCP, $peer); }
   }
 
-  elsif ($action =~ /^shellcmd\s+(.*\S)$/i) { 
+  elsif ($action =~ /^(shellcmd|cmdexec)\s+(.*\S)$/i) { 
 
-    $cmdline = $1;
-    process_action_parens($cmdline);
-
-    if (!length($cmdline)) {
-      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Empty commandline given for shellcmd action");
-      return INVALIDVALUE;
-    }
-
-    return (SHELLCOMMAND, $cmdline); 
-  }
-
-  elsif ($action =~ /^spawn\s+(.*\S)$/i) { 
-
-    if ($WIN32) {
-      log_msg(LOG_ERR, "spawn action is not supported on Win32");
-      return INVALIDVALUE;
-    }
-
-    $cmdline = $1;
-    process_action_parens($cmdline);
-
-    if (!length($cmdline)) {
-      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Empty commandline given for spawn action");
-      return INVALIDVALUE;
-    }
-
-    return (SPAWN, $cmdline); 
-  }
-
-  elsif ($action =~ /^cspawn\s+(\S+)\s+(.*\S)$/i) { 
-
-    if ($WIN32) {
-      log_msg(LOG_ERR, "cspawn action is not supported on Win32");
-      return INVALIDVALUE;
-    }
-
-    $context = $1;
+    $keyword = lc($1);
     $cmdline = $2;
+    process_action_parens($cmdline);
+
+    if (!length($cmdline)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty commandline given for $keyword action");
+      return INVALIDVALUE;
+    }
+
+    if ($keyword eq "shellcmd") { return (SHELLCOMMAND, $cmdline); }
+    else { return (COMMANDEXEC, [ split(' ', $cmdline) ]); }
+  }
+
+  elsif ($action =~ /^(spawn|spawnexec)\s+(.*\S)$/i) { 
+
+    $keyword = lc($1);
+    $cmdline = $2;
+
+    if ($WIN32) {
+      log_msg(LOG_ERR, "$keyword action is not supported on Win32");
+      return INVALIDVALUE;
+    }
+
+    process_action_parens($cmdline);
+
+    if (!length($cmdline)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty commandline given for $keyword action");
+      return INVALIDVALUE;
+    }
+
+    if ($keyword eq "spawn") { return (SPAWN, $cmdline); }
+    else { return (SPAWNEXEC, [ split(' ', $cmdline) ]); }
+  }
+
+  elsif ($action =~ /^(cspawn|cspawnexec)\s+(\S+)\s+(.*\S)$/i) { 
+
+    $keyword = lc($1);
+    $context = $2;
+    $cmdline = $3;
+
+    if ($WIN32) {
+      log_msg(LOG_ERR, "$keyword action is not supported on Win32");
+      return INVALIDVALUE;
+    }
+
     process_action_parens($context, $cmdline);
 
     if (!length($context)) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Empty context name given for cspawn action");
+              "Empty context name given for $keyword action");
       return INVALIDVALUE;
     }
 
     if (!length($cmdline)) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Empty commandline given for cspawn action");
+              "Empty commandline given for $keyword action");
       return INVALIDVALUE;
     }
 
-    return (CSPAWN, $context, $cmdline); 
+    if ($keyword eq "cspawn") { return (CSPAWN, $context, $cmdline); }
+    else { return (CSPAWNEXEC, $context, [ split(' ', $cmdline) ]); }
   }
 
-  elsif ($action =~ /^pipe\s+'([^']*)'(?:\s+(.*\S))?$/i) {
+  elsif ($action =~ /^(pipe|pipeexec)\s+'([^']*)'(?:\s+(.*\S))?$/i) {
 
-    $event = $1;
-    $cmdline = defined($2)?$2:"";
+    $keyword = lc($1);
+    $event = $2;
+    $cmdline = defined($3)?$3:"";
+
     process_action_parens($event, $cmdline);
 
     if (!length($event))  { $event = "%s"; }
 
-    return (PIPE, $event, $cmdline); 
+    # note that if commandline is not provided, $cmdline is set to
+    # empty string, and in this case split() produces an empty list
+
+    if ($keyword eq "pipe") { return (PIPE, $event, $cmdline); }
+    else { return (PIPEEXEC, $event, [ split(' ', $cmdline) ]); }
   }
 
   elsif ($action =~ /^create(?:\s+(\S+)(?:\s+(\S+)(?:\s+(.*\S))?)?)?$/i) { 
@@ -1147,19 +1232,25 @@ sub analyze_action {
     else { return (FILL, $context, $event); }
   }
 
-  elsif ($action =~ /^report\s+(\S+)(?:\s+(.*\S))?$/i) {
+  elsif ($action =~ /^(report|reportexec)\s+(\S+)(?:\s+(.*\S))?$/i) {
 
-    $context = $1;
-    $cmdline = defined($2)?$2:"";
+    $keyword = lc($1);
+    $context = $2;
+    $cmdline = defined($3)?$3:"";
+
     process_action_parens($context, $cmdline);
 
     if (!length($context)) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Empty context name given for report action");
+              "Empty context name given for $keyword action");
       return INVALIDVALUE;
     }
 
-    return (REPORT, $context, $cmdline); 
+    # note that if commandline is not provided, $cmdline is set to
+    # empty string, and in this case split() produces an empty list
+
+    if ($keyword eq "report") { return (REPORT, $context, $cmdline); }
+    else { return (REPORTEXEC, $context, [ split(' ', $cmdline) ]); }
   }
 
   elsif ($action =~ /^(copy|pop|shift)\s+(\S+)\s+(\S+)$/i) {
@@ -1480,6 +1571,9 @@ sub analyze_action {
       return INVALIDVALUE;
     }
 
+    # note that if parameters are not provided, $params is set to
+    # empty string, and in this case split() produces an empty list
+
     return (CALL, substr($variable, 1), 
                   substr($codeptr, 1), [ split(' ', $params) ]); 
   }
@@ -1508,6 +1602,9 @@ sub analyze_action {
               defined($codeptr)?"$codeptr":"undef");
       return INVALIDVALUE;
     }
+
+    # note that if parameters are not provided, $params is set to
+    # empty string, and in this case split() produces an empty list
 
     return (LCALL, substr($variable, 1), $codeptr, [ split(' ', $params) ], $op); 
   }
@@ -2367,8 +2464,8 @@ sub check_rule {
   elsif ($type eq "SINGLEWITHSCRIPT") {
 
     %keywords = ("type" => 1, "continue" => 0, "ptype" => 1, "pattern" => 1,
-                 "varmap" => 0, "context" => 0, "script" => 1, "desc" => 1, 
-                 "action" => 1, "action2" => 0);
+                 "varmap" => 0, "context" => 0, "script" => 1, "shell" => 0,
+                 "desc" => 1, "action" => 1, "action2" => 0);
 
     if (missing_keywords($ref, \%keywords, $type, 
                          $conffile, $lineno))  { return 0; }
@@ -2377,7 +2474,6 @@ sub check_rule {
               "Type" => SINGLE_W_SCRIPT,
               "VarMap" => {},
               "Context" => [],
-              "Script" => $ref->{"script"},
               "Desc" => $ref->{"desc"},
               "Action" => [],
               "Action2" => [],
@@ -2414,6 +2510,20 @@ sub check_rule {
       } 
       if (volatile_context($rule->{"Context"}, '$'))
         { $rule->{"ContVolat"} = 1; }
+    }
+
+    if (exists($ref->{"shell"})) {
+      if (uc($ref->{"shell"}) eq "YES") { 
+        $rule->{"Script"} = $ref->{"script"};
+      } elsif (uc($ref->{"shell"}) eq "NO") { 
+        $rule->{"Script"} = [ split(' ', $ref->{"script"}) ];
+      } else { 
+        log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+                "Invalid shell value '", $ref->{"shell"}, "'");
+        return 0; 
+      }
+    } else {
+      $rule->{"Script"} = $ref->{"script"};
     }
 
     if (!analyze_actionlist($ref->{"action"}, $rule->{"Action"}, 
@@ -2978,7 +3088,8 @@ sub check_rule {
     }
 
     %keywords = ("type" => 1,  "desc" => 1, "action" => 1, "multact" => 0,
-                 "init" => 0, "slide" => 0, "end" => 0, "window" => 1);
+                 "init" => 0, "slide" => 0, "end" => 0, "window" => 1,
+                 "egptype" => 0, "egpattern" => 0);
 
     for ($i = 0; $i < $evtnum; ++$i) {
       $j = ($i==0)?"":($i+1);
@@ -3140,6 +3251,20 @@ sub check_rule {
         return 0; 
       }
     } 
+
+    if (exists($ref->{"egptype"}) && !exists($ref->{"egpattern"}) ||
+        !exists($ref->{"egptype"}) && exists($ref->{"egpattern"})) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Keywords 'egptype' and 'egpattern' must be used together");
+      return 0; 
+    }
+
+    if (exists($ref->{"egptype"}) && exists($ref->{"egpattern"})) {
+      ($rule->{"EGrpPatType"}, $rule->{"EGrpPattern"}) = 
+        analyze_eventgroup_pattern($ref->{"egptype"}, $ref->{"egpattern"}, 
+                                   $conffile, $lineno);
+      if ($rule->{"EGrpPatType"} == INVALIDVALUE)  { return 0; }
+    }
 
     $configuration{$conffile}->[$number] = $rule;
 
@@ -3563,7 +3688,7 @@ sub resolve_labels {
 sub read_configfile {
 
   my($conffile) = $_[0];
-  my($linebuf, $line, $i, $cont, $rulestart);
+  my($fh, $linebuf, $line, $i, $cont, $rulestart);
   my($keyword, $value, $ret, $file_status);
   my(%rule, %label2rule);
 
@@ -3572,7 +3697,7 @@ sub read_configfile {
 
   log_msg(LOG_NOTICE, "Reading configuration from $conffile");
 
-  if (!open(CONFFILE, "$conffile")) {
+  if (!open($fh, $conffile)) {
     log_msg(LOG_ERR, "Can't open configuration file $conffile ($!)");
     return 0;
   }
@@ -3587,7 +3712,7 @@ sub read_configfile {
 
     # read next line from file
 
-    $linebuf = <CONFFILE>;
+    $linebuf = <$fh>;
 
     # check if the line belongs to previous line; if it does, form a 
     # single line from them and start the loop again (i.e. we will
@@ -3676,7 +3801,7 @@ sub read_configfile {
     log_msg(LOG_WARN, "No valid rules found in configuration file $conffile");
   }
 
-  close(CONFFILE);
+  close($fh);
 
   return $file_status;
 
@@ -3913,6 +4038,7 @@ sub set_actionlist_char_var {
   $variables{".nl"} = "\n";
   $variables{".cr"} = "\r";
   $variables{".tab"} = "\t";
+  $variables{".sp"} = " ";
 
   for ($i = 0; $i < 32; ++$i) { $variables{".chr$i"} = chr($i); }
 
@@ -4007,6 +4133,9 @@ sub substitute_actionlist_var {
 #             par2 - 'collect output' flag
 #             par3 - context
 # Action: commandline par1 is executed with perl exec() in a child process. 
+#         If par1 is a reference to an array, commandline in array is
+#         executed without shell interpretation; otherwise commandline is
+#         interpreted with shell if it contains shell metacharacters.
 #         The function creates an entry in the %children hash for the child 
 #         process and returns its pid. If process creation failed, undef is
 #         returned. If par2 is defined and non-zero, standard output of the
@@ -4016,8 +4145,20 @@ sub substitute_actionlist_var {
 
 sub shell_cmd {
 
-  my($cmd, $collect_output, $context) = @_;
-  my($pid, $read, $write);
+  my($cmdline, $collect_output, $context) = @_;
+  my($cmd, $shell, $pid, $read, $write);
+
+  # if the commandline has been provided as a reference to an array,
+  # configure its execution without shell interpretation; also, set 
+  # $cmd variable to the entire commandline string
+
+  if (ref($cmdline) eq "ARRAY") {
+    $cmd = join(" ", @{$cmdline});
+    $shell = 0;
+  } else {
+    $cmd = $cmdline;
+    $shell = 1;
+  }
 
   # set up a pipe before calling fork()
 
@@ -4091,9 +4232,18 @@ sub shell_cmd {
   if (exists($terminate{$$}))  { exit(0); }
 
   # execute commandline - by default exec() keeps file descriptors 0..2 open 
-  # and closes other descriptors (see $^F special variable in perl docs)
+  # and closes other descriptors (see $^F special variable in perl docs);
+  # if commandline must be executed without shell interpretation, call
+  # exec() with list of commandline arguments and provide the first element
+  # of the list as indirect object { $cmdline->[0] } (that disables shell
+  # interpretation even if list has one element)
 
-  exec("$cmd");
+  if ($shell) { 
+    exec($cmdline); 
+  } else { 
+    exec { $cmdline->[0] } @{$cmdline};
+  }
+
   exit(1);
   
 }
@@ -4107,6 +4257,9 @@ sub shell_cmd {
 #         Writing is synchronous (blocking) and hence the need for a separate
 #         process. The grandchild has its standard input connected to the read
 #         end of the pipe and executes the commandline with perl exec().
+#         If par1 is a reference to an array, commandline in array is
+#         executed without shell interpretation; otherwise commandline is
+#         interpreted with shell if it contains shell metacharacters.
 #         The function creates an entry in the %children hash for the child 
 #         process and returns its pid. If child process creation failed, undef
 #         is returned. After the commandline has completed, the child process 
@@ -4114,8 +4267,20 @@ sub shell_cmd {
 
 sub pipe_cmd {
 
-  my($cmd, $ref) = @_;
-  my($pid, $read, $write, $elem, $p);
+  my($cmdline, $ref) = @_;
+  my($cmd, $shell, $pid, $read, $write, $elem, $p);
+
+  # if the commandline has been provided as a reference to an array,
+  # configure its execution without shell interpretation; also, set 
+  # $cmd variable to the entire commandline string
+
+  if (ref($cmdline) eq "ARRAY") {
+    $cmd = join(" ", @{$cmdline});
+    $shell = 0;
+  } else {
+    $cmd = $cmdline;
+    $shell = 1;
+  }
 
   # try to create a child process and return undef, if fork failed;
   # if fork was successful and we are in parent process, return the 
@@ -4180,9 +4345,18 @@ sub pipe_cmd {
     if (exists($terminate{$$}))  { exit(0); }
 
     # execute commandline - by default exec() keeps file descriptors 0..2 open 
-    # and closes other descriptors (see $^F special variable in perl docs)
+    # and closes other descriptors (see $^F special variable in perl docs);
+    # if commandline must be executed without shell interpretation, call
+    # exec() with list of commandline arguments and provide the first element
+    # of the list as indirect object { $cmdline->[0] } (that disables shell
+    # interpretation even if list has one element)
 
-    exec("$cmd");
+    if ($shell) { 
+      exec($cmdline); 
+    } else { 
+      exec { $cmdline->[0] } @{$cmdline};
+    }
+
     exit(1);
   }
 
@@ -4190,7 +4364,7 @@ sub pipe_cmd {
   # close the read end of the pipe and make the write end unbuffered
 
   close($read);
-  select $write;
+  select($write);
   $| = 1;
 
   # Set a new signal handler for SIGTERM that forwards it to child process 
@@ -4332,15 +4506,20 @@ sub execute_write_action {
 
   for (;;) {
 
+    # if the event contains perl wide characters, syswrite() will die, 
+    # thus eval is used for calling it
+
     if ($action == WRITE) {
-      $nbytes = syswrite($output_files{$file}, "$event\n");
       $len = length($event) + 1;
+      $nbytes = eval { syswrite($output_files{$file}, "$event\n") };
     } else {
-      $nbytes = syswrite($output_files{$file}, "$event");
       $len = length($event);
+      $nbytes = eval { syswrite($output_files{$file}, "$event") };
     }
    
-    if (!defined($nbytes)) {
+    if ($@) {
+      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($@)");
+    } elsif (!defined($nbytes)) {
       if ($! == EINTR)  { next; }
       log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($!)");
       delete $output_files{$file};
@@ -4421,9 +4600,14 @@ sub execute_owritecl_action {
 
   for (;;) {
 
-    $nbytes = syswrite($handle, $event);
+    # if the event contains perl wide characters, syswrite() will die, 
+    # thus eval is used for calling it
+
+    $nbytes = eval { syswrite($handle, $event) };
     
-    if (!defined($nbytes)) {
+    if ($@) {
+      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($@)");
+    } elsif (!defined($nbytes)) {
       if ($! == EINTR)  { next; }
       log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($!)");
     } elsif ($nbytes != length($event)) {
@@ -4460,9 +4644,15 @@ sub execute_udgram_action {
 
     for (;;) {
 
-      $nbytes = send($output_udgram{$file}, $event, 0);
+      # if the event contains perl wide characters, send() will die, 
+      # thus eval is used for calling it
+
+      $nbytes = eval { send($output_udgram{$file}, $event, 0) };
   
-      if (!defined($nbytes)) {
+      if ($@) {
+        log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($@)");
+        return 3;
+      } elsif (!defined($nbytes)) {
         if ($! == EINTR)  { next; }
         log_msg(LOG_DEBUG, 
                 "Could not write event '$event' to '$file' ($!), retrying");
@@ -4501,9 +4691,14 @@ sub execute_udgram_action {
 
   for (;;) {
 
-    $nbytes = send($output_udgram{$file}, $event, 0);
+    # if the event contains perl wide characters, send() will die, 
+    # thus eval is used for calling it
 
-    if (!defined($nbytes)) {
+    $nbytes = eval { send($output_udgram{$file}, $event, 0) };
+
+    if ($@) {
+      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($@)");
+    } elsif (!defined($nbytes)) {
       if ($! == EINTR)  { next; }
       log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($!)");
       delete $output_udgram{$file};
@@ -4560,9 +4755,15 @@ sub execute_ustream_action {
 
     for (;;) {
 
-      $nbytes = send($output_ustream{$file}, $event, 0);
+      # if the event contains perl wide characters, send() will die, 
+      # thus eval is used for calling it
 
-      if (!defined($nbytes)) {
+      $nbytes = eval { send($output_ustream{$file}, $event, 0) };
+
+      if ($@) {
+        log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($@)");
+        return 3;
+      } elsif (!defined($nbytes)) {
         if ($! == EINTR)  { next; }
         log_msg(LOG_DEBUG, 
                 "Could not write event '$event' to '$file' ($!), retrying");
@@ -4601,9 +4802,14 @@ sub execute_ustream_action {
 
   for (;;) {
 
-    $nbytes = send($output_ustream{$file}, $event, 0);
+    # if the event contains perl wide characters, send() will die, 
+    # thus eval is used for calling it
 
-    if (!defined($nbytes)) {
+    $nbytes = eval { send($output_ustream{$file}, $event, 0) };
+
+    if ($@) {
+      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($@)");
+    } elsif (!defined($nbytes)) {
       if ($! == EINTR)  { next; }
       log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($!)");
       delete $output_ustream{$file};
@@ -4640,6 +4846,7 @@ sub execute_udpsock_action {
   my($actionlist, $text, $i) = @_;
   my($peer, $handle, $event, $nbytes);
   my($host, $port, $iaddr, $paddr);
+  my($err, $addrinfo, @addrinfo, %hints);
 
   $peer = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -4662,9 +4869,16 @@ sub execute_udpsock_action {
 
     for (;;) {
 
-      $nbytes = send($output_udpsock{$peer}, $event, 0);
+      # if the event contains perl wide characters, send() will die, 
+      # thus eval is used for calling it
 
-      if (!defined($nbytes)) {
+      $nbytes = eval { send($output_udpsock{$peer}, $event, 0) };
+
+      if ($@) {
+        log_msg(LOG_DEBUG, 
+                "Error when sending event '$event' to UDP peer '$peer' ($@)");
+        return 3;
+      } elsif (!defined($nbytes)) {
         if ($! == EINTR)  { next; }
         log_msg(LOG_DEBUG, 
         "Could not send event '$event' to UDP peer '$peer' ($!), retrying");
@@ -4689,21 +4903,79 @@ sub execute_udpsock_action {
 
   $host = $1;
   $port = $2;
-  $iaddr = inet_aton($host);
 
-  if (!defined($iaddr)) {
-    log_msg(LOG_WARN,
-    "Can't connect to UDP peer '$peer' for sending event '$event'",
-    "(unable to convert $host to Internet address)");
-    return 3;
+  # if perl Socket module has getaddrinfo() function which supports both
+  # ipv4 and ipv6, use if for creating the socket; if we are dealing with
+  # older perl version where Socket module comes without getaddrinfo(), use 
+  # traditional ipv4-only inet_aton() based approach for creating the socket
+
+  if (defined(&Socket::getaddrinfo)) {
+
+    # set up the hints data structure for getaddrinfo() -- note that
+    # if socket type is not provided as a hint, getaddrinfo() returns
+    # an error on some platforms if service port specification is not 
+    # textual but numeric
+
+    $hints{"socktype"} = SOCK_DGRAM;
+    $hints{"protocol"} = getprotobyname('udp');
+
+    ($err, @addrinfo) = Socket::getaddrinfo($host, $port, \%hints);
+
+    if ($err) {
+      log_msg(LOG_WARN,
+      "Can't connect to UDP peer '$peer' for sending event '$event'",
+      "(unable to convert $host to Internet address: $err)");
+      return 3;
+    }
+
+    # go through addrinfo list and try to create sockets for list elements,
+    # returning the first successfully created socket (an attempt for first
+    # list element might not always succeed, e.g., consider a scenario
+    # where the first element represents an ipv6 address and the second
+    # element ipv4 address, while the local host only supports ipv4)
+
+    $paddr = undef;
+
+    foreach $addrinfo (@addrinfo) {
+
+      if (!socket($handle, $addrinfo->{"family"}, 
+                           $addrinfo->{"socktype"}, 
+                           $addrinfo->{"protocol"})) {
+
+        log_msg(LOG_ERR, "Could not create socket ($!), retrying");
+        next;
+      }
+
+      $paddr = $addrinfo->{"addr"};
+      last;
+    }
+
+    if (!defined($paddr)) {
+      log_msg(LOG_ERR, "Can't create socket for sending event '$event'");
+      return 3;
+    }
+
+  } else {
+
+    $iaddr = inet_aton($host);
+
+    if (!defined($iaddr)) {
+      log_msg(LOG_WARN,
+      "Can't connect to UDP peer '$peer' for sending event '$event'",
+      "(unable to convert $host to Internet address)");
+      return 3;
+    }
+
+    $paddr = sockaddr_in($port, $iaddr);
+
+    if (!socket($handle, PF_INET, SOCK_DGRAM, getprotobyname('udp'))) {
+      log_msg(LOG_ERR, "Can't create socket for sending event '$event' ($!)");
+      return 3;
+    }
+
   }
 
-  $paddr = sockaddr_in($port, $iaddr);
-
-  if (!socket($handle, PF_INET, SOCK_DGRAM, getprotobyname('udp'))) {
-    log_msg(LOG_ERR, "Can't create socket for sending event '$event' ($!)");
-    return 3;
-  }
+  # connect to remote peer
 
   while (!connect($handle, $paddr)) {
     if ($! == EINTR)  { next; }
@@ -4715,11 +4987,19 @@ sub execute_udpsock_action {
   $handle->blocking(0);
   $output_udpsock{$peer} = $handle;
 
+  # transmit data to remote peer
+
   for (;;) {
 
-    $nbytes = send($output_udpsock{$peer}, $event, 0);
+    # if the event contains perl wide characters, send() will die, 
+    # thus eval is used for calling it
 
-    if (!defined($nbytes)) {
+    $nbytes = eval { send($output_udpsock{$peer}, $event, 0) };
+
+    if ($@) {
+      log_msg(LOG_DEBUG, 
+              "Error when sending event '$event' to UDP peer '$peer' ($@)");
+    } elsif (!defined($nbytes)) {
       if ($! == EINTR)  { next; }
       log_msg(LOG_DEBUG, 
               "Error when sending event '$event' to UDP peer '$peer' ($!)");
@@ -4757,6 +5037,7 @@ sub execute_tcpsock_action {
   my($actionlist, $text, $i) = @_;
   my($peer, $handle, $event, $nbytes);
   my($host, $port, $iaddr, $paddr);
+  my($err, $addrinfo, @addrinfo, %hints);
   my($win, $ret, $elem);
 
   $peer = $actionlist->[$i+1];
@@ -4780,9 +5061,16 @@ sub execute_tcpsock_action {
 
     for (;;) {
 
-      $nbytes = send($output_tcpsock{$peer}, $event, 0);
+      # if the event contains perl wide characters, send() will die, 
+      # thus eval is used for calling it
 
-      if (!defined($nbytes)) {
+      $nbytes = eval { send($output_tcpsock{$peer}, $event, 0) };
+
+      if ($@) {
+        log_msg(LOG_DEBUG, 
+                "Error when sending event '$event' to TCP peer '$peer' ($@)");
+        return 3;
+      } elsif (!defined($nbytes)) {
         if ($! == EINTR)  { next; }
         log_msg(LOG_DEBUG, 
         "Could not send event '$event' to TCP peer '$peer' ($!), retrying");
@@ -4832,8 +5120,16 @@ sub execute_tcpsock_action {
     push @{$output_tcpconn{$peer}->{"buffer"}}, $event;
 
     foreach $elem (@{$output_tcpconn{$peer}->{"buffer"}}) {
-      $nbytes = send($output_tcpconn{$peer}->{"socket"}, $elem, 0);
-      if (!defined($nbytes)) {
+
+      # if the event contains perl wide characters, send() will die, 
+      # thus eval is used for calling it
+
+      $nbytes = eval { send($output_tcpconn{$peer}->{"socket"}, $elem, 0) };
+
+      if ($@) {
+        log_msg(LOG_DEBUG, 
+                "Error when sending event '$elem' to TCP peer '$peer' ($@)");
+      } elsif (!defined($nbytes)) {
         if ($! == EINTR)  { redo; }
         log_msg(LOG_DEBUG, 
                 "Error when sending event '$elem' to TCP peer '$peer' ($!)");
@@ -4863,21 +5159,81 @@ sub execute_tcpsock_action {
 
   $host = $1;
   $port = $2;
-  $iaddr = inet_aton($host);
 
-  if (!defined($iaddr)) {
-    log_msg(LOG_WARN,
-    "Can't connect to TCP peer '$peer' for sending event '$event'",
-    "(unable to convert $host to Internet address)");
-    return 3;
+  # if perl Socket module has getaddrinfo() function which supports both
+  # ipv4 and ipv6, use if for creating the socket; if we are dealing with
+  # older perl version where Socket module comes without getaddrinfo(), use 
+  # traditional ipv4-only inet_aton() based approach for creating the socket
+
+  if (defined(&Socket::getaddrinfo)) {
+
+    # set up the hints data structure for getaddrinfo() -- note that
+    # if socket type is not provided as a hint, getaddrinfo() returns
+    # an error on some platforms if service port specification is not 
+    # textual but numeric
+
+    $hints{"socktype"} = SOCK_STREAM;
+    $hints{"protocol"} = getprotobyname('tcp');
+
+    ($err, @addrinfo) = Socket::getaddrinfo($host, $port, \%hints);
+
+    if ($err) {
+      log_msg(LOG_WARN,
+      "Can't connect to TCP peer '$peer' for sending event '$event'",
+      "(unable to convert $host to Internet address: $err)");
+      return 3;
+    }
+
+    # go through addrinfo list and try to create sockets for list elements,
+    # returning the first successfully created socket (an attempt for first
+    # list element might not always succeed, e.g., consider a scenario
+    # where the first element represents an ipv6 address and the second
+    # element ipv4 address, while the local host only supports ipv4)
+
+    $paddr = undef;
+
+    foreach $addrinfo (@addrinfo) {
+
+      if (!socket($handle, $addrinfo->{"family"}, 
+                           $addrinfo->{"socktype"}, 
+                           $addrinfo->{"protocol"})) {
+
+        log_msg(LOG_ERR, "Could not create socket ($!), retrying");
+        next;
+      }
+
+      $paddr = $addrinfo->{"addr"};
+      last;
+    }
+
+    if (!defined($paddr)) {
+      log_msg(LOG_ERR, "Can't create socket for sending event '$event'");
+      return 3;
+    }
+
+  } else {
+
+    $iaddr = inet_aton($host);
+
+    if (!defined($iaddr)) {
+      log_msg(LOG_WARN,
+      "Can't connect to TCP peer '$peer' for sending event '$event'",
+      "(unable to convert $host to Internet address)");
+      return 3;
+    }
+
+    $paddr = sockaddr_in($port, $iaddr);
+
+    if (!socket($handle, PF_INET, SOCK_STREAM, getprotobyname('tcp'))) {
+      log_msg(LOG_ERR, "Can't create socket for sending event '$event' ($!)");
+      return 3;
+    }
+
   }
 
-  $paddr = sockaddr_in($port, $iaddr);
-
-  if (!socket($handle, PF_INET, SOCK_STREAM, getprotobyname('tcp'))) {
-    log_msg(LOG_ERR, "Can't create socket for sending event '$event' ($!)");
-    return 3;
-  }
+  # connect to remote peer -- if the connection to remote peer is not 
+  # established immediately (EINPROGRESS), buffer the data for future 
+  # transmission and return
 
   $handle->blocking(0);
 
@@ -4896,11 +5252,19 @@ sub execute_tcpsock_action {
 
   $output_tcpsock{$peer} = $handle;
 
+  # transmit data to remote peer
+
   for (;;) {
 
-    $nbytes = send($output_tcpsock{$peer}, $event, 0);
+    # if the event contains perl wide characters, send() will die, 
+    # thus eval is used for calling it
 
-    if (!defined($nbytes)) {
+    $nbytes = eval { send($output_tcpsock{$peer}, $event, 0) };
+
+    if ($@) {
+      log_msg(LOG_DEBUG, 
+              "Error when sending event '$event' to TCP peer '$peer' ($@)");
+    } elsif (!defined($nbytes)) {
       if ($! == EINTR) { next; }
       log_msg(LOG_DEBUG, 
               "Error when sending event '$event' to TCP peer '$peer' ($!)");
@@ -4961,6 +5325,24 @@ sub execute_shellcmd_action {
   return 2;
 }
 
+sub execute_cmdexec_action {
+
+  my($actionlist, $text, $i) = @_;
+  my(@cmdline, $cmdline, $arg);
+
+  @cmdline = @{$actionlist->[$i+1]};
+
+  foreach $arg (@cmdline)  { substitute_actionlist_var($arg, $text); }
+
+  $cmdline = join(" ", @cmdline);
+
+  log_msg(LOG_INFO, "Executing command '$cmdline'");
+
+  shell_cmd(\@cmdline);
+
+  return 2;
+}
+
 sub execute_spawn_action {
 
   my($actionlist, $text, $i) = @_;
@@ -4982,6 +5364,24 @@ sub execute_spawn_action {
   log_msg(LOG_INFO, "Spawning shell command '$cmdline'");
 
   shell_cmd($cmdline, 1);
+
+  return 2;
+}
+
+sub execute_spawnexec_action {
+
+  my($actionlist, $text, $i) = @_;
+  my(@cmdline, $cmdline, $arg);
+
+  @cmdline = @{$actionlist->[$i+1]};
+
+  foreach $arg (@cmdline)  { substitute_actionlist_var($arg, $text); }
+
+  $cmdline = join(" ", @cmdline);
+
+  log_msg(LOG_INFO, "Spawning command '$cmdline'");
+
+  shell_cmd(\@cmdline, 1);
 
   return 2;
 }
@@ -5014,6 +5414,27 @@ sub execute_cspawn_action {
   return 3;
 }
 
+sub execute_cspawnexec_action {
+
+  my($actionlist, $text, $i) = @_;
+  my(@cmdline, $cmdline, $context, $arg);
+
+  $context = $actionlist->[$i+1];
+  @cmdline = @{$actionlist->[$i+2]};
+
+  substitute_actionlist_var($context, $text);
+
+  foreach $arg (@cmdline)  { substitute_actionlist_var($arg, $text); }
+
+  $cmdline = join(" ", @cmdline);
+
+  log_msg(LOG_INFO, "Spawning command '$cmdline' with context '$context'");
+
+  shell_cmd(\@cmdline, 1, $context);
+
+  return 3;
+}
+
 sub execute_pipe_action {
 
   my($actionlist, $text, $i) = @_;
@@ -5029,6 +5450,33 @@ sub execute_pipe_action {
 
   if (length($cmdline)) { 
     pipe_cmd($cmdline, [ $event ]); 
+  } else {
+    select(STDOUT); 
+    $| = 1;
+    print STDOUT "$event\n";
+  }
+
+  return 3;
+}
+
+sub execute_pipeexec_action {
+
+  my($actionlist, $text, $i) = @_;
+  my(@cmdline, $cmdline, $event, $arg);
+
+  $event = $actionlist->[$i+1];
+  @cmdline = @{$actionlist->[$i+2]};
+
+  substitute_actionlist_var($event, $text);
+
+  foreach $arg (@cmdline)  { substitute_actionlist_var($arg, $text); }
+
+  $cmdline = join(" ", @cmdline);
+
+  log_msg(LOG_INFO, "Feeding event '$event' to command '$cmdline'");
+
+  if (scalar(@cmdline)) { 
+    pipe_cmd(\@cmdline, [ $event ]); 
   } else {
     select(STDOUT); 
     $| = 1;
@@ -5417,6 +5865,44 @@ sub execute_report_action {
 
     if (length($cmdline)) {
       pipe_cmd($cmdline, $context_list{$context}->{"Buffer"});
+    } else {
+      select(STDOUT); 
+      $| = 1;
+      foreach $event (@{$context_list{$context}->{"Buffer"}}) {
+        print STDOUT "$event\n"; 
+      }
+    }
+
+  }
+
+  return 3;
+}
+
+sub execute_reportexec_action {
+
+  my($actionlist, $text, $i) = @_;
+  my(@cmdline, $cmdline, $context, $event, $arg);
+
+  $context = $actionlist->[$i+1];
+  @cmdline = @{$actionlist->[$i+2]};
+
+  substitute_actionlist_var($context, $text);
+
+  foreach $arg (@cmdline)  { substitute_actionlist_var($arg, $text); }
+
+  $cmdline = join(" ", @cmdline);
+
+  log_msg(LOG_INFO, "Reporting the event store of context '$context' through command '$cmdline'");
+
+  if (!exists($context_list{$context})) {
+    log_msg(LOG_WARN, "Context '$context' does not exist, can't report");
+  } elsif (!scalar(@{$context_list{$context}->{"Buffer"}})) {
+    log_msg(LOG_DEBUG,
+            "Event store of context '$context' is empty, nothing to report");
+  } else {
+
+    if (scalar(@cmdline)) {
+      pipe_cmd(\@cmdline, $context_list{$context}->{"Buffer"});
     } else {
       select(STDOUT); 
       $| = 1;
@@ -7353,6 +7839,22 @@ sub copy_five_elem_action {
   return 5; 
 }
 
+sub copy_cmdexec_spawnexec_action {
+
+  my($src_ref, $dest_ref, $i) = @_;
+
+  push @{$dest_ref}, $src_ref->[$i++], [ @{$src_ref->[$i]} ];
+  return 2; 
+}
+
+sub copy_cspawnexec_pipeexec_reportexec_action {
+
+  my($src_ref, $dest_ref, $i) = @_;
+
+  push @{$dest_ref}, $src_ref->[$i++], $src_ref->[$i++], [ @{$src_ref->[$i]} ];
+  return 3; 
+}
+
 sub copy_create_set_action {
 
   my($src_ref, $dest_ref, $i) = @_;
@@ -7635,6 +8137,23 @@ sub subst_four_elem_action {
   return 4;
 }
 
+sub subst_cmdexec_spawnexec_action {
+
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
+
+  subst_string($subst_ref, @{$actionlist->[$i+1]}, $token);
+  return 2;
+}
+
+sub subst_cspawnexec_pipeexec_reportexec_action {
+
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
+
+  subst_string($subst_ref, $actionlist->[$i+1], $token);
+  subst_string($subst_ref, @{$actionlist->[$i+2]}, $token);
+  return 3;
+}
+
 sub subst_create_set_action {
 
   my($subst_ref, $subst_orig_ref, $actionlist, $token, $i) = @_;
@@ -7823,6 +8342,93 @@ sub update_times_eg {
 }
 
 
+# Parameters: par1 - event group string
+#             par2 - event group matching pattern
+# Action: match event group string par1 with event group pattern par2;
+#         return 1 if match was found, otherwise return 0
+
+sub match_eventgroup_substr {
+
+  my($string, $substr) = @_;
+
+  if (index($string, $substr) != -1)  { return 1; } 
+  return 0;
+}
+
+
+sub match_eventgroup_nsubstr {
+
+  my($string, $substr) = @_;
+
+  if (index($string, $substr) == -1)  { return 1; } 
+  return 0;
+}
+
+
+sub match_eventgroup_regexp {
+
+  my($string, $regexp) = @_;
+
+  if ($string =~ /$regexp/)  { return 1; } 
+  return 0;
+}
+
+
+sub match_eventgroup_nregexp {
+
+  my($string, $regexp) = @_;
+
+  if ($string !~ /$regexp/)  { return 1; } 
+  return 0;
+}
+
+
+sub match_eventgroup_perlfunc {
+
+  my($string, $codeptr) = @_;
+  my($retval);
+
+  # call the function and save its return value;
+  # in the case of a function runtime error there is no match
+
+  $retval = eval { $codeptr->($string) };
+
+  if ($@) {
+    log_msg(LOG_ERR, "PerlFunc pattern runtime error:", $@);
+    return 0;
+  }
+                               
+  # if the function returned a value which evaluates true in boolean 
+  # context (neither undef, nor "", nor 0), return 1, otherwise return 0
+
+  if ($retval)  { return 1; }
+  return 0;
+}
+
+
+sub match_eventgroup_nperlfunc {
+
+  my($string, $codeptr) = @_;
+  my($retval);
+
+  # call the function and save its return value;
+  # in the case of a function runtime error there is no match
+
+  $retval = eval { $codeptr->($string) };
+
+  if ($@) {
+    log_msg(LOG_ERR, "NPerlFunc pattern runtime error:", $@);
+    return 0;
+  }
+                               
+  # if the function returned a value which evaluates false in boolean 
+  # context (undef, "", or 0), return 1, otherwise return 0
+
+  if (!$retval)  { return 1; }
+  return 0;
+}
+
+
 # Parameters: par1, par2, .. - strings
 # Action: calculate unique key for strings par1, par2, .. that will be
 #         used in correlation lists to distinguish between differents events
@@ -7867,11 +8473,22 @@ sub process_single_rule {
 sub process_singlewithscript_rule {
 
   my($rule, $subst) = @_;
-  my($desc, $script, $pid);
+  my(@script, $script, $shell, $desc, $pid);
   my($action, $action2);
 
   $desc = $rule->{"Desc"};
-  $script = $rule->{"Script"};
+
+  # check if the command line provided with the 'script' field has to be
+  # executed without shell interpretation, and if yes, copy the command
+  # line arguments into local array @script
+ 
+  if (ref($rule->{"Script"}) eq "ARRAY") { 
+    @script = @{$rule->{"Script"}};
+    $shell = 0; 
+  } else { 
+    $script = $rule->{"Script"};
+    $shell = 1; 
+  }
 
   if (scalar(%{$subst})) { 
 
@@ -7887,14 +8504,26 @@ sub process_singlewithscript_rule {
       subst_actionlist($subst, $action2, '$');
     } else { $action2 = $rule->{"Action2"}; }
 
-    subst_string($subst, $desc, $script, '$'); 
+    if ($shell) {
+      subst_string($subst, $desc, $script, '$'); 
+    } else {
+      subst_string($subst, $desc, @script, '$'); 
+    }
 
   } else {
     $action = $rule->{"Action"};
     $action2 = $rule->{"Action2"};
   }
 
-  $pid = pipe_cmd($script, \%context_list);
+  # if the command line provided with the 'script' field has to be
+  # executed without shell interpretation, pass a reference to the
+  # array @script with command line arguments to pipe_cmd() function 
+ 
+  if ($shell) {
+    $pid = pipe_cmd($script, \%context_list);
+  } else {
+    $pid = pipe_cmd(\@script, \%context_list);
+  }
 
   if (defined($pid)) {
     $children{$pid}->{"Desc"} = $desc;
@@ -8494,7 +9123,7 @@ sub process_singlewith2thresholds_rule {
 sub process_eventgroup_rule {
 
   my($rule, $subst, $conffile, $index) = @_;
-  my($desc, $key, $time, $oper, $i);
+  my($desc, $key, $time, $oper, $i, $egrpstring);
   my($initaction, $slideaction, $endaction, $countaction, $action);
 
   $desc = $rule->{"Desc"};
@@ -8633,6 +9262,20 @@ sub process_eventgroup_rule {
   for ($i = 0; $i < $rule->{"EventNumber"}; ++$i) {
     if (scalar(@{$oper->{"TimesList"}->[$i]}) < 
         $rule->{"ThresholdList"}->[$i])  { return; }
+  }
+
+  # if event group pattern has been provided by the rule, create an event
+  # group string and match it with event group pattern; if the pattern is
+  # not matching, return
+
+  if (exists($rule->{"EGrpPattern"})) {
+
+    $egrpstring = join(" ", map { $_->[1] + 1 } @{$oper->{"AllTimes"}});
+
+    if (!$matchegrpfunc[$rule->{"EGrpPatType"}]->($egrpstring, 
+                                                  $rule->{"EGrpPattern"})) {
+      return 0;
+    }
   }
 
   # if all threshold conditions are met, go to suppressing mode if specified by 
@@ -9476,8 +10119,18 @@ sub actionlist2str {
       $i += 2;
     } 
 
+    elsif ($actionlist->[$i] == COMMANDEXEC) { 
+      $result .= "cmdexec " . join(" ", @{$actionlist->[$i+1]}); 
+      $i += 2;
+    } 
+
     elsif ($actionlist->[$i] == SPAWN) { 
       $result .= "spawn " . $actionlist->[$i+1]; 
+      $i += 2;
+    } 
+
+    elsif ($actionlist->[$i] == SPAWNEXEC) { 
+      $result .= "spawnexec " . join(" ", @{$actionlist->[$i+1]}); 
       $i += 2;
     } 
 
@@ -9486,8 +10139,20 @@ sub actionlist2str {
       $i += 3;
     } 
 
+    elsif ($actionlist->[$i] == CSPAWNEXEC) { 
+      $result .= "cspawnexec " . $actionlist->[$i+1] 
+                 . " " .  join(" ", @{$actionlist->[$i+2]}); 
+      $i += 3;
+    } 
+
     elsif ($actionlist->[$i] == PIPE) {
       $result .= "pipe " . $actionlist->[$i+1] . " " . $actionlist->[$i+2];
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == PIPEEXEC) {
+      $result .= "pipeexec " . $actionlist->[$i+1] 
+                 . " " . join(" ", @{$actionlist->[$i+2]});
       $i += 3;
     }
 
@@ -9544,6 +10209,12 @@ sub actionlist2str {
 
     elsif ($actionlist->[$i] == REPORT) { 
       $result .= "report " . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      $i += 3;
+    }
+
+    elsif ($actionlist->[$i] == REPORTEXEC) { 
+      $result .= "reportexec " . $actionlist->[$i+1] 
+                 . " " . join(" ", @{$actionlist->[$i+2]}); 
       $i += 3;
     }
 
@@ -10183,6 +10854,13 @@ sub print_operation {
       print $handle "\n";
     }
 
+    if (exists($rule->{"EGrpPattern"})) {
+      print $handle "Event group pattern: ";
+      print $handle pattern2str($rule->{"EGrpPatType"}, 1, 
+                                $rule->{"EGrpPattern"});
+      print $handle "\n";
+    }
+
     print $handle "Init action: ";
     print $handle actionlist2str($oper->{"InitAction"});
     print $handle "\n";
@@ -10213,7 +10891,7 @@ sub print_operation {
 
     foreach $elem (@{$oper->{"AllTimes"}}) {
       print $handle scalar(localtime($elem->[0]));
-      print $handle " (matched by ", $elem->[1]+1, ".pattern)";
+      print $handle " (matched by pattern #", $elem->[1]+1, ")";
       print $handle "\n";
     }
 
@@ -10232,8 +10910,8 @@ sub print_operation {
 
 sub dump_data {
 
-  my($dfilename, $i, $key, $ref, $file, $event, $egid, @gidlist, %gids);
-  my($time, $user, $system, $cuser, $csystem, $fpos, @stat);
+  my($dfilename, $dhandle, $i, $key, $ref, $file, $event, $fpos, @stat);
+  my($time, $user, $system, $cuser, $csystem, $egid, @gidlist, %gids);
   my($len, $width1, $width2, $width3, $width4, $width5);
   my($name, %reported_names);
 
@@ -10257,7 +10935,7 @@ sub dump_data {
     return;
   }
 
-  if (!open(DUMPFILE, ">$dfilename")) {
+  if (!open($dhandle, ">$dfilename")) {
     log_msg(LOG_ERR, "Can't open dumpfile $dfilename ($!)");
     return;
   }
@@ -10265,17 +10943,17 @@ sub dump_data {
 
   # print program info
 
-  print DUMPFILE "Program information:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "Program information:\n";
+  print $dhandle '=' x 60, "\n";
 
-  print DUMPFILE "Program version: ", $SEC_VERSION, "\n";
-  print DUMPFILE "Time of the start: ", 
+  print $dhandle "Program version: ", $SEC_VERSION, "\n";
+  print $dhandle "Time of the start: ", 
                  scalar(localtime($startuptime)), "\n";
-  print DUMPFILE "Time of the last configuration load: ", 
+  print $dhandle "Time of the last configuration load: ", 
                  scalar(localtime($lastconfigload)), "\n";
-  print DUMPFILE "Time of the dump: ", scalar(localtime($time)), "\n";
-  print DUMPFILE "Program resource file: ", $rcfile_status, "\n";
-  print DUMPFILE "Program options: ", $sec_options, "\n";
+  print $dhandle "Time of the dump: ", scalar(localtime($time)), "\n";
+  print $dhandle "Program resource file: ", $rcfile_status, "\n";
+  print $dhandle "Program options: ", $sec_options, "\n";
 
   # note that $) can report the same supplementary group ID more than once
 
@@ -10283,50 +10961,50 @@ sub dump_data {
   $egid = shift @gidlist;
   %gids = map { $_ => 1 } @gidlist;
 
-  print DUMPFILE "Effective user ID: ", $>, "\n";
-  print DUMPFILE "Effective group ID: ", $egid, "\n";
-  print DUMPFILE "Supplementary group IDs: ", join(" ", keys %gids), "\n";
+  print $dhandle "Effective user ID: ", $>, "\n";
+  print $dhandle "Effective group ID: ", $egid, "\n";
+  print $dhandle "Supplementary group IDs: ", join(" ", keys %gids), "\n";
 
-  print DUMPFILE "\n";
+  print $dhandle "\n";
 
   # print environment info
 
-  print DUMPFILE "Environment:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "Environment:\n";
+  print $dhandle '=' x 60, "\n";
 
   foreach $key (sort(keys %ENV)) { 
-    print DUMPFILE "$key=", $ENV{$key}, "\n"; 
+    print $dhandle "$key=", $ENV{$key}, "\n"; 
   }
 
-  print DUMPFILE "\n";
+  print $dhandle "\n";
 
   # print performance statistics
 
-  print DUMPFILE "Performance statistics:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "Performance statistics:\n";
+  print $dhandle '=' x 60, "\n";
 
   ($user, $system, $cuser, $csystem) = times();
 
-  print DUMPFILE "Run time: ", $time - $startuptime, " seconds\n";
-  print DUMPFILE "User time: $user seconds\n";
-  print DUMPFILE "System time: $system seconds\n";
-  print DUMPFILE "Child user time: $cuser seconds\n";
-  print DUMPFILE "Child system time: $csystem seconds\n";
-  print DUMPFILE "Processed input lines: $processedlines\n";
+  print $dhandle "Run time: ", $time - $startuptime, " seconds\n";
+  print $dhandle "User time: $user seconds\n";
+  print $dhandle "System time: $system seconds\n";
+  print $dhandle "Child user time: $cuser seconds\n";
+  print $dhandle "Child system time: $csystem seconds\n";
+  print $dhandle "Processed input lines: $processedlines\n";
 
-  print DUMPFILE "\n";
+  print $dhandle "\n";
 
   # print rule usage statistics
 
-  print DUMPFILE "Rule usage statistics:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "Rule usage statistics:\n";
+  print $dhandle '=' x 60, "\n";
 
   foreach $file (@conffiles) {
 
-    print DUMPFILE "\nStatistics for the rules from $file\n";
-    print DUMPFILE "(loaded at ", 
+    print $dhandle "\nStatistics for the rules from $file\n";
+    print $dhandle "(loaded at ", 
                     scalar(localtime($config_ltimes{$file})), ")\n";
-    print DUMPFILE '-' x 60, "\n";
+    print $dhandle '-' x 60, "\n";
 
     $width1 = length(sprintf("%u", scalar(@{$configuration{$file}})));
     $width2 = $width3 = 0;
@@ -10348,265 +11026,265 @@ sub dump_data {
     $i = 1;
 
     foreach $ref (@{$configuration{$file}}) {
-      printf DUMPFILE "Rule %*u line %*u matched %*u events",
+      printf $dhandle "Rule %*u line %*u matched %*u events",
         $width1, $i, $width2, $ref->{"LineNo"}, $width3, $ref->{"MatchCount"};
       if ($ruleperf) {
-        printf DUMPFILE 
+        printf $dhandle 
           ", %*.*f seconds of CPU time spent for processing %*u events",
           $width4, 2, $ref->{"CPUtime"}, $width5, $ref->{"EventCount"};
       }
-      print  DUMPFILE " (", $ref->{"Desc"}, ")\n";
+      print $dhandle " (", $ref->{"Desc"}, ")\n";
       ++$i;
     }
 
   }
 
-  print DUMPFILE "\n";
+  print $dhandle "\n";
 
   # print input sources
 
-  print DUMPFILE "Input sources:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "Input sources:\n";
+  print $dhandle '=' x 60, "\n";
 
   foreach $file (@inputfiles) {
 
-    print DUMPFILE $file, " ";
+    print $dhandle $file, " ";
 
     if ($inputsrc{$file}->{"open"}) { 
-      print DUMPFILE "(status: Open, "; 
+      print $dhandle "(status: Open, "; 
       if ($inputsrc{$file}->{"regfile"}) {
         $fpos = sysseek($inputsrc{$file}->{"fh"}, 0, SEEK_CUR);
         @stat = stat($inputsrc{$file}->{"fh"});
-        print DUMPFILE "type: regular file, ";
+        print $dhandle "type: regular file, ";
         # sysseek returns a string "0 but true" for offset 0, 
         # so force numeric context by adding 0
-        print DUMPFILE "read offset: ", defined($fpos)?$fpos+0:"undef", ", "; 
-        print DUMPFILE "file size: ", scalar(@stat)?$stat[7]:"undef"; 
+        print $dhandle "read offset: ", defined($fpos)?$fpos+0:"undef", ", "; 
+        print $dhandle "file size: ", scalar(@stat)?$stat[7]:"undef"; 
       } else {
-        print DUMPFILE "type: pipe";
+        print $dhandle "type: pipe";
       }
-      print DUMPFILE ", ";
-      print DUMPFILE "device/inode: ", $inputsrc{$file}->{"dev"}; 
-      print DUMPFILE "/", $inputsrc{$file}->{"inode"}, ", "; 
+      print $dhandle ", ";
+      print $dhandle "device/inode: ", $inputsrc{$file}->{"dev"}; 
+      print $dhandle "/", $inputsrc{$file}->{"inode"}, ", "; 
     } else { 
-      print DUMPFILE "(status: Closed, "; 
+      print $dhandle "(status: Closed, "; 
     }
 
-    print DUMPFILE "received data: ", 
+    print $dhandle "received data: ", 
       $inputsrc{$file}->{"lines"}, " lines, ";
 
     if ($intcontexts) {
-      print DUMPFILE "context: ", $inputsrc{$file}->{"context"};
+      print $dhandle "context: ", $inputsrc{$file}->{"context"};
     } else {
-      print DUMPFILE "no context set";
+      print $dhandle "no context set";
     }
 
-    print DUMPFILE ")\n";
+    print $dhandle ")\n";
 
   }
 
-  print DUMPFILE "\n";
+  print $dhandle "\n";
 
   # print the content of input buffer(s)
 
   if ($jointbuf) {
 
-    print DUMPFILE "Input buffering mode: ";
-    print DUMPFILE "joint buffer for all input sources\n";
-    print DUMPFILE "Size of input buffer: $bufsize\n";
-    print DUMPFILE "\n";
+    print $dhandle "Input buffering mode: ";
+    print $dhandle "joint buffer for all input sources\n";
+    print $dhandle "Size of input buffer: $bufsize\n";
+    print $dhandle "\n";
 
-    print DUMPFILE "Content of input buffer (last $bufsize input line(s)):\n";
-    print DUMPFILE '-' x 60, "\n";
+    print $dhandle "Content of input buffer (last $bufsize input line(s)):\n";
+    print $dhandle '-' x 60, "\n";
 
     for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
-      print DUMPFILE $input_buffer[$i], "\n";
+      print $dhandle $input_buffer[$i], "\n";
     }
 
-    print DUMPFILE '-' x 60, "\n";
-    print DUMPFILE "\n";
+    print $dhandle '-' x 60, "\n";
+    print $dhandle "\n";
 
-    print DUMPFILE "Last $bufsize input source(s):\n";
-    print DUMPFILE '-' x 60, "\n";
+    print $dhandle "Last $bufsize input source(s):\n";
+    print $dhandle '-' x 60, "\n";
 
     for ($i = $bufpos - $bufsize + 1; $i <= $bufpos; ++$i) {
       if (defined($input_sources[$i])) {
-        print DUMPFILE $input_sources[$i], "\n";
+        print $dhandle $input_sources[$i], "\n";
       } else {
-        print DUMPFILE "synthetic event\n";
+        print $dhandle "synthetic event\n";
       }
     }
 
-    print DUMPFILE '-' x 60, "\n";
-    print DUMPFILE "\n";
+    print $dhandle '-' x 60, "\n";
+    print $dhandle "\n";
 
   } else {
 
-    print DUMPFILE "Input buffering mode: ";
-    print DUMPFILE "separate buffer for each input source\n";
-    print DUMPFILE "Size of each input buffer: $bufsize\n";
-    print DUMPFILE "\n";
+    print $dhandle "Input buffering mode: ";
+    print $dhandle "separate buffer for each input source\n";
+    print $dhandle "Size of each input buffer: $bufsize\n";
+    print $dhandle "\n";
 
     foreach $file (sort keys %input_buffers) {
 
-      print DUMPFILE "Content of input buffer for $file:\n";
-      print DUMPFILE '-' x 60, "\n";
+      print $dhandle "Content of input buffer for $file:\n";
+      print $dhandle '-' x 60, "\n";
 
       for ($i = $input_buffers{$file}->{"BufPos"} - $bufsize + 1; 
            $i <= $input_buffers{$file}->{"BufPos"}; ++$i) {
-        print DUMPFILE $input_buffers{$file}->{"Events"}->[$i], "\n";
+        print $dhandle $input_buffers{$file}->{"Events"}->[$i], "\n";
       }
 
-      print DUMPFILE '-' x 60, "\n";
-      print DUMPFILE "\n";
+      print $dhandle '-' x 60, "\n";
+      print $dhandle "\n";
 
     }
 
-    print DUMPFILE "Content of input buffer for synthetic events:\n";
-    print DUMPFILE '-' x 60, "\n";
+    print $dhandle "Content of input buffer for synthetic events:\n";
+    print $dhandle '-' x 60, "\n";
 
     for ($i = $event_buffer{"BufPos"} - $bufsize + 1; 
          $i <= $event_buffer{"BufPos"}; ++$i) {
-      print DUMPFILE $event_buffer{"Events"}->[$i], "\n";
+      print $dhandle $event_buffer{"Events"}->[$i], "\n";
     }
 
-    print DUMPFILE '-' x 60, "\n";
-    print DUMPFILE "\n";
+    print $dhandle '-' x 60, "\n";
+    print $dhandle "\n";
 
   }
 
   # print the content of pending event buffer
 
   $i = 0;
-  print DUMPFILE "Pending events:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "Pending events:\n";
+  print $dhandle '=' x 60, "\n";
 
   foreach $ref (@pending_events) { 
-    print DUMPFILE "Event: ", $ref->[1], "\n";
-    print DUMPFILE "Will be created at ", scalar(localtime($ref->[0]));
-    if ($intcontexts)  { print DUMPFILE " with context '", $ref->[2], "'"; }
-    print DUMPFILE "\n\n";
+    print $dhandle "Event: ", $ref->[1], "\n";
+    print $dhandle "Will be created at ", scalar(localtime($ref->[0]));
+    if ($intcontexts)  { print $dhandle " with context '", $ref->[2], "'"; }
+    print $dhandle "\n\n";
     ++$i;
   }
 
-  print DUMPFILE "Total: $i elements\n\n";
+  print $dhandle "Total: $i elements\n\n";
 
   # print the content of pattern match cache
 
   $i = 0;
-  print DUMPFILE "Pattern match cache:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "Pattern match cache:\n";
+  print $dhandle '=' x 60, "\n";
 
   while (($key, $ref) = each(%pmatch_cache)) { 
-    print DUMPFILE "Match: ", $key, "\n";
+    print $dhandle "Match: ", $key, "\n";
     foreach $name (sort keys %{$ref}) {
-      print DUMPFILE "$name = ", 
+      print $dhandle "$name = ", 
                      defined($ref->{$name})?$ref->{$name}:"undef", "\n"; 
     }
-    print DUMPFILE "\n";
+    print $dhandle "\n";
     ++$i;
   }
 
-  print DUMPFILE "Total: $i elements\n\n";
+  print $dhandle "Total: $i elements\n\n";
 
   # print the list of active event correlation operations
 
   $i = 0;
-  print DUMPFILE "List of event correlation operations:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "List of event correlation operations:\n";
+  print $dhandle '=' x 60, "\n";
 
   while (($key, $ref) = each(%corr_list)) { 
-    print_operation(*DUMPFILE, $key, $ref);
-    print DUMPFILE '-' x 60, "\n";
+    print_operation($dhandle, $key, $ref);
+    print $dhandle '-' x 60, "\n";
     ++$i; 
   }
 
-  print DUMPFILE "Total: $i elements\n\n";
+  print $dhandle "Total: $i elements\n\n";
 
   # print the list of active contexts
 
   $i = 0;
   %reported_names = ();
-  print DUMPFILE "List of contexts:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "List of contexts:\n";
+  print $dhandle '=' x 60, "\n";
 
   while (($key, $ref) = each(%context_list)) { 
 
     if (exists($reported_names{$key}))  { next; }
 
     foreach $name (keys %{$ref->{"Aliases"}}) {
-      print DUMPFILE "Context Name: ", $name, "\n";
+      print $dhandle "Context Name: ", $name, "\n";
       $reported_names{$name} = 1;
     }
 
-    print DUMPFILE "Creation Time: ", 
+    print $dhandle "Creation Time: ", 
                    scalar(localtime($ref->{"Time"})), "\n";
 
     if ($ref->{"Window"}) {
-      print DUMPFILE "Lifetime: ", $ref->{"Window"}, " seconds\n";
+      print $dhandle "Lifetime: ", $ref->{"Window"}, " seconds\n";
     } else {
-      print DUMPFILE "Lifetime: infinite\n";
+      print $dhandle "Lifetime: infinite\n";
     }
 
     if (scalar(@{$ref->{"Action"}})) {
-      print DUMPFILE "Action on delete: ", 
+      print $dhandle "Action on delete: ", 
                      actionlist2str($ref->{"Action"});
-      print DUMPFILE " (%s = ", $ref->{"Desc"}, ")\n";
+      print $dhandle " (%s = ", $ref->{"Desc"}, ")\n";
     }
 
     if (scalar(@{$ref->{"Buffer"}})) {
-      print DUMPFILE scalar(@{$ref->{"Buffer"}}), 
+      print $dhandle scalar(@{$ref->{"Buffer"}}), 
                      " events associated with context:\n";
       foreach $event (@{$ref->{"Buffer"}}) 
-              { print DUMPFILE $event, "\n"; }
+              { print $dhandle $event, "\n"; }
     }
 
-    print DUMPFILE '-' x 60, "\n";
+    print $dhandle '-' x 60, "\n";
     ++$i;
 
   }
     
-  print DUMPFILE "Total: $i elements\n\n";
+  print $dhandle "Total: $i elements\n\n";
 
   # print the list of running children
 
   $i = 0;
-  print DUMPFILE "Child processes:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "Child processes:\n";
+  print $dhandle '=' x 60, "\n";
 
   while (($key, $ref) = each(%children)) { 
-    print DUMPFILE "Child PID: ", $key, "\n";
-    print DUMPFILE "Commandline started by child: ", $ref->{"cmd"}, "\n"; 
+    print $dhandle "Child PID: ", $key, "\n";
+    print $dhandle "Commandline started by child: ", $ref->{"cmd"}, "\n"; 
     if ($ref->{"open"}) { 
-      print DUMPFILE "Connected to pipe input";
+      print $dhandle "Connected to pipe input";
       if ($intcontexts && exists($ref->{"context"})) 
-        { print DUMPFILE " with context '", $ref->{"context"}, "'"; }
-      print DUMPFILE "\n";
+        { print $dhandle " with context '", $ref->{"context"}, "'"; }
+      print $dhandle "\n";
     }
-    print DUMPFILE '-' x 60, "\n";
+    print $dhandle '-' x 60, "\n";
     ++$i;
   }
     
-  print DUMPFILE "Total: $i elements\n\n";
+  print $dhandle "Total: $i elements\n\n";
 
   # print the values of action list variables
 
   $i = 0;
-  print DUMPFILE "Action list variables:\n";
-  print DUMPFILE '=' x 60, "\n";
+  print $dhandle "Action list variables:\n";
+  print $dhandle '=' x 60, "\n";
 
   foreach $key (sort keys %variables) {
     if (defined($variables{$key})) {
-      print DUMPFILE "%$key = '", $variables{$key}, "'\n";
+      print $dhandle "%$key = '", $variables{$key}, "'\n";
     } else {
-      print DUMPFILE "%$key = undef\n";
+      print $dhandle "%$key = undef\n";
     }
     ++$i;
   }
     
-  print DUMPFILE "Total: $i elements\n\n";
+  print $dhandle "Total: $i elements\n\n";
 
-  close(DUMPFILE);
+  close($dhandle);
 
   log_msg(LOG_DEBUG, "Dump to $dfilename completed");
 }
@@ -10812,6 +11490,11 @@ sub convert_operation {
       $ref->{"threshold$j"} = $rule->{"ThresholdList"}->[$i] + 0;
     }
 
+    if (exists($rule->{"EGrpPattern"})) {
+      $ref->{"egpattern"} = pattern2str($rule->{"EGrpPatType"}, 1, 
+                                        $rule->{"EGrpPattern"});
+    }
+
     $ref->{"init"} = actionlist2str($oper->{"InitAction"});
     $ref->{"slide"} = actionlist2str($oper->{"SlideAction"});
     $ref->{"end"} = actionlist2str($oper->{"EndAction"});
@@ -10850,8 +11533,8 @@ sub convert_operation {
 
 sub dump_data_json {
 
-  my($dfilename, $i, $key, $ref, $file, $egid, @gidlist, %gids);
-  my($time, $user, $system, $cuser, $csystem, $fpos, @stat);
+  my($dfilename, $dhandle, $i, $key, $ref, $file, $fpos, @stat);
+  my($time, $user, $system, $cuser, $csystem, $egid, @gidlist, %gids);
   my($name, %reported_names, %data, $json);
 
   # get the current time
@@ -10874,7 +11557,7 @@ sub dump_data_json {
     return;
   }
 
-  if (!open(DUMPFILE, ">$dfilename")) {
+  if (!open($dhandle, ">$dfilename")) {
     log_msg(LOG_ERR, "Can't open dumpfile $dfilename ($!)");
     return;
   }
@@ -11113,17 +11796,17 @@ sub dump_data_json {
   # null values (without this option encode() will croak). Also, 
   # the 'utf8' option will generate json in utf8 format.
 
-  eval { $json = JSON->new->utf8->allow_unknown->encode(\%data); };
+  $json = eval { JSON::PP->new->utf8->allow_unknown->encode(\%data) };
 
   if ($@) {
     log_msg(LOG_ERR, "Can't create JSON data for dumpfile ($@)");
-    close(DUMPFILE);
+    close($dhandle);
     return;
   }
 
-  if (defined($json))  { print DUMPFILE $json; }
+  if (defined($json))  { print $dhandle $json; }
 
-  close(DUMPFILE);
+  close($dhandle);
 
   log_msg(LOG_DEBUG, "Dump to $dfilename completed");
 }
@@ -11512,9 +12195,15 @@ sub check_tcp_conn {
 
       foreach $event (@{$output_tcpconn{$peer}->{"buffer"}}) {
 
-        $nbytes = send($output_tcpconn{$peer}->{"socket"}, $event, 0);
+        # if the event contains perl wide characters, send() will die,
+        # thus eval is used for calling it
 
-        if (!defined($nbytes)) {
+        $nbytes = eval { send($output_tcpconn{$peer}->{"socket"}, $event, 0) };
+
+        if ($@) {
+          log_msg(LOG_DEBUG, 
+                  "Error when sending event '$event' to TCP peer '$peer' ($@)");
+        } elsif (!defined($nbytes)) {
           if ($! == EINTR)  { redo; }
           log_msg(LOG_DEBUG, 
                   "Error when sending event '$event' to TCP peer '$peer' ($!)");
@@ -12197,7 +12886,7 @@ sub read_line {
         log_msg(LOG_INFO,
                 "Input received, executing script $timeout_script 0 $file");
 
-        shell_cmd("$timeout_script 0 $file");
+        shell_cmd([$timeout_script, 0, $file]);
         $inputsrc{$file}->{"scriptexec"} = 0;
 
       }
@@ -12230,7 +12919,7 @@ sub read_line {
         log_msg(LOG_INFO,
                 "No input, executing script $timeout_script 1 $file");
 
-        shell_cmd("$timeout_script 1 $file");
+        shell_cmd([$timeout_script, 1, $file]);
         $inputsrc{$file}->{"scriptexec"} = 1;
 
       }
@@ -12373,7 +13062,7 @@ sub check_signals {
 
     # close the logfile and connection to the system logger
 
-    if ($logopen)  { close(LOGFILE); $logopen = 0; }
+    if ($logopen)  { close($loghandle); $logopen = 0; }
     if ($syslogopen)  { eval { Sys::Syslog::closelog() }; $syslogopen = 0; }
 
     # re-read SEC command line and resource file options
@@ -12432,7 +13121,7 @@ sub check_signals {
 
     # close the logfile and connection to the system logger
 
-    if ($logopen)  { close(LOGFILE); $logopen = 0; }
+    if ($logopen)  { close($loghandle); $logopen = 0; }
     if ($syslogopen)  { eval { Sys::Syslog::closelog() }; $syslogopen = 0; }
 
     # re-read SEC command line and resource file options
@@ -12515,7 +13204,7 @@ sub check_signals {
 
     # reopen the logfile and connection to the system logger
 
-    if ($logopen)  { close(LOGFILE); $logopen = 0; }
+    if ($logopen)  { close($loghandle); $logopen = 0; }
     if ($syslogopen) { eval { Sys::Syslog::closelog() }; $syslogopen = 0; }
 
     if (defined($logfile))  { open_logfile($logfile); } 
@@ -12722,10 +13411,10 @@ sub term_handler {
 }               
 
 
-##########################################################
-# Functions related to daemonization, setting the user and
-# group ID, and option processing
-##########################################################
+########################################################
+# Functions related to daemonization, pid file creation,
+# setting the user and group ID, and option processing
+########################################################
 
 
 # Parameters: -
@@ -12803,6 +13492,25 @@ sub daemonize {
   }
 
   log_msg(LOG_DEBUG, "Daemonization complete");
+
+}
+
+
+# Parameters: -
+# Action: create the pid file for the process
+
+sub create_pidfile {
+
+  my($file) = $_[0];
+  my($fh);
+
+  if (open($fh, ">$file")) {
+    print $fh "$$\n";
+    close($fh);
+  } else {
+    log_msg(LOG_CRIT, "Can't open pidfile $file for writing ($!), exiting!");
+    exit(1);
+  }
 
 }
 
@@ -13064,7 +13772,7 @@ sub set_bufsize_option {
 
 sub read_options {
 
-  my(@argv_backup, @values, $option);
+  my(@argv_backup, @values, $option, $fh);
 
   # back up the @ARGV array
 
@@ -13078,9 +13786,9 @@ sub read_options {
 
   if (exists($ENV{"SECRC"})) {
 
-    if (open(SECRC, $ENV{"SECRC"})) {
+    if (open($fh, $ENV{"SECRC"})) {
 
-      while (<SECRC>) {
+      while (<$fh>) {
         if (/^\s*(.*\S)/) { 
           $option = $1;
           if (index($option, '#') == 0) { next; }
@@ -13088,7 +13796,7 @@ sub read_options {
         }
       }
 
-      close(SECRC);
+      close($fh);
       $rcfile_status = $ENV{"SECRC"};
 
     } else { 
@@ -13307,7 +14015,7 @@ sub read_options {
   }
 
   if ($dumpfjson && !$JSONAVAIL) {
-    print STDERR "'--dumpfjson' option requires Perl JSON module\n";
+    print STDERR "'--dumpfjson' option requires Perl JSON::PP module\n";
     $dumpfjson = 0;
   }
 
@@ -13487,6 +14195,13 @@ $matchrulefunc[EVENT_GROUP] = \&match_eventgroup_rule;
 $matchrulefunc[SUPPRESS] = \&match_1pattern_rule;
 $matchrulefunc[JUMP] = \&match_1pattern_rule;
 
+$matchegrpfunc[SUBSTR] = \&match_eventgroup_substr;
+$matchegrpfunc[REGEXP] = \&match_eventgroup_regexp;
+$matchegrpfunc[PERLFUNC] = \&match_eventgroup_perlfunc;
+$matchegrpfunc[NSUBSTR] = \&match_eventgroup_nsubstr;
+$matchegrpfunc[NREGEXP] = \&match_eventgroup_nregexp;
+$matchegrpfunc[NPERLFUNC] = \&match_eventgroup_nperlfunc;
+
 $processrulefunc[SINGLE] = \&process_single_rule;
 $processrulefunc[SINGLE_W_SCRIPT] = \&process_singlewithscript_rule;
 $processrulefunc[SINGLE_W_SUPPRESS] = \&process_singlewithsuppress_rule;
@@ -13512,9 +14227,13 @@ $actioncopyfunc[CLOSEUDP] = \&copy_two_elem_action;
 $actioncopyfunc[TCPSOCK] = \&copy_three_elem_action;
 $actioncopyfunc[CLOSETCP] = \&copy_two_elem_action;
 $actioncopyfunc[SHELLCOMMAND] = \&copy_two_elem_action;
+$actioncopyfunc[COMMANDEXEC] = \&copy_cmdexec_spawnexec_action;
 $actioncopyfunc[SPAWN] = \&copy_two_elem_action;
+$actioncopyfunc[SPAWNEXEC] = \&copy_cmdexec_spawnexec_action;
 $actioncopyfunc[CSPAWN] = \&copy_three_elem_action;
+$actioncopyfunc[CSPAWNEXEC] = \&copy_cspawnexec_pipeexec_reportexec_action;
 $actioncopyfunc[PIPE] = \&copy_three_elem_action;
+$actioncopyfunc[PIPEEXEC] = \&copy_cspawnexec_pipeexec_reportexec_action;
 $actioncopyfunc[CREATECONTEXT] = \&copy_create_set_action;
 $actioncopyfunc[DELETECONTEXT] = \&copy_two_elem_action;
 $actioncopyfunc[OBSOLETECONTEXT] = \&copy_two_elem_action;
@@ -13525,6 +14244,7 @@ $actioncopyfunc[ADD] = \&copy_three_elem_action;
 $actioncopyfunc[PREPEND] = \&copy_three_elem_action;
 $actioncopyfunc[FILL] = \&copy_three_elem_action;
 $actioncopyfunc[REPORT] = \&copy_three_elem_action;
+$actioncopyfunc[REPORTEXEC] = \&copy_cspawnexec_pipeexec_reportexec_action;
 $actioncopyfunc[COPYCONTEXT] = \&copy_three_elem_action;
 $actioncopyfunc[EMPTYCONTEXT] = \&copy_three_elem_action;
 $actioncopyfunc[POP] = \&copy_three_elem_action;
@@ -13573,9 +14293,13 @@ $actionsubstfunc[CLOSEUDP] = \&subst_two_elem_action;
 $actionsubstfunc[TCPSOCK] = \&subst_three_elem_action;
 $actionsubstfunc[CLOSETCP] = \&subst_two_elem_action;
 $actionsubstfunc[SHELLCOMMAND] = \&subst_two_elem_action;
+$actionsubstfunc[COMMANDEXEC] = \&subst_cmdexec_spawnexec_action;
 $actionsubstfunc[SPAWN] = \&subst_two_elem_action;
+$actionsubstfunc[SPAWNEXEC] = \&subst_cmdexec_spawnexec_action;
 $actionsubstfunc[CSPAWN] = \&subst_three_elem_action;
+$actionsubstfunc[CSPAWNEXEC] = \&subst_cspawnexec_pipeexec_reportexec_action;
 $actionsubstfunc[PIPE] = \&subst_three_elem_action;
+$actionsubstfunc[PIPEEXEC] = \&subst_cspawnexec_pipeexec_reportexec_action;
 $actionsubstfunc[CREATECONTEXT] = \&subst_create_set_action;
 $actionsubstfunc[DELETECONTEXT] = \&subst_two_elem_action;
 $actionsubstfunc[OBSOLETECONTEXT] = \&subst_two_elem_action;
@@ -13586,6 +14310,7 @@ $actionsubstfunc[ADD] = \&subst_three_elem_action;
 $actionsubstfunc[PREPEND] = \&subst_three_elem_action;
 $actionsubstfunc[FILL] = \&subst_three_elem_action;
 $actionsubstfunc[REPORT] = \&subst_three_elem_action;
+$actionsubstfunc[REPORTEXEC] = \&subst_cspawnexec_pipeexec_reportexec_action;
 $actionsubstfunc[COPYCONTEXT] = \&subst_copy_empty_etc_action;
 $actionsubstfunc[EMPTYCONTEXT] = \&subst_copy_empty_etc_action;
 $actionsubstfunc[POP] = \&subst_copy_empty_etc_action;
@@ -13634,9 +14359,13 @@ $execactionfunc[CLOSEUDP] = \&execute_closeudp_action;
 $execactionfunc[TCPSOCK] = \&execute_tcpsock_action;
 $execactionfunc[CLOSETCP] = \&execute_closetcp_action;
 $execactionfunc[SHELLCOMMAND] = \&execute_shellcmd_action;
+$execactionfunc[COMMANDEXEC] = \&execute_cmdexec_action;
 $execactionfunc[SPAWN] = \&execute_spawn_action;
+$execactionfunc[SPAWNEXEC] = \&execute_spawnexec_action;
 $execactionfunc[CSPAWN] = \&execute_cspawn_action;
+$execactionfunc[CSPAWNEXEC] = \&execute_cspawnexec_action;
 $execactionfunc[PIPE] = \&execute_pipe_action;
+$execactionfunc[PIPEEXEC] = \&execute_pipeexec_action;
 $execactionfunc[CREATECONTEXT] = \&execute_create_action;
 $execactionfunc[DELETECONTEXT] = \&execute_delete_action;
 $execactionfunc[OBSOLETECONTEXT] = \&execute_obsolete_action;
@@ -13647,6 +14376,7 @@ $execactionfunc[ADD] = \&execute_add_action;
 $execactionfunc[PREPEND] = \&execute_prepend_action;
 $execactionfunc[FILL] = \&execute_fill_action;
 $execactionfunc[REPORT] = \&execute_report_action;
+$execactionfunc[REPORTEXEC] = \&execute_reportexec_action;
 $execactionfunc[COPYCONTEXT] = \&execute_copy_action;
 $execactionfunc[EMPTYCONTEXT] = \&execute_empty_action;
 $execactionfunc[POP] = \&execute_pop_action;
@@ -13762,16 +14492,7 @@ if ($detach)  { daemonize(); }
 
 ### Create pidfile - must be done after daemonization
 
-if (defined($pidfile)) {
-  if (open(PIDFILE, ">$pidfile")) {
-    print PIDFILE "$$\n";
-    close(PIDFILE);
-  } else {
-    log_msg(LOG_CRIT,
-            "Can't open pidfile $pidfile for writing ($!), exiting!");
-    exit(1);
-  }
-}
+if (defined($pidfile))  { create_pidfile($pidfile); }
 
 ### Set signal handlers
 

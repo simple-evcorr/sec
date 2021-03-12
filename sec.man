@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.8.3 - sec.man
-.\" Copyright (C) 2000-2020 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.9.alpha1 - sec.man
+.\" Copyright (C) 2000-2021 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "May 2020" "SEC 2.8.3"
+.TH sec 1 "March 2021" "SEC 2.9.alpha1"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -548,7 +548,6 @@ to the dump file name that reflects the file creation time. Default is
 if the
 .B \-\-dumpfjson
 option is specified, dump file is produced in JSON format. 
-Note that this option requires the presence of Perl JSON module.
 Default is
 .BR \-\-nodumpfjson . 
 .TP
@@ -1751,7 +1750,7 @@ Apart from match variables, SEC supports
 in action lists which facilitate data sharing between actions and Perl 
 integration. Each action list variable has a name which must begin with 
 a letter and consist of letters, digits and underscores. Names of built-in 
-variables usually start with a punctuation mark (.), so that they can be 
+variables usually start with a dot character (.), so that they can be 
 distinguished from user defined variables. In order to refer 
 to an action list variable, its name must be prefixed by a percent sign (%). 
 Unlike match variables, action list variables can only be used in 
@@ -1860,6 +1859,9 @@ carriage return character.
 .TP
 .I %.tab 
 tabulation character.
+.TP
+.I %.sp
+space character.
 .TP
 .I %.chr0, ..., %.chr31
 ASCII 0..31 control characters (e.g., %.chr7 is bell and %.chr12 is 
@@ -2125,13 +2127,15 @@ by the
 action.
 .TP 
 .I shellcmd <cmdline>
-Fork a process for executing command line <cmdline>. If the
+Fork a process for executing command line <cmdline>. 
+If <cmdline> contains shell metacharacters, <cmdline> is parsed by shell. 
+If the
 .B \-\-quoting
 option was specified and <cmdline> contains %s variables, the value of %s
 is quoted with single quotes before substituting it into <cmdline>; 
 if the value of %s contains single quotes, they are masked with backslashes
 (e.g., abc is converted to 'abc' and aa'bb is converted to 'aa'\\''bb').
-For additional information, see INTERPROCESS COMMUNICATION section.
+For additional information, see CHILD PROCESSES section.
 For example, consider the following action list definition:
 .sp
 action=shellcmd (cat /tmp/report | mail root; rm -f /tmp/report); \\
@@ -2151,7 +2155,7 @@ Since the command line contains a semicolon which is used for separating
 and
 .I logonly
 actions, the command line is enclosed in parentheses.
-.TP 
+.TP
 .I spawn <cmdline>
 Similar to the
 .I shellcmd
@@ -2181,9 +2185,56 @@ action, except that if the
 .B \-\-intcontexts
 command line option is given, internal context <name> is set up for each 
 synthetic event. 
+.TP
+.I cmdexec <cmdline>
+Fork a process for executing command line <cmdline>. 
+Unlike
+.I shellcmd
+action, <cmdline> is not parsed by shell, but split into arguments by 
+using whitespace as a separator, and passed to 
+.BR execvp (3) 
+for execution. Note that splitting into arguments is done when
+.I cmdexec
+action is loaded from the configuration file and parsed, not at runtime 
+(e.g., if <cmdline> is
+.IR "/usr/local/bin/mytool $1 $2" ,
+the values of $1 and $2 variables are regarded as single arguments even if
+the values contain whitespace).
+For additional information, see CHILD PROCESSES section.
+For example, consider the following action list definition:
+.sp
+action=cmdexec rm /tmp/report*
+.sp
+The above 
+.I cmdexec
+action will remove the file /tmp/report* without treating * as a file
+pattern character that matches any string.
+.TP
+.I spawnexec <cmdline>
+Similar to the
+.I cmdexec
+action, except that each line from the standard output of <cmdline>
+becomes a synthetic event and will be treated like a line from input file
+(see the
+.I event
+action for more information). If the
+.B \-\-intcontexts
+command line option is given, internal context _INTERNAL_EVENT is set
+up before each synthetic event is processed (see INTERNAL EVENTS AND
+CONTEXTS section for more information).
+.TP
+.I cspawnexec <name> <cmdline>
+Similar to the
+.I spawnexec
+action, except that if the
+.B \-\-intcontexts
+command line option is given, internal context <name> is set up for each 
+synthetic event. 
 .TP 
 .I pipe '[<string>]' [<cmdline>]
-Fork a process for executing command line <cmdline>. The string <string> 
+Fork a process for executing command line <cmdline>. 
+If <cmdline> contains shell metacharacters, <cmdline> is parsed by shell. 
+The string <string> 
 with a terminating newline is written to the standard input of <cmdline> 
 (single quotes are used for disambiguating <string> from <cmdline>).
 If <string> contains semicolons, <string> must be enclosed in parentheses
@@ -2191,7 +2242,7 @@ If <string> contains semicolons, <string> must be enclosed in parentheses
 .IR "pipe '($1;$2)' /bin/cat" ).
 Default value for <string> is %s.
 If <cmdline> is omitted, <string> is written to standard output.
-For additional information, see INTERPROCESS COMMUNICATION section.
+For additional information, see CHILD PROCESSES section.
 For example, consider the following action list definition:
 .sp
 action=pipe 'Offending activities from host $1' /bin/mail root@localhost
@@ -2203,6 +2254,38 @@ to the standard input of the
 .I /bin/mail root@localhost
 command which sends this line to root@localhost via e-mail
 (<hostname> is the value of the $1 match variable). 
+.TP
+.I pipeexec '[<string>]' [<cmdline>]
+Similar to the
+.I pipe
+action, except <cmdline> is not parsed by shell, but split into arguments by
+using whitespace as a separator, and passed to 
+.BR execvp (3) 
+for execution. Note that splitting into arguments is done when
+.I pipeexec
+action is loaded from the configuration file and parsed, not at runtime 
+(e.g., if <cmdline> is
+.IR "/usr/local/bin/mytool $1 $2" ,
+the values of $1 and $2 variables are regarded as single arguments even if
+the values contain whitespace).
+For example, consider the following action list definition:
+.sp
+action=pipeexec 'Offending activities from host $1' \\
+                /bin/mail -s SEC%{.sp}alert $2
+.sp
+The above
+.I pipeexec
+action writes the line "Offending activities from host <hostname>"
+to the standard input of the
+.I /bin/mail -s <subject> <user>
+command which sends this line to <user> via e-mail with subject <subject>
+(<hostname> is the value of the $1 match variable, while <user> is the value
+of the $2 match variable). Note that since <subject> is defined as
+SEC%{.sp}alert and does not contain whitespace, it is treated as a single
+argument for the -s flag of the /bin/mail command. However, since <subject>
+contains the %.sp action list variable, the string "SEC alert" will be used
+for the e-mail subject at runtime. Also, if the value of the $2 match variable 
+contains shell metacharacters, they will not be interpreted by the shell.
 .TP 
 .I create [<name> [<time> [<action list>] ] ]
 Create a context with the name <name>, lifetime of <time> seconds, and 
@@ -2340,15 +2423,17 @@ action, except that the event store of the context <name> is emptied
 before <string> is added.
 .TP 
 .I report <name> [<cmdline>]
-Fork a process for executing command line <cmdline>, and write strings from
-the event store of the context <name> to the standard input of <cmdline>.
+Fork a process for executing command line <cmdline>. 
+If <cmdline> contains shell metacharacters, <cmdline> is parsed by shell. 
+Also, write strings from the event store of the context <name> to the standard 
+input of <cmdline>.
 Strings are written in the order they appear in the event store, with
 a terminating newline appended to each string.
 If the context <name> does not exist or its event store is empty, <cmdline>
 is not executed.
 The <name> parameter may not contain whitespace, and if <cmdline> is omitted,
 strings are written to standard output.
-For additional information, see INTERPROCESS COMMUNICATION section.
+For additional information, see CHILD PROCESSES section.
 For example, consider the following action list definition:
 .sp
 action=create PID_$1 60 ( report PID_$1 /bin/mail root@localhost ); \\
@@ -2360,6 +2445,20 @@ of 60 seconds and sets the first string in the context event store to
 When the context expires, all strings from the event store will be mailed
 to root@localhost.
 .TP 
+.I reportexec <name> [<cmdline>]
+Similar to the
+.I report
+action, except <cmdline> is not parsed by shell, but split into arguments by
+using whitespace as a separator, and passed to 
+.BR execvp (3) 
+for execution. Note that splitting into arguments is done when
+.I reportexec
+action is loaded from the configuration file and parsed, not at runtime 
+(e.g., if <cmdline> is
+.IR "/usr/local/bin/mytool $1 $2" ,
+the values of $1 and $2 variables are regarded as single arguments even if
+the values contain whitespace).
+.TP
 .I copy <name> %<var>
 Strings s1,...,sn from the event store of the context <name> are joined
 into a multi-line string "s1<NEWLINE>...<NEWLINE>sn", and this string is
@@ -2574,7 +2673,7 @@ backslashes (e.g., if the match variable $1 holds the value
 abc'123'xyz, the action
 .I assignsq %myvar $1
 assigns the value 'abc'\\''123'\\''xyz' to the action list variable %myvar).
-This action is useful for disabling shell intepretation 
+This action is useful for disabling shell interpretation 
 for the values of action list variables that appear in command lines executed 
 by SEC.
 Default value for <string> is %s.
@@ -2899,13 +2998,13 @@ action=eval %o (print "\\)";)
 .SH "RULE TYPES"
 This section provides a detailed discussion of SEC rule types.
 .SS "SINGLE RULE"
-The
-.B Single
-rule immediately executes an action list when an event has matched the rule.
-An event matches the rule if the pattern matches the event and the context
-expression (if given) evaluates TRUE.
-.PP
-The Single rule supports the following fields:
+The Single rule supports the following fields.
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+and
+.I action
+fields.
 .TP 
 .I type
 fixed to Single (value is case insensitive, so single or sIngLe can be
@@ -2936,13 +3035,14 @@ action list.
 .IR rem " (optional, may appear more than once)"
 remarks and comments.
 .PP
-Note that match variables may be used in
-.IR context ,
-.IR desc ,
-and
-.I action
-fields.
-Also note that this rule does not start an event correlation operation, and the
+The
+.B Single
+rule immediately executes an action list when an event has matched the rule.
+An event matches the rule if the pattern matches the event and the context
+expression (if given) evaluates TRUE.
+.PP
+Note that the Single rule does not start event correlation operations, 
+and the
 .I desc
 field is merely used for setting the %s action list variable.
 .PP
@@ -3013,21 +3113,15 @@ The second rule has also its
 field set to TakeNext, since otherwise no log file lines would reach the 
 third rule.
 .SS "SINGLEWITHSCRIPT RULE"
-The
-.B SingleWithScript
-rule forks a process for executing an external program when an event has 
-matched the rule. 
-The names of all currently existing contexts are written to the standard
-input of the program.
-After the program has been forked, the rule matching continues immediately, 
-and the program status will be checked periodically until the program exits.
-If the program returns 0 exit status, the action list defined by the
-.I action
-field is executed; otherwise the action list defined by the
+The SingleWithScript rule supports the following fields.
+Note that match variables may be used in
+.IR context ,
+.IR script ,
+.IR desc ,
+.IR action ,
+and
 .I action2
-field is executed (if given).
-.PP
-The SingleWithScript rule supports the following fields:
+fields. 
 .TP 
 .I type
 fixed to SingleWithScript (value is case insensitive).
@@ -3049,7 +3143,10 @@ variable map.
 context expression.
 .TP 
 .I script
-an external program.
+command line of external program.
+.TP
+.IR shell " (optional)"
+Yes or No (values are case insensitive, default is Yes).
 .TP 
 .I desc
 operation description string.
@@ -3063,15 +3160,43 @@ action list.
 .IR rem " (optional, may appear more than once)"
 remarks and comments.
 .PP
-Note that match variables may be used in
-.IR context ,
-.IR script ,
-.IR desc ,
-.IR action ,
-and
+The
+.B SingleWithScript
+rule forks a process for executing an external program when an event has 
+matched the rule. 
+The command line of the external program is defined by the
+.I script
+field.
+.PP
+If the
+.I shell
+field is set to Yes (this is the default), the command line of the external
+program will be parsed by shell if the command line contains shell 
+metacharacters.
+If the
+.I shell
+field is set to No, command line is not parsed by shell, but split into 
+arguments by using whitespace as a separator, and passed to 
+.BR execvp (3) 
+for execution. Note that splitting into arguments is done when command
+line is loaded from the configuration file and parsed, not at runtime
+(e.g., if command line is
+.IR "/usr/local/bin/mytool $1 $2" ,
+the values of $1 and $2 variables are regarded as single arguments even if
+the values contain whitespace).
+.PP
+The names of all currently existing contexts are written to the standard
+input of the program.
+After the program has been forked, the rule matching continues immediately, 
+and the program status will be checked periodically until the program exits.
+If the program returns 0 exit status, the action list defined by the
+.I action
+field is executed; otherwise the action list defined by the
 .I action2
-fields. 
-Also note that this rule does not start an event correlation operation, and the
+field is executed (if given).
+.PP
+Note that the SingleWithScript rule does not start event correlation 
+operations, and the
 .I desc
 field is merely used for setting the %s action list variable.
 .PP
@@ -3097,22 +3222,13 @@ if <ipaddress> responds to ping. If <ipaddress> is pingable, the message
 an e-mail warning containing a human-readable timestamp is sent to 
 root@localhost.
 .SS "SINGLEWITHSUPPRESS RULE"
-The
-.B SingleWithSuppress
-rule runs event correlation operations for filtering repeated instances of
-the same event during T seconds. The value of T is defined by the
-.I window
-field.
-.PP
-When an event has matched the rule, SEC evaluates the operation description 
-string given with the
-.I desc
-field. If the operation for the given string and rule does not exist, 
-SEC will create it with the lifetime of T seconds, and the operation 
-immediately executes an action list. If the operation exists, it consumes 
-the matching event without any action. 
-.PP
-The SingleWithSuppress rule supports the following fields:
+The SingleWithSuppress rule supports the following fields.
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+and
+.I action
+fields.
 .TP 
 .I type
 fixed to SingleWithSuppress (value is case insensitive).
@@ -3145,12 +3261,20 @@ event correlation window size (value is an integer constant).
 .IR rem " (optional, may appear more than once)"
 remarks and comments.
 .PP
-Note that match variables may be used in
-.IR context ,
-.IR desc ,
-and
-.I action
-fields.
+The
+.B SingleWithSuppress
+rule runs event correlation operations for filtering repeated instances of
+the same event during T seconds. The value of T is defined by the
+.I window
+field.
+.PP
+When an event has matched the rule, SEC evaluates the operation description 
+string given with the
+.I desc
+field. If the operation for the given string and rule does not exist, 
+SEC will create it with the lifetime of T seconds, and the operation 
+immediately executes an action list. If the operation exists, it consumes 
+the matching event without any action. 
 .PP
 .B Examples:
 .PP
@@ -3182,73 +3306,17 @@ operation will be started which sends a warning to root@localhost again
 .I desc
 field contains the $1 match variable which evaluates to the file system name).
 .SS "PAIR RULE"
-The
-.B Pair
-rule runs event correlation operations for processing event pairs 
-during T seconds. The value of T is defined by the
-.I window
-field. Default value is 0 which means infinity.
-.PP
-When an event has matched the conditions defined by the
-.I pattern
-and
-.I context
-field, SEC evaluates the operation description string given with the
-.I desc
-field. 
-If the operation for the given string and rule exists, it consumes 
-the matching event without any action. If the operation does not exist, 
-SEC will create it with the lifetime of T seconds, and the operation 
-immediately executes an action list defined by the
-.I action
-field. SEC will also copy the match conditions given with the 
-.I pattern2
-and
-.I context2
-field into the operation, and substitute match variables with their values 
-in copied conditions. 
-.PP
-If the event does not match conditions defined by the
-.I pattern
-and
-.I context
-field, SEC will check the match conditions of all operations started by 
-the given rule. Each matching operation executes the action list given with the
-.I action2
-field and finishes. 
-.PP
-If match variables are set when the operation matches an event, they are
-made available as $-prefixed match variables in
+The Pair rule supports the following fields.
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+.IR action ,
+.IR pattern2 ,
 .IR context2 ,
 .IR desc2 ,
 and
 .I action2
-fields of the rule definition. For example, if 
-.I pattern2
-field is a regular expression, then $1 in the
-.I desc2
-field is set by
-.IR pattern2 .
-In order to access match variables set by 
-.IR pattern ,
-%-prefixed match variables have to be used in
-.IR context2 ,
-.IR desc2 ,
-and
-.I action2
-fields. For example, if 
-.I pattern
-and
-.I pattern2
-are regular expressions, then %1 in the
-.I desc2
-field refers to the value set by the first capture group in
-.I pattern
-(i.e., it has the same value as $1 in the
-.I desc
-field).
-.PP
-The Pair rule supports the following fields:
+fields. 
 .TP 
 .I type
 fixed to Pair (value is case insensitive).
@@ -3318,16 +3386,71 @@ event correlation window size (value is an integer constant).
 .IR rem " (optional, may appear more than once)"
 remarks and comments.
 .PP
-Note that match variables may be used in
-.IR context ,
-.IR desc ,
-.IR action ,
-.IR pattern2 ,
+The
+.B Pair
+rule runs event correlation operations for processing event pairs 
+during T seconds. The value of T is defined by the
+.I window
+field. Default value is 0 which means infinity.
+.PP
+When an event has matched the conditions defined by the
+.I pattern
+and
+.I context
+field, SEC evaluates the operation description string given with the
+.I desc
+field. 
+If the operation for the given string and rule exists, it consumes 
+the matching event without any action. If the operation does not exist, 
+SEC will create it with the lifetime of T seconds, and the operation 
+immediately executes an action list defined by the
+.I action
+field. SEC will also copy the match conditions given with the 
+.I pattern2
+and
+.I context2
+field into the operation, and substitute match variables with their values 
+in copied conditions. 
+.PP
+If the event does not match conditions defined by the
+.I pattern
+and
+.I context
+field, SEC will check the match conditions of all operations started by 
+the given rule. Each matching operation executes the action list given with the
+.I action2
+field and finishes. 
+.PP
+If match variables are set when the operation matches an event, they are
+made available as $-prefixed match variables in
 .IR context2 ,
 .IR desc2 ,
 and
 .I action2
-fields. 
+fields of the rule definition. For example, if 
+.I pattern2
+field is a regular expression, then $1 in the
+.I desc2
+field is set by
+.IR pattern2 .
+In order to access match variables set by 
+.IR pattern ,
+%-prefixed match variables have to be used in
+.IR context2 ,
+.IR desc2 ,
+and
+.I action2
+fields. For example, if 
+.I pattern
+and
+.I pattern2
+are regular expressions, then %1 in the
+.I desc2
+field refers to the value set by the first capture group in
+.I pattern
+(i.e., it has the same value as $1 in the
+.I desc
+field).
 .PP
 .B Examples:
 .PP
@@ -3463,75 +3586,17 @@ the operation will send the e-mail message "Server box.test was not accessible
 from Dec 18 23:01:17 to Dec 18 23:09:54" to root@localhost, and will terminate
 immediately.
 .SS "PAIRWITHWINDOW RULE"
-The
-.B PairWithWindow
-rule runs event correlation operations for processing event pairs
-during T seconds. The value of T is defined by the
-.I window
-field.
-.PP
-When an event has matched the conditions defined by the
-.I pattern
-and
-.I context
-field, SEC evaluates the operation description string given with the
-.I desc
-field. 
-If the operation for the given string and rule exists, it consumes 
-the matching event without any action. If the operation does not exist, 
-SEC will create it with the lifetime of T seconds. 
-SEC will also copy the match conditions given with the 
-.I pattern2
-and
-.I context2
-field into the operation, and substitute match variables with their values 
-in copied conditions. 
-.PP
-If the event does not match conditions defined by the
-.I pattern
-and
-.I context
-field, SEC will check the match conditions of all operations started by 
-the given rule. Each matching operation executes the action list given with the
-.I action2
-field and finishes. 
-If the operation has not observed a matching event by the end of its lifetime,
-it executes the action list given with the 
-.I action
-field before finishing.
-.PP
-If match variables are set when the operation matches an event, they are
-made available as $-prefixed match variables in
+The PairWithWindow rule supports the following fields.
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+.IR action ,
+.IR pattern2 ,
 .IR context2 ,
 .IR desc2 ,
 and
 .I action2
-fields of the rule definition. For example, if 
-.I pattern2
-field is a regular expression, then $1 in the
-.I desc2
-field is set by 
-.IR pattern2 .
-In order to access match variables set by 
-.IR pattern ,
-%-prefixed match variables have to be used in
-.IR context2 ,
-.IR desc2 ,
-and
-.I action2
-fields. For example, if 
-.I pattern
-and
-.I pattern2
-are regular expressions, then %1 in the
-.I desc2
-field refers to the value set by the first capture group in
-.I pattern
-(i.e., it has the same value as $1 in the
-.I desc
-field).
-.PP
-The PairWithWindow rule supports the following fields:
+fields. 
 .TP 
 .I type
 fixed to PairWithWindow (value is case insensitive).
@@ -3601,16 +3666,73 @@ event correlation window size (value is an integer constant).
 .IR rem " (optional, may appear more than once)"
 remarks and comments.
 .PP
-Note that match variables may be used in
-.IR context ,
-.IR desc ,
-.IR action ,
-.IR pattern2 ,
+The
+.B PairWithWindow
+rule runs event correlation operations for processing event pairs
+during T seconds. The value of T is defined by the
+.I window
+field.
+.PP
+When an event has matched the conditions defined by the
+.I pattern
+and
+.I context
+field, SEC evaluates the operation description string given with the
+.I desc
+field. 
+If the operation for the given string and rule exists, it consumes 
+the matching event without any action. If the operation does not exist, 
+SEC will create it with the lifetime of T seconds. 
+SEC will also copy the match conditions given with the 
+.I pattern2
+and
+.I context2
+field into the operation, and substitute match variables with their values 
+in copied conditions. 
+.PP
+If the event does not match conditions defined by the
+.I pattern
+and
+.I context
+field, SEC will check the match conditions of all operations started by 
+the given rule. Each matching operation executes the action list given with the
+.I action2
+field and finishes. 
+If the operation has not observed a matching event by the end of its lifetime,
+it executes the action list given with the 
+.I action
+field before finishing.
+.PP
+If match variables are set when the operation matches an event, they are
+made available as $-prefixed match variables in
 .IR context2 ,
 .IR desc2 ,
 and
 .I action2
-fields. 
+fields of the rule definition. For example, if 
+.I pattern2
+field is a regular expression, then $1 in the
+.I desc2
+field is set by 
+.IR pattern2 .
+In order to access match variables set by 
+.IR pattern ,
+%-prefixed match variables have to be used in
+.IR context2 ,
+.IR desc2 ,
+and
+.I action2
+fields. For example, if 
+.I pattern
+and
+.I pattern2
+are regular expressions, then %1 in the
+.I desc2
+field refers to the value set by the first capture group in
+.I pattern
+(i.e., it has the same value as $1 in the
+.I desc
+field).
 .PP
 .B Examples:
 .PP
@@ -3712,41 +3834,14 @@ match variables have to be used in the
 field, in order to refer to the original values of $1 (root) and $2
 (192.168.1.104) when the operation was created.
 .SS "SINGLEWITHTHRESHOLD RULE"
-The
-.B SingleWithThreshold
-rule runs event correlation operations for counting repeated instances of the
-same event during T seconds, and taking an action if N events are observed. 
-The values of T and N are defined by the
-.I window
+The SingleWithThreshold rule supports the following fields.
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+.IR action ,
 and
-.I thresh
-field, respectively.
-.PP
-When an event has matched the rule, SEC evaluates the operation description 
-string given with the 
-.I desc 
-field. If the operation for the given string and rule does not exist, 
-SEC will create it with the lifetime of T seconds. The operation will 
-memorize the occurrence time of the event (current time as returned by the
-.BR time (2)
-system call), and compare the number of memorized occurrence times with 
-the threshold N. If the operation has observed N events, it executes the
-action list defined by the
-.I action
-field, and consumes all further matching events without any action. If the
-rule has an optional action list defined with the
 .I action2
-field, the operation will execute it before finishing, provided that the
-action list given with
-.I action
-has been previously executed by the operation. Note that  a sliding 
-window is employed for event counting -- if the operation has observed 
-less than N events by the end of its lifetime, it drops occurrence times which
-are older than T seconds, and extends its lifetime for T seconds from the
-earliest remaining occurrence time. If there are no remaining occurrence
-times, the operation finishes without executing an action list. 
-.PP
-The SingleWithThreshold rule supports the following fields:
+fields.
 .TP 
 .I type
 fixed to SingleWithThreshold (value is case insensitive).
@@ -3785,13 +3880,39 @@ counting threshold (value is an integer constant).
 .IR rem " (optional, may appear more than once)"
 remarks and comments.
 .PP
-Note that match variables may be used in
-.IR context ,
-.IR desc ,
-.IR action ,
+The
+.B SingleWithThreshold
+rule runs event correlation operations for counting repeated instances of the
+same event during T seconds, and taking an action if N events are observed. 
+The values of T and N are defined by the
+.I window
 and
+.I thresh
+field, respectively.
+.PP
+When an event has matched the rule, SEC evaluates the operation description 
+string given with the 
+.I desc 
+field. If the operation for the given string and rule does not exist, 
+SEC will create it with the lifetime of T seconds. The operation will 
+memorize the occurrence time of the event (current time as returned by the
+.BR time (2)
+system call), and compare the number of memorized occurrence times with 
+the threshold N. If the operation has observed N events, it executes the
+action list defined by the
+.I action
+field, and consumes all further matching events without any action. If the
+rule has an optional action list defined with the
 .I action2
-fields.
+field, the operation will execute it before finishing, provided that the
+action list given with
+.I action
+has been previously executed by the operation. Note that  a sliding 
+window is employed for event counting -- if the operation has observed 
+less than N events by the end of its lifetime, it drops occurrence times which
+are older than T seconds, and extends its lifetime for T seconds from the
+earliest remaining occurrence time. If there are no remaining occurrence
+times, the operation finishes without executing an action list. 
 .PP
 .B Examples:
 .PP
@@ -3847,40 +3968,15 @@ will run until 01:44:10).
 Since there will be no further login failure events for user risto2,
 the second operation will exist until 01:45:00 without taking any action.
 .SS "SINGLEWITH2THRESHOLDS RULE"
-The
-.B SingleWith2Thresholds
-rule runs event correlation operations which take action if N1 events have 
-been observed in the window of T1 seconds, and then at most N2 events will
-be observed in the window of T2 seconds. 
-The values of T1, N1, T2, and N2 are defined by the
-.IR window ,
-.IR thresh ,
-.IR window2 ,
+The SingleWith2Thresholds rule supports the following fields.
+Note that match variables may be used in
+.IR context ,
+.IR desc ,
+.IR action ,
+.IR desc2 ,
 and
-.I thresh2
-field, respectively.
-.PP
-When an event has matched the rule, SEC evaluates the operation description 
-string given with the 
-.I desc 
-field. If the operation for the given string and rule does not exist, 
-SEC will create it with the lifetime of T1 seconds. The operation will 
-memorize the occurrence time of the event (current time as returned by the
-.BR time (2)
-system call), and compare the number of memorized occurrence times with 
-the threshold N1. If the operation has observed N1 events, it executes the
-action list defined by the
-.I action
-field, and starts another counting round for T2 seconds.
-If no more than N2 events have been observed by the end of the window, 
-the operation executes the action list defined by the
 .I action2
-field and finishes. Note that both windows are sliding -- the first window
-slides like the window of the SingleWithThreshold operation, while the 
-beginning of the second window is moved to the second earliest memorized
-event occurrence time when the threshold N2 is violated.
-.PP
-The SingleWith2Thresholds rule supports the following fields:
+fields.
 .TP 
 .I type
 fixed to SingleWith2Thresholds (value is case insensitive).
@@ -3929,14 +4025,38 @@ counting threshold.
 .IR rem " (optional, may appear more than once)"
 remarks and comments.
 .PP
-Note that match variables may be used in
-.IR context ,
-.IR desc ,
-.IR action ,
-.IR desc2 ,
+The
+.B SingleWith2Thresholds
+rule runs event correlation operations which take action if N1 events have 
+been observed in the window of T1 seconds, and then at most N2 events will
+be observed in the window of T2 seconds. 
+The values of T1, N1, T2, and N2 are defined by the
+.IR window ,
+.IR thresh ,
+.IR window2 ,
 and
+.I thresh2
+field, respectively.
+.PP
+When an event has matched the rule, SEC evaluates the operation description 
+string given with the 
+.I desc 
+field. If the operation for the given string and rule does not exist, 
+SEC will create it with the lifetime of T1 seconds. The operation will 
+memorize the occurrence time of the event (current time as returned by the
+.BR time (2)
+system call), and compare the number of memorized occurrence times with 
+the threshold N1. If the operation has observed N1 events, it executes the
+action list defined by the
+.I action
+field, and starts another counting round for T2 seconds.
+If no more than N2 events have been observed by the end of the window, 
+the operation executes the action list defined by the
 .I action2
-fields.
+field and finishes. Note that both windows are sliding -- the first window
+slides like the window of the SingleWithThreshold operation, while the 
+beginning of the second window is moved to the second earliest memorized
+event occurrence time when the threshold N2 is violated.
 .PP
 .B Examples:
 .PP
@@ -4006,105 +4126,17 @@ Since there will be no further SYS-3-CPUHOG messages for Router1,
 the operation will run until 13:28:53 and then expire, logging the message
 "Router Router1 CPU load has been normal for 1h" before finishing.
 .SS "EVENTGROUP RULE"
-The
-.B EventGroup
-rule runs event correlation operations for counting repeated instances of
-N different events e1,...,eN during T seconds, and taking an action if 
-threshold conditions c1,...,cN for *all* events are satisfied (i.e., for 
-each event eK there are at least cK event instances in the window).
-Note that the event correlation window of the EventGroup operation 
-is sliding like the window of the SingleWithThreshold operation.
-.PP
-Event e1 is described with the 
-.I pattern
+The EventGroup rule supports the following fields.
+Note that match variables may be used in
+.IR context* ,
+.IR count* ,
+.IR desc ,
+.IR action ,
+.IR init ,
+.IR end ,
 and
-.I context
-field, event e2 is described with the
-.I pattern2
-and
-.I context2
-field, etc.
-The values for N and T are defined by the
-.I type
-and 
-.I window
-field, respectively. The value for c1 is given with the 
-.I thresh
-field, the value for c2 is given with the
-.I thresh2
-field, etc. 
-Values for N and c1,...,cN default to 1. 
-.PP
-In order to match an event with the rule, 
-.I pattern
-and
-.I context
-fields are evaluated first. If they don't match the event, then
-.I pattern2
-and
-.I context2
-are evaluated, etc. If all N conditions are tried without a success,
-the event doesn't match the rule.
-.PP
-When an event has matched the rule, SEC evaluates the operation description 
-string given with the 
-.I desc 
-field. If the operation for the given string and rule does not exist, 
-SEC will create it with the lifetime of T seconds. The operation will 
-memorize the occurrence time of the event (current time as returned by the
-.BR time (2)
-system call), and compare the number of memorized occurrence times for each
-eK with the threshold cK (i.e., the number of observed instances of eK is 
-compared with the threshold cK).
-If all threshold confitions are satisfied, the operation executes the
-action list defined by the
-.I action
-field, and consumes all further matching events without re-executing
-the action list if the
-.I multact
-field is set to No (this is the default). 
-However, if
-.I multact
-is set to Yes, the operation will re-evaluate the threshold conditions on 
-every further matching event, re-executing the action list given with the
-.I action
-field if all conditions are satisfied, and sliding the event correlation 
-window forward when the window is about to expire (if no events remain in
-the window, the operation will finish).
-.PP
-If the rule definition has an optional action list defined with the
-.I countK
-field for event eK, the operation executes it every time an instance of eK 
-is observed (even if
-.I multact
-is set to No and the operation has already executed the action list given
-with
-.IR action ).
-If the action list contains match variables, they are substituted before
-*each* execution with values from matching the current instance of eK.
-.PP
-If the rule definition has an optional action list defined with the
-.I init
-field, the operation executes it immediately after the operation has been
-created. 
-.PP
-If the rule definition has an optional action list defined with the
-.I end
-field, the operation executes it immediately before the operation finishes.
-Note that this action list is *not* executed when the operation is
-terminated with the
-.I reset
-action.
-.PP
-If the rule definition has an optional action list defined with the
 .I slide
-field, the operation executes it immediately after the event correlation 
-window has slidden forward.
-However, note that moving the window with the
-.I setwpos
-action will *not* trigger the execution.
-.PP
-The EventGroup rule supports the following fields:
+fields.
 .TP 
 .I type 
 .IR "" "EventGroup[" N "]"
@@ -4201,6 +4233,15 @@ action list.
 .TP
 .IR multact " (optional)"
 Yes or No (values are case insensitive, default is No).
+.TP
+.IR egptype " (optional)"
+SubStr, NSubStr, RegExp, NRegExp, PerlFunc or NPerlFunc
+(values are case insensitive).
+Specifies the pattern type for
+.IR egpattern .
+.TP
+.IR egpattern " (optional)"
+event group pattern.
 .TP 
 .I window
 event correlation window size (value is an integer constant).
@@ -4208,16 +4249,297 @@ event correlation window size (value is an integer constant).
 .IR rem " (optional, may appear more than once)"
 remarks and comments.
 .PP
-Note that match variables may be used in
-.IR context* ,
-.IR count* ,
-.IR desc ,
-.IR action ,
-.IR init ,
-.IR end ,
+The
+.B EventGroup
+rule runs event correlation operations for counting repeated instances of
+N different events e1,...,eN during T seconds, and taking an action if 
+threshold conditions c1,...,cN for *all* events are satisfied (i.e., for 
+each event eK there are at least cK event instances in the window).
+Note that the event correlation window of the EventGroup operation 
+is sliding like the window of the SingleWithThreshold operation.
+.PP
+Event e1 is described with the 
+.I pattern
 and
+.I context
+field, event e2 is described with the
+.I pattern2
+and
+.I context2
+field, etc.
+The values for N and T are defined by the
+.I type
+and 
+.I window
+field, respectively. The value for c1 is given with the 
+.I thresh
+field, the value for c2 is given with the
+.I thresh2
+field, etc. 
+Values for N and c1,...,cN default to 1. 
+.PP
+In order to match an event with the rule, 
+.I pattern
+and
+.I context
+fields are evaluated first. If they don't match the event, then
+.I pattern2
+and
+.I context2
+are evaluated, etc. If all N conditions are tried without a success,
+the event doesn't match the rule.
+.PP
+When an event has matched the rule, SEC evaluates the operation description 
+string given with the 
+.I desc 
+field. If the operation for the given string and rule does not exist, 
+SEC will create it with the lifetime of T seconds. The operation will 
+memorize the occurrence time of the event (current time as returned by the
+.BR time (2)
+system call), and compare the number of memorized occurrence times for each
+eK with the threshold cK (i.e., the number of observed instances of eK is 
+compared with the threshold cK).
+If all threshold conditions are satisfied, the operation executes the
+action list defined by the
+.I action
+field, and consumes all further matching events without re-executing
+the action list if the
+.I multact
+field is set to No (this is the default). 
+However, if
+.I multact
+is set to Yes, the operation will re-evaluate the threshold conditions on 
+every further matching event, re-executing the action list given with the
+.I action
+field if all conditions are satisfied, and sliding the event correlation 
+window forward when the window is about to expire (if no events remain in
+the window, the operation will finish).
+.PP
+For example, consider the following rule:
+.PP
+type=EventGroup2
+.br
+ptype=SubStr
+.br
+pattern=EVENT_A
+.br
+thresh=2
+.br
+ptype2=SubStr
+.br
+pattern2=EVENT_B
+.br
+thresh2=2
+.br
+desc=Sequence of two or more As and Bs observed within 60 seconds
+.br
+action=write - %s
+.br
+window=60
+.PP
+Also, suppose the following events occur, and each event timestamp reflects 
+the time SEC observes the event: 
+.PP
+Mar 10 12:03:01 EVENT_A
+.br
+Mar 10 12:03:04 EVENT_B
+.br
+Mar 10 12:03:10 EVENT_A
+.br
+Mar 10 12:03:11 EVENT_A
+.br
+Mar 10 12:03:27 EVENT_B
+.br
+Mar 10 12:03:46 EVENT_A
+.br
+Mar 10 12:03:59 EVENT_A
+.PP
+When these events are observed by the above EventGroup2 rule, the rule
+starts an event correlation operation at 12:03:01. Note that although
+the first threshold condition 
+.I thresh=2 
+is satisfied when the third
+event appears at 12:03:10, the second threshold condition 
+.I thresh2=2
+is not met, and therefore the operation will not execute the action list
+given with the 
+.I action
+field.
+When the fifth event appears at 12:03:27, all threshold conditions are
+finally satisfied, and the operation will write the string
+"Sequence of two or more As and Bs observed within 60 seconds"
+to standard output with the
+.I write
+action. Finally, the events occurring at 12:03:46 and 12:03:59
+will be consumed silently by the operation (the operation will run until
+12:04:01).
+.PP
+If
+.I multact=yes
+statement is added to the above EventGroup2 rule, the operation would
+execute the 
+.I write
+action not only at 12:03:27, but also at 12:03:46 and 12:03:59, since
+all threshold conditions are still satisfied when the last two events appear
+(i.e., the last two events are no longer silently consumed). Also, with
+.I multact=yes
+the operation will employ sliding window based event processing even after 
+the 
+.I write
+action has been executed at 12:03:27 (therefore, the operation will run 
+until 12:04:59).
+.PP
+If the rule definition has an optional event group pattern and its type
+defined with the
+.I egpattern
+and
+.I egptype
+fields, the event group pattern is used for matching the event group string.
+The event group string consists of positive integers Xi that are separated 
+by a single space character:
+"X1 X2 ... XM". 
+M is the number of events a given event correlation operation has observed 
+within its event correlation window. Also, if the i-th event that the event
+correlation operation has observed is an instance of event eK, then Xi = K.
+Event group string is built and matched with event group pattern after all
+threshold conditions (given with
+.I thresh*
+fields) have been found satisfied. 
+In other words, the event group pattern defines an additional condition 
+to numeric threshold conditions. 
+.PP
+Note that the event group pattern
+and its type are similar to regular patterns and pattern types that are 
+given with
+.I pattern*
+and
+.I ptype*
+fields, except the event group pattern is not setting any match variables. 
+If the
+.I egptype
+field is set to RegExp or NRegExp, the
+.I egpattern 
+field defines a regular expression, while in the case of SubStr and NSubStr
+.I egpattern
+provides a string pattern.
+If the
+.I egptype
+field is set to PerlFunc or NPerlFunc, event group string is the only
+parameter for the Perl function given with the
+.I egpattern
+field, and the function is called in the Perl scalar context. 
+With 
+.IR egptype=PerlFunc ,
+event group pattern matches if the return value of the function evaluates 
+true in the Perl boolean context, while in the case of false the pattern 
+does not match the event group string.
+With 
+.IR egptype=NPerlFunc ,
+the pattern matching works in the opposite way.
+.PP
+For example, consider the following rule:
+.PP
+type=EventGroup2
+.br
+ptype=SubStr
+.br
+pattern=EVENT_A
+.br
+thresh=2
+.br
+ptype2=SubStr
+.br
+pattern2=EVENT_B
+.br
+thresh2=2
+.br
+desc=Sequence of two or more As and Bs with 'A B' at the end
+.br
+action=write - %s
+.br
+egptype=RegExp
+.br
+egpattern=1 2$
+.br
+window=60
+.PP
+Also, suppose the following events occur, and each event timestamp reflects 
+the time SEC observes the event: 
+.PP
+Mar 10 12:05:31 EVENT_B
+.br
+Mar 10 12:05:32 EVENT_B
+.br
+Mar 10 12:05:38 EVENT_A
+.br
+Mar 10 12:05:39 EVENT_A
+.br
+Mar 10 12:05:42 EVENT_B
+.PP
+When these events are observed by the above EventGroup2 rule, the rule
+starts an event correlation operation at 12:05:31. When the fourth event
+appears at 12:05:39, all threshold conditions
+.IR "" ( thresh=2
+and
+.IR thresh2=2 )
+become satisfied, and therefore the following event group string is built 
+from the first four events:
+.PP
+2 2 1 1
+.PP
+However, since this string does not match the regular expression
+.PP
+1 2$
+.PP
+that has been given with the
+.I egpattern
+field, the operation will not execute the action list given with the 
+.I action
+field. When the fifth event appears at 12:05:42, all threshold conditions 
+are again satisfied, and all observed events produce the following 
+event group string:
+.PP
+2 2 1 1 2
+.PP
+Since this event group string matches the regular expression given with the
+.I egpattern
+field, the operation will write the string
+"Sequence of two or more As and Bs with 'A B' at the end"
+to standard output with the
+.I write
+action.
+.PP
+If the rule definition has an optional action list defined with the
+.I countK
+field for event eK, the operation executes it every time an instance of eK 
+is observed (even if
+.I multact
+is set to No and the operation has already executed the action list given
+with
+.IR action ).
+If the action list contains match variables, they are substituted before
+*each* execution with values from matching the current instance of eK.
+.PP
+If the rule definition has an optional action list defined with the
+.I init
+field, the operation executes it immediately after the operation has been
+created. 
+.PP
+If the rule definition has an optional action list defined with the
+.I end
+field, the operation executes it immediately before the operation finishes.
+Note that this action list is *not* executed when the operation is
+terminated with the
+.I reset
+action.
+.PP
+If the rule definition has an optional action list defined with the
 .I slide
-fields.
+field, the operation executes it immediately after the event correlation 
+window has slidden forward.
+However, note that moving the window with the
+.I setwpos
+action will *not* trigger the execution.
 .PP
 .B Examples:
 .PP
@@ -4257,7 +4579,7 @@ for that IP address. The operation sends an e-mail warning to root@localhost
 if within 120 seconds three threshold conditions are satisfied for the IP
 address it tracks -- 
 (1) at least two SSH login failure events have occurred for this client IP,
-(2) at least three Apache 4xx events have occured for this client IP, 
+(2) at least three Apache 4xx events have occurred for this client IP, 
 (3) at least five iptables events have been observed for this source IP. 
 .PP
 Suppose the following events occur, and each event timestamp reflects 
@@ -4337,7 +4659,7 @@ Therefore, the operation would send three additional e-mails at 01:14:18,
 01:14:19, and 01:14:34. 
 Also, the operation would not terminate after its window ends at 01:14:52,
 but would rather slide the window forward and expect new events.
-At the occurence of any iptables, SSH login failure or Apache 4xx event
+At the occurrence of any iptables, SSH login failure or Apache 4xx event
 for 192.168.1.104, the operation would produce a warning e-mail
 if all threshold conditions are fulfilled.
 .PP
@@ -4427,12 +4749,10 @@ all further matching events for 10.1.2.7 until 19:02:06, and then terminates.
 Immediately before termination, the operation deletes the context OPER_10.1.2.7
 which also drops its alias name LOGIN_FAILED_risto_10.1.2.7.
 .SS "SUPPRESS RULE"
-The
-.B Suppress
-rule takes no action when an event has matched the rule, and keeps
-matching events from being processed by later rules in the configuration file. 
-.PP
-The Suppress rule supports the following fields:
+The Suppress rule supports the following fields.
+Note that match variables may be used in the
+.I context
+field. 
 .TP 
 .I type
 fixed to Suppress (value is case insensitive).
@@ -4455,14 +4775,16 @@ string for describing the rule.
 .IR rem " (optional, may appear more than once)"
 remarks and comments.
 .PP
-Note that match variables may be used in the
-.I context
-field. 
-Also note that this rule does not start an event correlation operation,
+The
+.B Suppress
+rule takes no action when an event has matched the rule, and keeps
+matching events from being processed by later rules in the configuration file. 
+.PP
+Note that the Suppress rule does not start event correlation operations,
 and the optional
 .I desc
 field is merely used for describing the rule.
-Finally, in order to end event processing, so that no further rules from
+Also, in order to end event processing, so that no further rules from
 any of the configuration files would be tried, use the Jump rule.
 .PP
 .B Examples:
@@ -4494,6 +4816,26 @@ The first rule filters out SSH login failure events for an already reported
 source IP address, so that they will not be matched
 against the second rule during 3600 seconds after sending an e-mail warning.
 .SS "CALENDAR RULE"
+The Calendar rule supports the following fields.
+.TP 
+.I type
+fixed to Calendar (value is case insensitive).
+.TP 
+.I time
+time specification.
+.TP 
+.IR context " (optional)"
+context expression.
+.TP 
+.I desc
+operation description string.
+.TP 
+.I action
+action list.
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
 The
 .B Calendar
 rule was designed for executing actions at specific times. Unlike all
@@ -4542,27 +4884,8 @@ but the context expression evaluates FALSE during the first half of the
 minute, the Calendar rule will execute the action list in the middle of
 this minute when the expression value becomes TRUE.
 .PP
-The Calendar rule supports the following fields:
-.TP 
-.I type
-fixed to Calendar (value is case insensitive).
-.TP 
-.I time
-time specification.
-.TP 
-.IR context " (optional)"
-context expression.
-.TP 
-.I desc
-operation description string.
-.TP 
-.I action
-action list.
-.TP 
-.IR rem " (optional, may appear more than once)"
-remarks and comments.
-.PP
-Note that this rule does not start event correlation operation, and the
+Note that the Calendar rule does not start event correlation operations, 
+and the
 .I desc
 field is merely used for setting the %s action list variable.
 .PP
@@ -4611,6 +4934,46 @@ which waits for the BACKUP READY event for 1800 seconds. If this event
 has not arrived by 2:30AM, the operation sends an e-mail warning to
 root@localhost.
 .SS "JUMP RULE"
+The Jump rule supports the following fields.
+Note that match variables may be used in the
+.I context
+field. They may also be used in the
+.I cfset
+field, provided that the 
+.I constset 
+field is set to No.
+.TP 
+.I type
+fixed to Jump (value is case insensitive).
+.TP 
+.IR continue " (optional)"
+TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
+values are case insensitive).
+.TP 
+.I ptype
+pattern type (value is case insensitive).
+.TP 
+.I pattern
+pattern.
+.TP 
+.IR varmap " (optional)"
+variable map.
+.TP 
+.IR context " (optional)"
+context expression.
+.TP
+.IR cfset " (optional)"
+configuration file set names that are separated by whitespace.
+.TP
+.IR constset " (optional)"
+Yes or No (values are case insensitive, default is Yes). 
+.TP
+.IR desc " (optional)"
+string for describing the rule.
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
 The
 .B Jump
 rule submits matching events to specific ruleset(s) for 
@@ -4651,47 +5014,7 @@ is not present and
 is set to EndMatch, processing of the matching event ends (i.e., 
 no further rules from any of the configuration files will be tried).
 .PP
-The Jump rule supports the following fields:
-.TP 
-.I type
-fixed to Jump (value is case insensitive).
-.TP 
-.IR continue " (optional)"
-TakeNext, DontCont, EndMatch or GoTo <label> (apart from <label>, 
-values are case insensitive).
-.TP 
-.I ptype
-pattern type (value is case insensitive).
-.TP 
-.I pattern
-pattern.
-.TP 
-.IR varmap " (optional)"
-variable map.
-.TP 
-.IR context " (optional)"
-context expression.
-.TP
-.IR cfset " (optional)"
-configuration file set names that are separated by whitespace.
-.TP
-.IR constset " (optional)"
-Yes or No (values are case insensitive, default is Yes). 
-.TP
-.IR desc " (optional)"
-string for describing the rule.
-.TP 
-.IR rem " (optional, may appear more than once)"
-remarks and comments.
-.PP
-Note that match variables may be used in the
-.I context
-field. They may also be used in the
-.I cfset
-field, provided that the 
-.I constset 
-field is set to No.
-Also note that this rule does not start event correlation operations,
+Note that the Jump rule does not start event correlation operations, 
 and the optional
 .I desc
 field is merely used for describing the rule.
@@ -4714,6 +5037,20 @@ file set
 .B auth\-rules
 are tried.
 .SS "OPTIONS RULE"
+The Options rule supports the following fields.
+.TP 
+.I type
+fixed to Options (value is case insensitive).
+.TP 
+.IR joincfset " (optional)"
+configuration file set names that are separated by whitespace.
+.TP 
+.IR procallin " (optional)"
+Yes or No (values are case insensitive, default is Yes). 
+.TP 
+.IR rem " (optional, may appear more than once)"
+remarks and comments.
+.PP
 The
 .B Options
 rule sets processing options for the ruleset in the current
@@ -4734,20 +5071,6 @@ If the
 .I procallin
 field is set to No, the rules from the configuration file will be
 used for matching input from Jump rules only.
-.PP
-The Options rule supports the following fields:
-.TP 
-.I type
-fixed to Options (value is case insensitive).
-.TP 
-.IR joincfset " (optional)"
-configuration file set names that are separated by whitespace.
-.TP 
-.IR procallin " (optional)"
-Yes or No (values are case insensitive, default is Yes). 
-.TP 
-.IR rem " (optional, may appear more than once)"
-remarks and comments.
 .PP
 .B Examples:
 .PP
@@ -5509,24 +5832,58 @@ then SEC will receive input lines from the log files /var/log/messages,
 receiving input lines from the port 10514/tcp. All input lines from
 /var/log/messages and 10514/tcp are matched by the second rule and
 written to standard output.
-.SH INTERPROCESS COMMUNICATION
+.SH CHILD PROCESSES
 The SingleWithScript rule and
+.IR shellcmd ,
+.IR spawn ,
+.IR cspawn ,
+.IR cmdexec ,
+.IR spawnexec ,
+.IR cspawnexec ,
+.IR pipe ,
+.IR pipeexec ,
+.IR report ,
+and
+.I reportexec
+actions fork a child process for executing an external program. 
+For the SingleWithScript rule with 
+.I shell=yes
+setting and for
 .IR shellcmd ,
 .IR spawn ,
 .IR cspawn ,
 .IR pipe ,
 and
 .I report
-actions fork a child process for executing an external program. 
-If the program command line contains shell metacharacters, the command
+actions, the following rule applies --
+if the program command line contains shell metacharacters, the command
 line is first parsed by the shell which then starts the program.
+For the SingleWithScript rule with 
+.I shell=no
+setting and for
+.IR cmdexec ,
+.IR spawnexec ,
+.IR cspawnexec ,
+.IR pipeexec ,
+and
+.I reportexec
+actions, the program command line is not parsed by shell, 
+even if shell metacharacters are present in the command line.
+.PP
 SEC communicates with its child processes through pipes (created with the 
 .BR pipe (2) 
 system call). 
 When the child process is at the read end of the pipe, data have to be written
 to the pipe in blocking mode which ensures reliable data transmission. 
-In order to avoid being blocked, SEC forks another child process for writing 
-data to the pipe reliably.
+In order to avoid being blocked, SEC forks another SEC process for writing 
+data to the pipe reliably. The newly created SEC process will then fork
+the child process, managing the child process on behalf of the main 
+SEC process (i.e., the main SEC process is the grandparent process for 
+the child). For example, if the SEC process that manages the child receives
+the
+.B SIGTERM
+signal, the signal will be forwarded to the child process, and when the child
+process terminates, its exit code will be reported to the main SEC process.
 .PP
 After forking an external program, SEC continues immediately, and checks
 the program status periodically until the program exits. The running time of 
@@ -5541,7 +5898,7 @@ If some special exit procedures need to be accomplished in the child process
 then the child must install a handler for the 
 .B SIGTERM 
 signal. 
-Note that if the program command line contains shell metacharacters,
+Note that if the program command line is parsed by shell,
 the parsing shell will run as a child process of SEC and the parent 
 process of the program. Therefore, the 
 .B SIGTERM
@@ -5565,7 +5922,7 @@ explicitly (e.g., instead of writing
 use the shell && operator and write
 .IR "action=shellcmd cmd1 && cmd2" ).
 .PP
-Sometimes it is desireable to start an external program and provide it with
+Sometimes it is desirable to start an external program and provide it with
 data from several rules. In order to create such setup, named pipes can be 
 harnessed. For example, if /var/log/pipe is a named pipe, then
 .PP
@@ -6326,12 +6683,13 @@ The author also thanks the following people for supplying software patches,
 documentation fixes, and suggesting new features:
 Al Sorrell, Brian Mielke, David Lang, James Brown, Jon Frazier, Mark D. Nagel, 
 Peter Eckel, Rick Casey, and William Gertz. 
-Last but not least, the author expresses his profound gratitute to 
+Last but not least, the author expresses his profound gratitude to 
 John P. Rouillard for many great ideas and creative discussions that have 
 helped to develop SEC.
 .SH "SEE ALSO"
 .BR cron (8),
 .BR crontab (1),
+.BR execvp (3),
 .BR fork (2),
 .BR mail (1),
 .BR perl (1),
