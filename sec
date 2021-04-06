@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.9.alpha1 - sec
+# SEC (Simple Event Correlator) 2.9.alpha2 - sec
 # Copyright (C) 2000-2021 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -123,6 +123,7 @@ use vars qw(
   %output_tcpsock
   %output_udgram
   %output_udpsock
+  %output_ustrconn
   %output_ustream
   @pending_events
   $pidfile
@@ -182,7 +183,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.alpha1";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.alpha2";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2021 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
@@ -4143,7 +4144,7 @@ sub substitute_actionlist_var {
 #         is also defined, commandline's standard output is returned with an 
 #         internal context par3 (otherwise default internal context is used).
 
-sub shell_cmd {
+sub exec_cmd {
 
   my($cmdline, $collect_output, $context) = @_;
   my($cmd, $shell, $pid, $read, $write);
@@ -4387,6 +4388,19 @@ sub pipe_cmd {
     exit(0);
   }
 
+  # since this process does not call exec() which closes all file descriptors 
+  # apart from 0..2 (see $^F special variable in perl docs), close all inputs, 
+  # outputs, the logfile, and connection to the system logger (if this is not
+  # done, removed input/output files and connections established over sockets
+  # would be kept open even after the parent process has closed them)
+
+  %inputsrc = ();
+
+  close_outputs();
+
+  if ($logopen)  { close($loghandle); }
+  if ($syslogopen)  { eval { Sys::Syslog::closelog() }; }
+
   # write data to pipe in blocking mode (ignoring SIGPIPE is inherited from
   # the main SEC process and writing to pipe is thus safe)
 
@@ -4421,6 +4435,244 @@ sub pipe_cmd {
     }
   }
 
+}
+
+
+# Parameters: par1 - host
+#             par2 - port
+#             par3 - protocol
+# Action: Create the socket and address information data structure for 
+#         communicating with remote peer at host par1 and port par2 over 
+#         protocol par3. On success, return socket filehandle and address
+#         information data structure, otherwise return undef.
+
+sub create_sock_addr {
+
+  my($host, $port, $proto) = @_;
+  my($handle, $socktype, $iaddr, $paddr, $errlogged);
+  my($err, $addrinfo, @addrinfo, %hints);
+  
+  # set the socket type according to protocol
+  
+  if ($proto eq "tcp") { $socktype = SOCK_STREAM; }
+  elsif ($proto eq "udp") { $socktype = SOCK_DGRAM; }
+  else { 
+    log_msg(LOG_ERR, "Creating sockets for protocol $proto is not supported");
+    return undef;
+  }
+
+  # if perl Socket module has getaddrinfo() function which supports both
+  # ipv4 and ipv6, use it for creating the socket; if we are dealing with
+  # older perl version where Socket module comes without getaddrinfo(), use 
+  # traditional ipv4-only inet_aton() based approach for creating the socket
+
+  if (defined(&Socket::getaddrinfo)) {
+
+    # set up the hints data structure for getaddrinfo() -- note that
+    # if socket type is not provided as a hint, getaddrinfo() returns
+    # an error on some platforms if service port specification is not 
+    # textual but numeric
+
+    $hints{"socktype"} = $socktype;
+    $hints{"protocol"} = getprotobyname($proto);
+
+    ($err, @addrinfo) = Socket::getaddrinfo($host, $port, \%hints);
+
+    if ($err) {
+      log_msg(LOG_WARN, "Can't create socket for $host:$port/$proto ($err)");
+      return undef;
+    }
+
+    # go through addrinfo list and try to create sockets for list elements,
+    # returning the first successfully created socket (an attempt for first
+    # list element might not always succeed, e.g., consider a scenario
+    # where the first element represents an ipv6 address and the second
+    # element ipv4 address, while the local host only supports ipv4)
+
+    $paddr = undef;
+    $errlogged = 0;
+
+    foreach $addrinfo (@addrinfo) {
+
+      if (!socket($handle, $addrinfo->{"family"}, 
+                           $addrinfo->{"socktype"}, 
+                           $addrinfo->{"protocol"})) {
+        $errlogged = 1;
+        log_msg(LOG_ERR, "Can't create socket for $host:$port/$proto ($!)");
+        next;
+      }
+
+      $paddr = $addrinfo->{"addr"};
+      last;
+    }
+
+    # if the creation of the socket failed in the above loop, return undef
+
+    if (!defined($paddr)) { return undef; }
+
+    # if socket was successfully created in the above loop, but one (or more) 
+    # loop iteration(s) failed and produced error message(s), log a message 
+    # about successful creation of the socket
+
+    if ($errlogged) {
+      log_msg(LOG_DEBUG, "Socket for $host:$port/$proto successfully created");
+    }
+
+  } else {
+
+    $iaddr = inet_aton($host);
+
+    if (!defined($iaddr)) {
+      log_msg(LOG_WARN, "Can't create socket for $host:$port/$proto",
+      "(unable to convert $host to Internet address)");
+      return undef;
+    }
+
+    $paddr = sockaddr_in($port, $iaddr);
+
+    if (!socket($handle, PF_INET, $socktype, getprotobyname($proto))) {
+      log_msg(LOG_ERR, "Can't create socket for $host:$port/$proto ($!)");
+      return undef;
+    }
+
+  }
+
+  return ($handle, $paddr);
+
+}
+
+
+# Parameters: par1 - handle of the socket 
+#             par2 - event
+#             par3 - name of the destination
+# Action: Send event par2 to socket par1 with the send(2) system call, and 
+#         produce a log message in the case of an error. In the log message, 
+#         par3 reflects the destination, and the message is logged with debug
+#         level, in order to prevent message floods with higher severity when 
+#         large amounts of data are transfered. Return 0 if send(2) failed,
+#         so that the socket should be closed; return 1 if event was partially 
+#         transmitted or could not be transmitted due to perl wide characters
+#         or insufficient buffer space; return 2 on successful transmission.
+
+sub send_to_socket {
+
+  my($socket, $event, $dest) = @_;
+  my($nbytes);
+
+  for (;;) {
+
+    # if the event contains perl wide characters, send() will die, 
+    # thus eval is used for calling it; according to posix, EWOULDBLOCK 
+    # or EAGAIN indicates that the socket buffer is full, while EMSGSIZE
+    # means that the message is too large for the given socket type
+
+    $nbytes = eval { send($socket, $event, 0) };
+  
+    if ($@) {
+      log_msg(LOG_DEBUG, "Error when sending event '$event' to $dest ($@)");
+      return 1;
+    } elsif (!defined($nbytes)) {
+      if ($! == EINTR)  { next; }
+      log_msg(LOG_DEBUG, "Error when sending event '$event' to $dest ($!)");
+      if ($! == EWOULDBLOCK || $! == EAGAIN || $! == EMSGSIZE)  { return 1; }
+      return 0;
+    } elsif ($nbytes != length($event)) {
+      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to $dest");
+      return 1;
+    } else {
+      return 2;
+    }
+
+  }
+}
+
+
+# Parameters: par1 - handle of the socket 
+#             par2 - operation type (0 denotes reading and 1 writing)
+# Action: Check if socket par1 is ready for operation par2 (i.e., whether 
+#         the socket is ready for reading or writing); return 1 if socket 
+#         par1 is ready for operation par2, otherwise return 0
+
+sub socket_ready {
+
+  my($socket, $operation) = @_; 
+  my($bitmask, $ret);
+
+  for (;;) {
+
+    # create the bitmask for socket handle
+
+    $bitmask = '';
+    vec($bitmask, fileno($socket), 1) = 1;
+
+    # poll the socket with select() if it is ready for reading or writing
+
+    if ($operation) { $ret = select(undef, $bitmask, undef, 0); } 
+      else { $ret = select($bitmask, undef, undef, 0); }
+
+    # if select() fails with EINTR, try again, otherwise quit the polling
+
+    if ((!defined($ret) || $ret < 0) && $! == EINTR) { next; } else { last; }
+  }
+
+  # if the socket is ready, return 1, otherwise return 0
+
+  if (defined($ret) && $ret > 0) { return 1; } else { return 0; }
+}
+
+
+# Parameters: par1 - reference to the socket hash table for new connections
+#             par2 - reference to the socket hash table for connections with
+#                    completed establishment
+#             par3 - peer ID that identifies socket in tables par1 and par2
+#             par4 - textual peer type
+# Action: Check the status of a connection which is not yet established and
+#         corresponds to socket par3 in table par1. If the establishment of
+#         the connection is complete, move the socket par3 from table par1 
+#         to table par2. Textual peer type par4 and peer ID par3 are used
+#         in error log messages, and messages are logged with debug level,
+#         in order to prevent message floods with higher severity when large
+#         amounts of data are transfered.
+
+sub check_new_conn {
+
+  my($new_sockets, $est_sockets, $peer, $peertype) = @_;
+  my($event);
+
+  # Check if socket is writable (indicates that connection establishment
+  # has completed either successfully or with error). 
+  # If the establishment is still incomplete and the establishment timeout 
+  # has been reached, close the socket, drop all previously buffered data,
+  # and return. If the establishment timeout has not been reached, return.
+
+  if (!socket_ready($new_sockets->{$peer}->{"socket"}, 1)) {
+
+    if (time() - $new_sockets->{$peer}->{"time"} > $socket_timeout) {
+      log_msg(LOG_DEBUG, "Can't connect to $peertype '$peer'", 
+                         "(connection establishment timeout)");
+      delete $new_sockets->{$peer};
+    } 
+
+    return;
+  }
+
+  # If socket is writable, try to transmit all buffered events. 
+  # In the case of hard errors from send(2), retransmission is not attempted 
+  # and data are not buffered, but socket is closed (note that if connection 
+  # establishment completed with error, sending the first buffered event will 
+  # produce a hard send(2) error and socket will be closed).
+
+  foreach $event (@{$new_sockets->{$peer}->{"buffer"}}) {
+
+    if (!send_to_socket($new_sockets->{$peer}->{"socket"}, $event,
+                                                "$peertype '$peer'")) {
+      delete $new_sockets->{$peer};
+      return;
+    } 
+  }
+
+  $est_sockets->{$peer} = $new_sockets->{$peer}->{"socket"};
+  delete $new_sockets->{$peer};
 }
 
 
@@ -4542,7 +4794,9 @@ sub execute_closef_action {
   log_msg(LOG_DEBUG, "Closing file '$file'");
 
   if (exists($output_files{$file})) {
-    close($output_files{$file});
+    if (!close($output_files{$file})) {
+      log_msg(LOG_WARN, "Error when closing file '$file' ($!)");
+    }
     delete $output_files{$file};
   } else {
     log_msg(LOG_DEBUG, "File '$file' is not open, can't close");
@@ -4622,7 +4876,7 @@ sub execute_owritecl_action {
 sub execute_udgram_action {
 
   my($actionlist, $text, $i) = @_;
-  my($file, $event, $handle, $nbytes);
+  my($file, $event, $handle);
 
   $file = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -4631,83 +4885,62 @@ sub execute_udgram_action {
   substitute_actionlist_var($event, $text);
 
   # apart from unexpected local system errors, communication errors with
-  # remote peers are logged at the debug level, in order to prevent message 
+  # local peers are logged at the debug level, in order to prevent message 
   # floods with higher severity when large amounts of data are transfered
 
-  log_msg(LOG_DEBUG, "Writing event '$event' to unix datagram socket '$file'");
+  log_msg(LOG_DEBUG, "Sending event '$event' to unix datagram socket '$file'");
 
   # if the socket already exists, use it for transmitting data; if the
-  # transmission fails (e.g., the server has been restarted and the socket
-  # file has been recreated), recreate the socket and attempt retransmission
+  # transmission fails with hard error from send(2) (e.g., the server has 
+  # been restarted and the socket file has been recreated), close the socket 
+  # and attempt retransmission, otherwise return immediately
 
   if (exists($output_udgram{$file})) {
 
-    for (;;) {
+    if (send_to_socket($output_udgram{$file}, $event, "socket '$file'")) {
+      return 3;
+    } 
 
-      # if the event contains perl wide characters, send() will die, 
-      # thus eval is used for calling it
-
-      $nbytes = eval { send($output_udgram{$file}, $event, 0) };
-  
-      if ($@) {
-        log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($@)");
-        return 3;
-      } elsif (!defined($nbytes)) {
-        if ($! == EINTR)  { next; }
-        log_msg(LOG_DEBUG, 
-                "Could not write event '$event' to '$file' ($!), retrying");
-        delete $output_udgram{$file};
-        last;
-      } elsif ($nbytes != length($event)) {
-        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to '$file'");
-        return 3;
-      } else {
-        return 3;
-      }
-
-    }
+    log_msg(LOG_DEBUG, "Retrying to send event '$event' to socket '$file'");
+    delete $output_udgram{$file};
   }
 
+  # create the socket for communicating with local peer
+
   if (! -S $file) {
-    log_msg(LOG_DEBUG, "Can't write event '$event' to socket '$file'", 
+    log_msg(LOG_DEBUG, "Can't send event '$event' to socket '$file'", 
             "(socket does not exist)");
     return 3;
   }
 
   if (!socket($handle, PF_UNIX, SOCK_DGRAM, 0)) {
-    log_msg(LOG_ERR, "Can't create socket for writing event '$event' ($!)");
+    log_msg(LOG_ERR, "Can't create socket for sending event '$event' ($!)");
     return 3;
   }
 
-  while (!connect($handle, sockaddr_un($file))) {
-    if ($! == EINTR)  { next; }
+  # Connect to local peer (connect() returns immediately for connectionless
+  # sockets). Since EINTR error should not happen for connectionless sockets 
+  # on posix systems and on many platforms connect() should not be called
+  # again after EINTR, there is no special handling for EINTR.
+
+  if (!connect($handle, sockaddr_un($file))) {
     log_msg(LOG_DEBUG,
-            "Can't connect to socket '$file' for writing event '$event' ($!)");
+            "Can't connect to socket '$file' for sending event '$event' ($!)");
     return 3;
   }
+
+  # switch the socket to non-blocking mode for all further communications
 
   $handle->blocking(0);
   $output_udgram{$file} = $handle;
 
-  for (;;) {
+  # transmit data to local peer (close the socket on hard send(2) error)
 
-    # if the event contains perl wide characters, send() will die, 
-    # thus eval is used for calling it
+  if (!send_to_socket($output_udgram{$file}, $event, "socket '$file'")) {
+    delete $output_udgram{$file};
+  } 
 
-    $nbytes = eval { send($output_udgram{$file}, $event, 0) };
-
-    if ($@) {
-      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($@)");
-    } elsif (!defined($nbytes)) {
-      if ($! == EINTR)  { next; }
-      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($!)");
-      delete $output_udgram{$file};
-    } elsif ($nbytes != length($event)) {
-      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to '$file'");
-    }
-
-    return 3;
-  }
+  return 3;
 }
 
 sub execute_closeudgr_action {
@@ -4721,7 +4954,9 @@ sub execute_closeudgr_action {
   log_msg(LOG_DEBUG, "Closing unix datagram socket '$file'");
 
   if (exists($output_udgram{$file})) {
-    close($output_udgram{$file});
+    if (!close($output_udgram{$file})) {
+      log_msg(LOG_WARN, "Error when closing socket '$file' ($!)");
+    }
     delete $output_udgram{$file};
   } else {
     log_msg(LOG_DEBUG, "Socket '$file' is not open, can't close");
@@ -4733,7 +4968,7 @@ sub execute_closeudgr_action {
 sub execute_ustream_action {
 
   my($actionlist, $text, $i) = @_;
-  my($file, $event, $handle, $nbytes);
+  my($file, $event, $handle);
 
   $file = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -4742,83 +4977,95 @@ sub execute_ustream_action {
   substitute_actionlist_var($event, $text);
 
   # apart from unexpected local system errors, communication errors with
-  # remote peers are logged at the debug level, in order to prevent message 
+  # local peers are logged at the debug level, in order to prevent message 
   # floods with higher severity when large amounts of data are transfered
 
-  log_msg(LOG_DEBUG, "Writing event '$event' to unix stream socket '$file'");
+  log_msg(LOG_DEBUG, "Sending event '$event' to unix stream socket '$file'");
 
-  # if the socket already exists, use it for transmitting data; if the
-  # transmission fails (e.g., the server has been restarted and the socket
-  # file has been recreated), recreate the socket and attempt retransmission
+  # If the socket exists and there is an established connection to local
+  # peer, send data to the peer. If sending failed with a hard error from
+  # send(2), close the socket and attempt resending with a newly created 
+  # socket later in the function, otherwise return immediately.
 
   if (exists($output_ustream{$file})) {
 
-    for (;;) {
+    if (send_to_socket($output_ustream{$file}, $event, "socket '$file'")) {
+      return 3;
+    } 
 
-      # if the event contains perl wide characters, send() will die, 
-      # thus eval is used for calling it
-
-      $nbytes = eval { send($output_ustream{$file}, $event, 0) };
-
-      if ($@) {
-        log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($@)");
-        return 3;
-      } elsif (!defined($nbytes)) {
-        if ($! == EINTR)  { next; }
-        log_msg(LOG_DEBUG, 
-                "Could not write event '$event' to '$file' ($!), retrying");
-        delete $output_ustream{$file};
-        last;
-      } elsif ($nbytes != length($event)) {
-        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to '$file'");
-        return 3;
-      } else {
-        return 3;
-      }
-
-    }
+    log_msg(LOG_DEBUG, "Retrying to send event '$event' to socket '$file'");
+    delete $output_ustream{$file};
   }
 
+  # the socket exists but the connection establishment is not complete
+
+  elsif (exists($output_ustrconn{$file})) {
+
+    # buffer the event
+
+    push @{$output_ustrconn{$file}->{"buffer"}}, $event;
+
+    # Check the status of the connection, and if the connection establishment
+    # has completed, try to transmit all buffered events. If no hard send(2)
+    # errors were encountered during transmission, regard the connection as
+    # successfully established, and move the socket from %output_ustrconn hash 
+    # to %output_ustream hash. Otherwise, close the socket.
+
+    check_new_conn(\%output_ustrconn, \%output_ustream, $file, "socket");
+
+    return 3;
+  } 
+
+  # If the socket did not exist previously or the established connection 
+  # was closed because of an error, recreate the socket and attempt to
+  # establish a new connection for transmitting data to local peer
+
   if (! -S $file) {
-    log_msg(LOG_DEBUG, "Can't write event '$event' to socket '$file'", 
+    log_msg(LOG_DEBUG, "Can't send event '$event' to socket '$file'", 
             "(socket does not exist)");
     return 3;
   }
 
   if (!socket($handle, PF_UNIX, SOCK_STREAM, 0)) {
-    log_msg(LOG_ERR, "Can't create socket for writing event '$event' ($!)");
+    log_msg(LOG_ERR, "Can't create socket for sending event '$event' ($!)");
     return 3;
   }
 
-  while (!connect($handle, sockaddr_un($file))) {
-    if ($! == EINTR)  { next; }
-    log_msg(LOG_DEBUG,
-            "Can't connect to socket '$file' for writing event '$event' ($!)");
-    return 3;
-  }
+  # Connect to local peer -- although calling connect() for blocking unix
+  # stream socket will usually return immediately, there are cases when
+  # connect() might block (e.g., on Linux when server listen backlog is full).
+  # For handling such cases, the socket will be switched to non-blocking
+  # mode before calling connect(). If the connection to local peer is not
+  # established immediately (EINPROGRESS on posix systems), buffer the data 
+  # for future transmission and return. Note that on Linux EINPROGRESS is
+  # never returned for unix stream sockets, but rather EAGAIN which is never
+  # returned on posix systems. Since EINTR error should not happen on posix 
+  # systems for non-blocking sockets, and on many platforms connect() should 
+  # not be called again after EINTR, there is no special handling for EINTR.
 
   $handle->blocking(0);
-  $output_ustream{$file} = $handle;
 
-  for (;;) {
-
-    # if the event contains perl wide characters, send() will die, 
-    # thus eval is used for calling it
-
-    $nbytes = eval { send($output_ustream{$file}, $event, 0) };
-
-    if ($@) {
-      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($@)");
-    } elsif (!defined($nbytes)) {
-      if ($! == EINTR)  { next; }
-      log_msg(LOG_DEBUG, "Error when writing event '$event' to '$file' ($!)");
-      delete $output_ustream{$file};
-    } elsif ($nbytes != length($event)) {
-      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' written to '$file'");
+  if (!connect($handle, sockaddr_un($file))) {
+    if ($! == EINPROGRESS || $! == EAGAIN) {
+      $output_ustrconn{$file} = { "socket" => $handle, 
+                                  "buffer" => [ $event ],
+                                  "time" => time() };
+    } else {
+      log_msg(LOG_DEBUG,
+      "Can't connect to socket '$file' for sending event '$event' ($!)");
     }
-
     return 3;
   }
+
+  $output_ustream{$file} = $handle;
+
+  # transmit data to local peer (close the socket on hard send(2) error)
+
+  if (!send_to_socket($output_ustream{$file}, $event, "socket '$file'")) {
+    delete $output_ustream{$file};
+  } 
+
+  return 3;
 }
 
 sub execute_closeustr_action {
@@ -4832,8 +5079,15 @@ sub execute_closeustr_action {
   log_msg(LOG_DEBUG, "Closing unix stream socket '$file'");
 
   if (exists($output_ustream{$file})) {
-    close($output_ustream{$file});
+    if (!close($output_ustream{$file})) {
+      log_msg(LOG_WARN, "Error when closing socket '$file' ($!)");
+    }
     delete $output_ustream{$file};
+  } elsif (exists($output_ustrconn{$file})) {
+    if (!close($output_ustrconn{$file}->{"socket"})) {
+      log_msg(LOG_WARN, "Error when closing socket '$file' ($!)");
+    }
+    delete $output_ustrconn{$file};
   } else {
     log_msg(LOG_DEBUG, "Socket '$file' is not open, can't close");
   }
@@ -4844,9 +5098,7 @@ sub execute_closeustr_action {
 sub execute_udpsock_action {
 
   my($actionlist, $text, $i) = @_;
-  my($peer, $handle, $event, $nbytes);
-  my($host, $port, $iaddr, $paddr);
-  my($err, $addrinfo, @addrinfo, %hints);
+  my($peer, $event, $host, $port, $handle, $addr);
 
   $peer = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -4861,38 +5113,22 @@ sub execute_udpsock_action {
   log_msg(LOG_DEBUG, "Sending event '$event' to UDP peer '$peer'");
 
   # if the socket already exists, use it for transmitting data; if the
-  # transmission fails (e.g., server responded with ICMP port unreachable
-  # to previous transmission which raises an error condition for the socket),
-  # create a new socket and attempt retransmission
+  # transmission fails with hard error from send(2) (e.g., server responded 
+  # with ICMP port unreachable to previous transmission which raises an error 
+  # condition for the socket), close the socket and attempt retransmission,
+  # otherwise return immediately
 
   if (exists($output_udpsock{$peer})) {
 
-    for (;;) {
+    if (send_to_socket($output_udpsock{$peer}, $event, "UDP peer '$peer'")) {
+      return 3;
+    } 
 
-      # if the event contains perl wide characters, send() will die, 
-      # thus eval is used for calling it
-
-      $nbytes = eval { send($output_udpsock{$peer}, $event, 0) };
-
-      if ($@) {
-        log_msg(LOG_DEBUG, 
-                "Error when sending event '$event' to UDP peer '$peer' ($@)");
-        return 3;
-      } elsif (!defined($nbytes)) {
-        if ($! == EINTR)  { next; }
-        log_msg(LOG_DEBUG, 
-        "Could not send event '$event' to UDP peer '$peer' ($!), retrying");
-        delete $output_udpsock{$peer};
-        last;
-      } elsif ($nbytes != length($event)) {
-        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to UDP peer '$peer'");
-        return 3;
-      } else {
-        return 3;
-      }
-
-    }
+    log_msg(LOG_DEBUG, "Retrying to send event '$event' to UDP peer '$peer'");
+    delete $output_udpsock{$peer};
   }
+
+  # create the socket for communicating with remote peer
 
   if ($peer !~ /^(.+):([0-9]+)$/) {
     log_msg(LOG_WARN,
@@ -4904,112 +5140,37 @@ sub execute_udpsock_action {
   $host = $1;
   $port = $2;
 
-  # if perl Socket module has getaddrinfo() function which supports both
-  # ipv4 and ipv6, use if for creating the socket; if we are dealing with
-  # older perl version where Socket module comes without getaddrinfo(), use 
-  # traditional ipv4-only inet_aton() based approach for creating the socket
+  ($handle, $addr) = create_sock_addr($host, $port, "udp");
 
-  if (defined(&Socket::getaddrinfo)) {
-
-    # set up the hints data structure for getaddrinfo() -- note that
-    # if socket type is not provided as a hint, getaddrinfo() returns
-    # an error on some platforms if service port specification is not 
-    # textual but numeric
-
-    $hints{"socktype"} = SOCK_DGRAM;
-    $hints{"protocol"} = getprotobyname('udp');
-
-    ($err, @addrinfo) = Socket::getaddrinfo($host, $port, \%hints);
-
-    if ($err) {
-      log_msg(LOG_WARN,
-      "Can't connect to UDP peer '$peer' for sending event '$event'",
-      "(unable to convert $host to Internet address: $err)");
-      return 3;
-    }
-
-    # go through addrinfo list and try to create sockets for list elements,
-    # returning the first successfully created socket (an attempt for first
-    # list element might not always succeed, e.g., consider a scenario
-    # where the first element represents an ipv6 address and the second
-    # element ipv4 address, while the local host only supports ipv4)
-
-    $paddr = undef;
-
-    foreach $addrinfo (@addrinfo) {
-
-      if (!socket($handle, $addrinfo->{"family"}, 
-                           $addrinfo->{"socktype"}, 
-                           $addrinfo->{"protocol"})) {
-
-        log_msg(LOG_ERR, "Could not create socket ($!), retrying");
-        next;
-      }
-
-      $paddr = $addrinfo->{"addr"};
-      last;
-    }
-
-    if (!defined($paddr)) {
-      log_msg(LOG_ERR, "Can't create socket for sending event '$event'");
-      return 3;
-    }
-
-  } else {
-
-    $iaddr = inet_aton($host);
-
-    if (!defined($iaddr)) {
-      log_msg(LOG_WARN,
-      "Can't connect to UDP peer '$peer' for sending event '$event'",
-      "(unable to convert $host to Internet address)");
-      return 3;
-    }
-
-    $paddr = sockaddr_in($port, $iaddr);
-
-    if (!socket($handle, PF_INET, SOCK_DGRAM, getprotobyname('udp'))) {
-      log_msg(LOG_ERR, "Can't create socket for sending event '$event' ($!)");
-      return 3;
-    }
-
+  if (!defined($handle)) {
+    log_msg(LOG_DEBUG, 
+            "Can't connect to UDP peer '$peer' for sending event '$event'");
+    return 3;
   }
 
-  # connect to remote peer
+  # Connect to remote peer (connect() returns immediately for connectionless
+  # sockets). Since EINTR error should not happen for connectionless sockets 
+  # on posix systems, and on many platforms connect() should not be called
+  # again after EINTR, there is no special handling for EINTR.
 
-  while (!connect($handle, $paddr)) {
-    if ($! == EINTR)  { next; }
+  if (!connect($handle, $addr)) {
     log_msg(LOG_DEBUG,
     "Can't connect to UDP peer '$peer' for sending event '$event' ($!)");
     return 3;
   }
 
+  # switch the socket to non-blocking mode for all further communications
+
   $handle->blocking(0);
   $output_udpsock{$peer} = $handle;
 
-  # transmit data to remote peer
+  # transmit data to remote peer (close the socket on hard send(2) error)
 
-  for (;;) {
+  if (!send_to_socket($output_udpsock{$peer}, $event, "UDP peer '$peer'")) {
+    delete $output_udpsock{$peer};
+  } 
 
-    # if the event contains perl wide characters, send() will die, 
-    # thus eval is used for calling it
-
-    $nbytes = eval { send($output_udpsock{$peer}, $event, 0) };
-
-    if ($@) {
-      log_msg(LOG_DEBUG, 
-              "Error when sending event '$event' to UDP peer '$peer' ($@)");
-    } elsif (!defined($nbytes)) {
-      if ($! == EINTR)  { next; }
-      log_msg(LOG_DEBUG, 
-              "Error when sending event '$event' to UDP peer '$peer' ($!)");
-      delete $output_udpsock{$peer};
-    } elsif ($nbytes != length($event)) {
-      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to UDP peer '$peer'");
-    }
-
-    return 3;
-  }
+  return 3;
 }
 
 sub execute_closeudp_action {
@@ -5023,7 +5184,9 @@ sub execute_closeudp_action {
   log_msg(LOG_DEBUG, "Closing socket for UDP peer '$peer'");
 
   if (exists($output_udpsock{$peer})) {
-    close($output_udpsock{$peer});
+    if (!close($output_udpsock{$peer})) {
+      log_msg(LOG_WARN, "Error when closing socket for UDP peer '$peer' ($!)");
+    }
     delete $output_udpsock{$peer};
   } else {
     log_msg(LOG_DEBUG, "No socket for UDP peer '$peer', can't close");
@@ -5035,10 +5198,7 @@ sub execute_closeudp_action {
 sub execute_tcpsock_action {
 
   my($actionlist, $text, $i) = @_;
-  my($peer, $handle, $event, $nbytes);
-  my($host, $port, $iaddr, $paddr);
-  my($err, $addrinfo, @addrinfo, %hints);
-  my($win, $ret, $elem);
+  my($peer, $event, $host, $port, $handle, $addr);
 
   $peer = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -5053,95 +5213,35 @@ sub execute_tcpsock_action {
   log_msg(LOG_DEBUG, "Sending event '$event' to TCP peer '$peer'");
 
   # If the socket exists and there is an established connection to remote
-  # peer, send data to the peer. In the case of fully or partially successful 
-  # transmission, return immediately; if sending failed, close the socket 
-  # and attempt resending with a newly created socket later in the function.
+  # peer, send data to the peer. If sending failed with a hard error from
+  # send(2), close the socket and attempt resending with a newly created 
+  # socket later in the function, otherwise return immediately.
 
   if (exists($output_tcpsock{$peer})) {
 
-    for (;;) {
+    if (send_to_socket($output_tcpsock{$peer}, $event, "TCP peer '$peer'")) {
+      return 3;
+    } 
 
-      # if the event contains perl wide characters, send() will die, 
-      # thus eval is used for calling it
-
-      $nbytes = eval { send($output_tcpsock{$peer}, $event, 0) };
-
-      if ($@) {
-        log_msg(LOG_DEBUG, 
-                "Error when sending event '$event' to TCP peer '$peer' ($@)");
-        return 3;
-      } elsif (!defined($nbytes)) {
-        if ($! == EINTR)  { next; }
-        log_msg(LOG_DEBUG, 
-        "Could not send event '$event' to TCP peer '$peer' ($!), retrying");
-        delete $output_tcpsock{$peer};
-        last;
-      } elsif ($nbytes != length($event)) {
-        log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to TCP peer '$peer'");
-        return 3;
-      } else {
-        return 3;
-      }
-
-    }
+    log_msg(LOG_DEBUG, "Retrying to send event '$event' to TCP peer '$peer'");
+    delete $output_tcpsock{$peer};
   } 
 
-  # If the socket exists but the connection has not been established yet,
-  # check the latest status of the connection. If the connection is still 
-  # pending and the establishment timeout has been exceeded, close the socket, 
-  # drop all previously buffered data, and return immediately. 
-  # If the connection is still pending and the establishment timeout is not 
-  # exceeded, buffer the data for future transmission and return immediately. 
-  # If the latest status indicates the connection has become established, 
-  # send previously buffered data and current data to remote peer and return 
-  # immediately (in the case of errors, retransmission is not attempted and 
-  # data is not buffered, but socket is closed).
+  # the socket exists but the connection establishment is not complete
 
   elsif (exists($output_tcpconn{$peer})) {
 
-    for (;;) {
-      $win = '';
-      vec($win, fileno($output_tcpconn{$peer}->{"socket"}), 1) = 1;
-      $ret = select(undef, $win, undef, 0);
-      if (defined($ret) || $! != EINTR)  { last; }
-    }
-
-    if (!defined($ret) || $ret <= 0) {
-      if (time() - $output_tcpconn{$peer}->{"time"} > $socket_timeout) {
-        log_msg(LOG_DEBUG,
-        "Can't connect to TCP peer '$peer' (connection establishment timeout)");
-        delete $output_tcpconn{$peer};
-      } else {
-        push @{$output_tcpconn{$peer}->{"buffer"}}, $event;
-      }
-      return 3;
-    }
+    # buffer the event
 
     push @{$output_tcpconn{$peer}->{"buffer"}}, $event;
 
-    foreach $elem (@{$output_tcpconn{$peer}->{"buffer"}}) {
+    # Check the status of the connection, and if the connection establishment
+    # has completed, try to transmit all buffered events. If no hard send(2)
+    # errors were encountered during transmission, regard the connection as
+    # successfully established, and move the socket from %output_tcpconn hash 
+    # to %output_tcpsock hash. Otherwise, close the socket.
 
-      # if the event contains perl wide characters, send() will die, 
-      # thus eval is used for calling it
-
-      $nbytes = eval { send($output_tcpconn{$peer}->{"socket"}, $elem, 0) };
-
-      if ($@) {
-        log_msg(LOG_DEBUG, 
-                "Error when sending event '$elem' to TCP peer '$peer' ($@)");
-      } elsif (!defined($nbytes)) {
-        if ($! == EINTR)  { redo; }
-        log_msg(LOG_DEBUG, 
-                "Error when sending event '$elem' to TCP peer '$peer' ($!)");
-        delete $output_tcpconn{$peer};
-        return 3;
-      } elsif ($nbytes != length($elem)) {
-        log_msg(LOG_DEBUG, "$nbytes bytes of '$elem' sent to TCP peer '$peer'");
-      }
-    }
-
-    $output_tcpsock{$peer} = $output_tcpconn{$peer}->{"socket"};
-    delete $output_tcpconn{$peer};
+    check_new_conn(\%output_tcpconn, \%output_tcpsock, $peer, "TCP peer");
 
     return 3;
   } 
@@ -5160,85 +5260,25 @@ sub execute_tcpsock_action {
   $host = $1;
   $port = $2;
 
-  # if perl Socket module has getaddrinfo() function which supports both
-  # ipv4 and ipv6, use if for creating the socket; if we are dealing with
-  # older perl version where Socket module comes without getaddrinfo(), use 
-  # traditional ipv4-only inet_aton() based approach for creating the socket
+  ($handle, $addr) = create_sock_addr($host, $port, "tcp");
 
-  if (defined(&Socket::getaddrinfo)) {
-
-    # set up the hints data structure for getaddrinfo() -- note that
-    # if socket type is not provided as a hint, getaddrinfo() returns
-    # an error on some platforms if service port specification is not 
-    # textual but numeric
-
-    $hints{"socktype"} = SOCK_STREAM;
-    $hints{"protocol"} = getprotobyname('tcp');
-
-    ($err, @addrinfo) = Socket::getaddrinfo($host, $port, \%hints);
-
-    if ($err) {
-      log_msg(LOG_WARN,
-      "Can't connect to TCP peer '$peer' for sending event '$event'",
-      "(unable to convert $host to Internet address: $err)");
-      return 3;
-    }
-
-    # go through addrinfo list and try to create sockets for list elements,
-    # returning the first successfully created socket (an attempt for first
-    # list element might not always succeed, e.g., consider a scenario
-    # where the first element represents an ipv6 address and the second
-    # element ipv4 address, while the local host only supports ipv4)
-
-    $paddr = undef;
-
-    foreach $addrinfo (@addrinfo) {
-
-      if (!socket($handle, $addrinfo->{"family"}, 
-                           $addrinfo->{"socktype"}, 
-                           $addrinfo->{"protocol"})) {
-
-        log_msg(LOG_ERR, "Could not create socket ($!), retrying");
-        next;
-      }
-
-      $paddr = $addrinfo->{"addr"};
-      last;
-    }
-
-    if (!defined($paddr)) {
-      log_msg(LOG_ERR, "Can't create socket for sending event '$event'");
-      return 3;
-    }
-
-  } else {
-
-    $iaddr = inet_aton($host);
-
-    if (!defined($iaddr)) {
-      log_msg(LOG_WARN,
-      "Can't connect to TCP peer '$peer' for sending event '$event'",
-      "(unable to convert $host to Internet address)");
-      return 3;
-    }
-
-    $paddr = sockaddr_in($port, $iaddr);
-
-    if (!socket($handle, PF_INET, SOCK_STREAM, getprotobyname('tcp'))) {
-      log_msg(LOG_ERR, "Can't create socket for sending event '$event' ($!)");
-      return 3;
-    }
-
+  if (!defined($handle)) {
+    log_msg(LOG_DEBUG, 
+            "Can't connect to TCP peer '$peer' for sending event '$event'");
+    return 3;
   }
 
-  # connect to remote peer -- if the connection to remote peer is not 
-  # established immediately (EINPROGRESS), buffer the data for future 
-  # transmission and return
+  # Connect to remote peer -- for avoiding blocking connect(), socket will be
+  # switched to non-blocking mode before calling connect(). If the connection 
+  # to remote peer is not established immediately (EINPROGRESS), buffer the 
+  # data for future transmission and return. Since EINTR error should not 
+  # happen on posix systems for non-blocking sockets, and on many platforms 
+  # connect() should not be called again after EINTR, there is no special 
+  # handling for EINTR.
 
   $handle->blocking(0);
 
-  while (!connect($handle, $paddr)) {
-    if ($! == EINTR) { next; }
+  if (!connect($handle, $addr)) {
     if ($! == EINPROGRESS) {
       $output_tcpconn{$peer} = { "socket" => $handle, 
                                  "buffer" => [ $event ],
@@ -5252,29 +5292,13 @@ sub execute_tcpsock_action {
 
   $output_tcpsock{$peer} = $handle;
 
-  # transmit data to remote peer
+  # transmit data to remote peer (close the socket on hard send(2) error)
 
-  for (;;) {
+  if (!send_to_socket($output_tcpsock{$peer}, $event, "TCP peer '$peer'")) {
+    delete $output_tcpsock{$peer};
+  } 
 
-    # if the event contains perl wide characters, send() will die, 
-    # thus eval is used for calling it
-
-    $nbytes = eval { send($output_tcpsock{$peer}, $event, 0) };
-
-    if ($@) {
-      log_msg(LOG_DEBUG, 
-              "Error when sending event '$event' to TCP peer '$peer' ($@)");
-    } elsif (!defined($nbytes)) {
-      if ($! == EINTR) { next; }
-      log_msg(LOG_DEBUG, 
-              "Error when sending event '$event' to TCP peer '$peer' ($!)");
-      delete $output_tcpsock{$peer};
-    } elsif ($nbytes != length($event)) {
-      log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to TCP peer '$peer'");
-    }
-
-    return 3;
-  }
+  return 3;
 }
 
 sub execute_closetcp_action {
@@ -5288,10 +5312,14 @@ sub execute_closetcp_action {
   log_msg(LOG_DEBUG, "Closing socket for TCP peer '$peer'");
 
   if (exists($output_tcpsock{$peer})) {
-    close($output_tcpsock{$peer});
+    if (!close($output_tcpsock{$peer})) {
+      log_msg(LOG_WARN, "Error when closing socket for TCP peer '$peer' ($!)");
+    }
     delete $output_tcpsock{$peer};
   } elsif (exists($output_tcpconn{$peer})) {
-    close($output_tcpconn{$peer}->{"socket"});
+    if (!close($output_tcpconn{$peer}->{"socket"})) {
+      log_msg(LOG_WARN, "Error when closing socket for TCP peer '$peer' ($!)");
+    }
     delete $output_tcpconn{$peer};
   } else {
     log_msg(LOG_DEBUG, "No socket for TCP peer '$peer', can't close");
@@ -5320,7 +5348,7 @@ sub execute_shellcmd_action {
 
   log_msg(LOG_INFO, "Executing shell command '$cmdline'");
 
-  shell_cmd($cmdline);
+  exec_cmd($cmdline);
 
   return 2;
 }
@@ -5338,7 +5366,7 @@ sub execute_cmdexec_action {
 
   log_msg(LOG_INFO, "Executing command '$cmdline'");
 
-  shell_cmd(\@cmdline);
+  exec_cmd(\@cmdline);
 
   return 2;
 }
@@ -5363,7 +5391,7 @@ sub execute_spawn_action {
 
   log_msg(LOG_INFO, "Spawning shell command '$cmdline'");
 
-  shell_cmd($cmdline, 1);
+  exec_cmd($cmdline, 1);
 
   return 2;
 }
@@ -5381,7 +5409,7 @@ sub execute_spawnexec_action {
 
   log_msg(LOG_INFO, "Spawning command '$cmdline'");
 
-  shell_cmd(\@cmdline, 1);
+  exec_cmd(\@cmdline, 1);
 
   return 2;
 }
@@ -5409,7 +5437,7 @@ sub execute_cspawn_action {
   log_msg(LOG_INFO, 
           "Spawning shell command '$cmdline' with context '$context'");
 
-  shell_cmd($cmdline, 1, $context);
+  exec_cmd($cmdline, 1, $context);
 
   return 3;
 }
@@ -5430,7 +5458,7 @@ sub execute_cspawnexec_action {
 
   log_msg(LOG_INFO, "Spawning command '$cmdline' with context '$context'");
 
-  shell_cmd(\@cmdline, 1, $context);
+  exec_cmd(\@cmdline, 1, $context);
 
   return 3;
 }
@@ -9779,7 +9807,7 @@ sub process_rules {
 sub process_lists {
 
   my($key, $rule, $oper);
-  my($time, @time, $pevt, $event, $context, @buffer);
+  my($time, @time, $pevt, $event, $context, @buffer, $file, $peer);
   my($minute, $hour, $day, $month, $year, $weekday);
   my($lastdayofmonth, $shortyear, $cpu_total, $cpu_user, $cpu_sys);
 
@@ -9807,14 +9835,31 @@ sub process_lists {
     @pending_events = @buffer;
   }
 
-  # check the status of TCP connections which are not yet established
+  # check the status of new connections over TCP and unix stream sockets 
+  # which are not yet established
 
-  if (scalar(%output_tcpconn))  { check_tcp_conn(); }
+  if (scalar(%output_tcpconn)) { 
+    foreach $peer (keys %output_tcpconn) {
+      check_new_conn(\%output_tcpconn, \%output_tcpsock, $peer, "TCP peer"); 
+    }
+  }
 
-  # read from TCP sockets, in order to detect if established connections
-  # have been closed by remote peers
+  if (scalar(%output_ustrconn)) { 
+    foreach $file (keys %output_ustrconn) {
+      check_new_conn(\%output_ustrconn, \%output_ustream, $file, "socket"); 
+    }
+  }
 
-  if (scalar(%output_tcpsock))  { read_tcp_sock(); }
+  # detect established connections over TCP and unix stream sockets that 
+  # have been closed by peers or have errors, and close relevant sockets 
+
+  if (scalar(%output_tcpsock)) { 
+    check_established_conns(\%output_tcpsock, "TCP peer"); 
+  }
+
+  if (scalar(%output_ustream)) { 
+    check_established_conns(\%output_ustream, "socket"); 
+  }
 
   # process CALENDAR rules
 
@@ -12167,108 +12212,53 @@ sub check_children {
 }
 
 
-# Parameters: -
-# Action: check the status of TCP connections which are not yet established
+# Parameters: par1 - reference to the socket hash table 
+#             par2 - textual peer type
+# Action: Check established connections in table par1 that holds TCP or unix
+#         stream sockets, in order to detect connections that have been closed
+#         by remote peers or have errors. Textual peer type par2 is used in
+#         log messages about connections that are closed or have errors.
 
-sub check_tcp_conn {
+sub check_established_conns {
 
-  my($time, $peer, $win, $ret, $event, $nbytes, $sockok);
+  my($sockets, $peertype) = @_;
+  my($peer, $ret, $buffer, $nbytes, $total);
 
-  $time = time();
-
-  # communication errors with remote peers are logged at the debug level, 
+  # communication errors with peers are logged at the debug level, 
   # in order to prevent message floods with higher severity when large 
   # amounts of data are transfered
 
-  foreach $peer (keys %output_tcpconn) {
-
-    for (;;) {
-      $win = '';
-      vec($win, fileno($output_tcpconn{$peer}->{"socket"}), 1) = 1;
-      $ret = select(undef, $win, undef, 0);
-      if (defined($ret) || $! != EINTR)  { last; }
-    }
-
-    if (defined($ret) && $ret > 0) {
-
-      $sockok = 1;
-
-      foreach $event (@{$output_tcpconn{$peer}->{"buffer"}}) {
-
-        # if the event contains perl wide characters, send() will die,
-        # thus eval is used for calling it
-
-        $nbytes = eval { send($output_tcpconn{$peer}->{"socket"}, $event, 0) };
-
-        if ($@) {
-          log_msg(LOG_DEBUG, 
-                  "Error when sending event '$event' to TCP peer '$peer' ($@)");
-        } elsif (!defined($nbytes)) {
-          if ($! == EINTR)  { redo; }
-          log_msg(LOG_DEBUG, 
-                  "Error when sending event '$event' to TCP peer '$peer' ($!)");
-          $sockok = 0;
-          last;
-        } elsif ($nbytes != length($event)) {
-          log_msg(LOG_DEBUG, "$nbytes bytes of '$event' sent to TCP peer '$peer'");
-        }
-      }
-
-      if ($sockok) {
-        $output_tcpsock{$peer} = $output_tcpconn{$peer}->{"socket"};
-      }
-
-      delete $output_tcpconn{$peer};
-
-    } else {
-      if ($time - $output_tcpconn{$peer}->{"time"} > $socket_timeout) {
-        log_msg(LOG_DEBUG,
-        "Can't connect to TCP peer '$peer' (connection establishment timeout)");
-        delete $output_tcpconn{$peer};
-      } 
-    }
-
-  }
-}
-
-
-# Parameters: -
-# Action: read data from TCP sockets, in order to detect if remote peers
-#         have closed established connections
-
-sub read_tcp_sock {
-
-  my($peer, $rin, $ret, $buffer, $nbytes, $total);
-
-  # communication errors with remote peers are logged at the debug level, 
-  # in order to prevent message floods with higher severity when large 
-  # amounts of data are transfered
-
-  foreach $peer (keys %output_tcpsock) {
+  foreach $peer (keys %{$sockets}) {
 
     $total = 0;
 
     for (;;) {
 
-      $rin = '';
-      vec($rin, fileno($output_tcpsock{$peer}), 1) = 1;
-      $ret = select($rin, undef, undef, 0);
+      # check if socket is ready for reading; if no data are available
+      # for reading, quit the read-loop
 
-      if (!defined($ret) && $! == EINTR)  { next; }
-      if (!defined($ret) || $ret <= 0)  { last; }
+      if (!socket_ready($sockets->{$peer}, 0))  { last; }
 
-      $ret = recv($output_tcpsock{$peer}, $buffer, $blocksize, 0);
+      # if data are available, try to receive data from socket
+
+      $ret = recv($sockets->{$peer}, $buffer, $blocksize, 0);
       $nbytes = length($buffer);
+
+      # if recv() failed because of the caught signal, try polling and
+      # receiving again; if recv() failed because of other error, close the 
+      # socket and quit the read-loop; if recv() returned 0, it indicates 
+      # EOF (connection has been closed), so close the socket;
+      # otherwise stop receiving if more than threshold bytes have been read
 
       if (!defined($ret)) {
         if ($! == EINTR)  { next; }
-        log_msg(LOG_DEBUG, "IO error, closing connection to TCP peer '$peer' ($!)");
-        delete $output_tcpsock{$peer};
+        log_msg(LOG_DEBUG, "Connection error to $peertype '$peer' ($!)");
+        delete $sockets->{$peer};
         last;
       } 
       elsif ($nbytes == 0) {
-        log_msg(LOG_DEBUG, "TCP peer '$peer' has closed the connection");
-        delete $output_tcpsock{$peer};
+        log_msg(LOG_DEBUG, "Connection to $peertype '$peer' closed by peer");
+        delete $sockets->{$peer};
         last;
       }
       else { $total += $nbytes; }
@@ -12886,7 +12876,7 @@ sub read_line {
         log_msg(LOG_INFO,
                 "Input received, executing script $timeout_script 0 $file");
 
-        shell_cmd([$timeout_script, 0, $file]);
+        exec_cmd([$timeout_script, 0, $file]);
         $inputsrc{$file}->{"scriptexec"} = 0;
 
       }
@@ -12919,7 +12909,7 @@ sub read_line {
         log_msg(LOG_INFO,
                 "No input, executing script $timeout_script 1 $file");
 
-        shell_cmd([$timeout_script, 1, $file]);
+        exec_cmd([$timeout_script, 1, $file]);
         $inputsrc{$file}->{"scriptexec"} = 1;
 
       }
@@ -13007,11 +12997,16 @@ sub read_line {
 sub close_outputs {
 
   %output_files = ();
+
   %output_udgram = ();
+
+  %output_ustrconn = ();
   %output_ustream = ();
+
+  %output_udpsock = ();
+
   %output_tcpconn = ();
   %output_tcpsock = ();
-  %output_udpsock = ();
 }
 
 
@@ -13887,7 +13882,8 @@ sub read_options {
               "intcontexts!" => \$intcontexts,
               "testonly!" => \$testonly,
               "help|?" => \$help,
-              "version" => \$version );
+              "version" => \$version,
+              "<>" => sub { print STDERR "Unknown argument: $_[0]\n"; } ); 
 
   # check the values received from command line and resource file
   # and set option variables back to defaults, if necessary

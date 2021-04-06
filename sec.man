@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.9.alpha1 - sec.man
+.\" SEC (Simple Event Correlator) 2.9.alpha2 - sec.man
 .\" Copyright (C) 2000-2021 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "March 2021" "SEC 2.9.alpha1"
+.TH sec 1 "April 2021" "SEC 2.9.alpha2"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS

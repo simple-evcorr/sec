@@ -1,4 +1,4 @@
---- version 2.9.alpha1
+--- version 2.9.alpha2
 
 * added support for 'cmdexec', 'spawnexec', 'cspawnexec', 'pipeexec'
   and 'reportexec' actions.
@@ -12,7 +12,13 @@
 * added ipv6 support for 'tcpsock' and 'udpsock' actions.
 
 * bugfixes for 'write', 'writen', 'owritecl', 'udgram', 'ustream',
-  'udpsock' and 'tcpsock' actions.
+  'udpsock' and 'tcpsock' actions (exceptions from syswrite() and send() 
+  are now handled, and 'ustream' action no longer blocks on Linux when
+  peer backlog queue is full).
+
+* improved socket handling routines.
+
+* improved error reporting for invalid command line arguments.
 
 * starting from this version, a program provided with --timeout-script
   command line option is executed without shell interpretation.
