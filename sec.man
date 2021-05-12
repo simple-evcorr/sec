@@ -1,5 +1,5 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.9.alpha2 - sec.man
+.\" SEC (Simple Event Correlator) 2.9.0 - sec.man
 .\" Copyright (C) 2000-2021 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "April 2021" "SEC 2.9.alpha2"
+.TH sec 1 "May 2021" "SEC 2.9.0"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -5869,6 +5869,52 @@ and
 .I reportexec
 actions, the program command line is not parsed by shell, 
 even if shell metacharacters are present in the command line.
+.PP
+Disabling shell parsing for command lines can be useful for avoiding unwanted
+side effects. For example, consider the following badly written rule for
+sending an e-mail to a local user if 10 SSH login failures have been observed
+for this user from the same IP address during 300 seconds:
+.PP
+type=SingleWithThreshold
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (.+) from ([\\d.]+) port \\d+ ssh2
+.br
+desc=Failed SSH logins for user $1 from $2
+.br
+action=pipe 'Failed SSH logins from $2' /bin/mail -s alert $1
+.br
+window=300
+.br
+thresh=10
+.PP
+Unfortunately, the above rule allows for the execution of arbitrary command 
+lines with the privileges of the SEC process. 
+For example, consider the following malicious command line for providing
+fake input events for the rule:
+.PP
+logger -p authpriv.info -t sshd -i 'Failed password for `/usr/bin/touch /tmp/test` from 127.0.0.1 port 12345 ssh2'
+.PP
+When this command line is repeatedly executed, the attacker is able to trigger 
+the execution of the command line
+.IR "/bin/mail -s alert `/usr/bin/touch /tmp/test`" .
+However, this command line is parsed by shell that triggers the execution
+of the command line specified by the attacker:
+.IR "/usr/bin/touch /tmp/test" .
+For fixing this issue, the
+.I pipe
+action can be replaced with
+.I pipeexec
+which will disable the shell parsing:
+.PP
+action=pipeexec 'Failed SSH logins from $2' /bin/mail -s alert $1
+.PP
+As another workaround, the regular expression pattern of the rule can be 
+modified to match user names that do not contain shell metacharacters, 
+for example:
+.PP
+pattern=sshd\\[\\d+\\]: Failed .+ for ([\\w.-]+) from ([\\d.]+) port \\d+ ssh2
 .PP
 SEC communicates with its child processes through pipes (created with the 
 .BR pipe (2) 

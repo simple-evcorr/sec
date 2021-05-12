@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.9.alpha2 - sec
+# SEC (Simple Event Correlator) 2.9.0 - sec
 # Copyright (C) 2000-2021 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -183,7 +183,7 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.alpha2";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.0";
 $SEC_COPYRIGHT = "Copyright (C) 2000-2021 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 

@@ -1,4 +1,4 @@
---- version 2.9.alpha2
+--- version 2.9.0
 
 * added support for 'cmdexec', 'spawnexec', 'cspawnexec', 'pipeexec'
   and 'reportexec' actions.
