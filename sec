@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.9.0 - sec
-# Copyright (C) 2000-2021 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.9.1 - sec
+# Copyright (C) 2000-2022 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -183,8 +183,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.0";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2021 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.1";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2022 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -3101,6 +3101,7 @@ sub check_rule {
       $keywords{"context$j"} = 0;
       $keywords{"count$j"} = 0;
       $keywords{"thresh$j"} = 0;
+      $keywords{"egtoken$j"} = 0;
     }
 
     if (missing_keywords($ref, \%keywords, $type, 
@@ -3121,6 +3122,7 @@ sub check_rule {
               "CountActionList" => [],
               "CountActVolatList" => {},
               "ThresholdList" => [],
+              "EGrpTokenList" => [],
               "Desc" => $ref->{"desc"},
               "Action" => [],
               "InitAction" => [],
@@ -3194,6 +3196,20 @@ sub check_rule {
         } else { $rule->{"ThresholdList"}->[$i] = $1; }
       } else { $rule->{"ThresholdList"}->[$i] = 1; }
 
+      if (exists($ref->{"egtoken$j"}) && !exists($ref->{"egpattern"})) {
+        log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+                "'egtoken$j' keyword requires the 'egpattern' keyword");
+        return 0; 
+      }
+
+      if (exists($ref->{"egpattern"})) {
+        if (exists($ref->{"egtoken$j"})) {
+          $rule->{"EGrpTokenList"}->[$i] = $ref->{"egtoken$j"};
+        } else {
+          $rule->{"EGrpTokenList"}->[$i] = $i + 1;
+        }
+      }
+
     }
 
     if (!analyze_actionlist($ref->{"action"}, $rule->{"Action"}, 
@@ -3253,14 +3269,19 @@ sub check_rule {
       }
     } 
 
-    if (exists($ref->{"egptype"}) && !exists($ref->{"egpattern"}) ||
-        !exists($ref->{"egptype"}) && exists($ref->{"egpattern"})) {
+    if (exists($ref->{"egptype"}) && !exists($ref->{"egpattern"})) {
       log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
-              "Keywords 'egptype' and 'egpattern' must be used together");
+              "'egptype' keyword requires the 'egpattern' keyword");
       return 0; 
     }
 
-    if (exists($ref->{"egptype"}) && exists($ref->{"egpattern"})) {
+    if (exists($ref->{"egpattern"}) && !exists($ref->{"egptype"})) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "'egpattern' keyword requires the 'egptype' keyword");
+      return 0; 
+    }
+
+    if (exists($ref->{"egpattern"})) {
       ($rule->{"EGrpPatType"}, $rule->{"EGrpPattern"}) = 
         analyze_eventgroup_pattern($ref->{"egptype"}, $ref->{"egpattern"}, 
                                    $conffile, $lineno);
@@ -8370,14 +8391,19 @@ sub update_times_eg {
 }
 
 
-# Parameters: par1 - event group string
-#             par2 - event group matching pattern
-# Action: match event group string par1 with event group pattern par2;
-#         return 1 if match was found, otherwise return 0
+# Parameters: par1 - event group matching pattern
+#             par2 - event group string
+#             par3 - reference to the list of tokens from event group string
+# Action: match event group string par2 with event group pattern par1;
+#         return 1 if match was found, otherwise return 0.
+#         In the case of PerlFunc and NPerlFunc patterns, the perl function 
+#         referenced by par1 takes event group string par2 and reference to 
+#         the list of tokens par3 as parameters, i.e., the function is invoked 
+#         as follows: par1->(par2, par3)
 
 sub match_eventgroup_substr {
 
-  my($string, $substr) = @_;
+  my($substr, $string) = @_;
 
   if (index($string, $substr) != -1)  { return 1; } 
   return 0;
@@ -8386,7 +8412,7 @@ sub match_eventgroup_substr {
 
 sub match_eventgroup_nsubstr {
 
-  my($string, $substr) = @_;
+  my($substr, $string) = @_;
 
   if (index($string, $substr) == -1)  { return 1; } 
   return 0;
@@ -8395,7 +8421,7 @@ sub match_eventgroup_nsubstr {
 
 sub match_eventgroup_regexp {
 
-  my($string, $regexp) = @_;
+  my($regexp, $string) = @_;
 
   if ($string =~ /$regexp/)  { return 1; } 
   return 0;
@@ -8404,7 +8430,7 @@ sub match_eventgroup_regexp {
 
 sub match_eventgroup_nregexp {
 
-  my($string, $regexp) = @_;
+  my($regexp, $string) = @_;
 
   if ($string !~ /$regexp/)  { return 1; } 
   return 0;
@@ -8413,13 +8439,13 @@ sub match_eventgroup_nregexp {
 
 sub match_eventgroup_perlfunc {
 
-  my($string, $codeptr) = @_;
+  my($codeptr, $string, $tokenlist) = @_;
   my($retval);
 
   # call the function and save its return value;
   # in the case of a function runtime error there is no match
 
-  $retval = eval { $codeptr->($string) };
+  $retval = eval { $codeptr->($string, $tokenlist) };
 
   if ($@) {
     log_msg(LOG_ERR, "PerlFunc pattern runtime error:", $@);
@@ -8436,13 +8462,13 @@ sub match_eventgroup_perlfunc {
 
 sub match_eventgroup_nperlfunc {
 
-  my($string, $codeptr) = @_;
+  my($codeptr, $string, $tokenlist) = @_;
   my($retval);
 
   # call the function and save its return value;
   # in the case of a function runtime error there is no match
 
-  $retval = eval { $codeptr->($string) };
+  $retval = eval { $codeptr->($string, $tokenlist) };
 
   if ($@) {
     log_msg(LOG_ERR, "NPerlFunc pattern runtime error:", $@);
@@ -9151,7 +9177,7 @@ sub process_singlewith2thresholds_rule {
 sub process_eventgroup_rule {
 
   my($rule, $subst, $conffile, $index) = @_;
-  my($desc, $key, $time, $oper, $i, $egrpstring);
+  my($desc, $key, $time, $oper, $i, $egrpstring, @egrptokens);
   my($initaction, $slideaction, $endaction, $countaction, $action);
 
   $desc = $rule->{"Desc"};
@@ -9262,11 +9288,22 @@ sub process_eventgroup_rule {
 
   $oper = $corr_list{$key};
 
-  # record data about the current event into occurrence time lists (done before count 
-  # action is executed, so that the action would see the current event in the window)
+  # if the operation is not in event suppressing mode, record data about 
+  # the current event into occurrence time lists (done before count action
+  # is executed, so that the action would see the current event in the window)
 
-  push @{$oper->{"AllTimes"}}, [$time, $index];
-  push @{$oper->{"TimesList"}->[$index]}, $time;
+  if (!exists($oper->{"SuppressMode"})) {
+
+    push @{$oper->{"AllTimes"}}, [$time, $index];
+    push @{$oper->{"TimesList"}->[$index]}, $time;
+
+    if (exists($rule->{"EGrpPattern"})) {
+      $oper->{"AllTimes"}->[-1]->[2] = $rule->{"EGrpTokenList"}->[$index];
+      if (scalar(%{$subst})) { 
+        subst_string($subst, $oper->{"AllTimes"}->[-1]->[2], '$');
+      }
+    }
+  }
 
   # execute count action for the given event type
 
@@ -9298,10 +9335,12 @@ sub process_eventgroup_rule {
 
   if (exists($rule->{"EGrpPattern"})) {
 
-    $egrpstring = join(" ", map { $_->[1] + 1 } @{$oper->{"AllTimes"}});
+    @egrptokens = map { $_->[2] } @{$oper->{"AllTimes"}};
+    $egrpstring = join(" ", @egrptokens);
 
-    if (!$matchegrpfunc[$rule->{"EGrpPatType"}]->($egrpstring, 
-                                                  $rule->{"EGrpPattern"})) {
+    if (!$matchegrpfunc[$rule->{"EGrpPatType"}]->($rule->{"EGrpPattern"},
+                                                  $egrpstring,
+                                                  \@egrptokens)) {
       return 0;
     }
   }
@@ -10897,12 +10936,21 @@ sub print_operation {
       print $handle "Threshold$j: ";
       print $handle $rule->{"ThresholdList"}->[$i];
       print $handle "\n";
+
+      if (exists($rule->{"EGrpPattern"})) {
+        print $handle "Event group token$j: ";
+        print $handle $rule->{"EGrpTokenList"}->[$i];
+        print $handle "\n";
+      }
     }
 
     if (exists($rule->{"EGrpPattern"})) {
       print $handle "Event group pattern: ";
       print $handle pattern2str($rule->{"EGrpPatType"}, 1, 
                                 $rule->{"EGrpPattern"});
+      print $handle "\n";
+      print $handle "Event group string: ";
+      print $handle join(" ", map { $_->[2] } @{$oper->{"AllTimes"}});
       print $handle "\n";
     }
 
@@ -10936,8 +10984,11 @@ sub print_operation {
 
     foreach $elem (@{$oper->{"AllTimes"}}) {
       print $handle scalar(localtime($elem->[0]));
-      print $handle " (matched by pattern #", $elem->[1]+1, ")";
-      print $handle "\n";
+      print $handle " (matched by pattern #", $elem->[1]+1;
+      if (exists($rule->{"EGrpPattern"})) {
+        print $handle ", event group token: ", $elem->[2];
+      }
+      print $handle ")\n";
     }
 
     print $handle "\n";
@@ -11533,11 +11584,16 @@ sub convert_operation {
       $ref->{"count$j"} = actionlist2str($rule->{"CountActionList"}->[$i]);
 
       $ref->{"threshold$j"} = $rule->{"ThresholdList"}->[$i] + 0;
+
+      if (exists($rule->{"EGrpPattern"})) {
+        $ref->{"egtoken$j"} = $rule->{"EGrpTokenList"}->[$i];
+      }
     }
 
     if (exists($rule->{"EGrpPattern"})) {
       $ref->{"egpattern"} = pattern2str($rule->{"EGrpPatType"}, 1, 
                                         $rule->{"EGrpPattern"});
+      $ref->{"egstring"} = join(" ", map { $_->[2] } @{$oper->{"AllTimes"}});
     }
 
     $ref->{"init"} = actionlist2str($oper->{"InitAction"});
@@ -11557,10 +11613,14 @@ sub convert_operation {
 
     $ref->{"eventtimes"} = [];
     $ref->{"eventpatterns"} = [];
+    if (exists($rule->{"EGrpPattern"})) { $ref->{"eventtokens"} = []; }
 
     foreach $elem (@{$oper->{"AllTimes"}}) {
       push @{$ref->{"eventtimes"}}, $elem->[0] + 0;
       push @{$ref->{"eventpatterns"}}, $elem->[1] + 1;
+      if (exists($rule->{"EGrpPattern"})) {
+        push @{$ref->{"eventtokens"}}, $elem->[2];
+      }
     }
 
   }

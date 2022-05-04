@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.9.0 - sec.man
-.\" Copyright (C) 2000-2021 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.9.1 - sec.man
+.\" Copyright (C) 2000-2022 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "May 2021" "SEC 2.9.0"
+.TH sec 1 "May 2022" "SEC 2.9.1"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -190,6 +190,7 @@ Note that for event occurrence time SEC always uses the current time
 as returned by the
 .BR time (2)
 system call, *not* the timestamp extracted from the event. 
+.PP
 Suppose that after 25 seconds, 
 a similar SSH login failure event for the same user name is observed. In this
 case, a running operation will be found for the operation description string
@@ -305,6 +306,7 @@ the operation will emit the synthetic event
 3_SSH_LOGIN_FAILURES_FOR_<username>. Although synthetic events are created
 by SEC, they are treated like regular events received from input sources and 
 are matched against rules. 
+.PP
 The regular expression pattern of the second rule will match the
 3_SSH_LOGIN_FAILURES_FOR_<username> event and start a new event correlation
 operation if no such events have been previously seen.  
@@ -318,7 +320,8 @@ USER_<username>_COUNTED *does not* exist (as requested by the boolean
 expression in the
 .I context
 field; see CONTEXTS AND CONTEXT EXPRESSIONS section for more information). 
-The operation started by the rule sends an e-mail warning to the local 
+.PP
+The operation started by the second rule sends an e-mail warning to the local 
 root-user if 30 synthetic events have been observed within 1 minute (see the
 .I thresh
 and
@@ -4130,6 +4133,7 @@ The EventGroup rule supports the following fields.
 Note that match variables may be used in
 .IR context* ,
 .IR count* ,
+.IR egtoken* ,
 .IR desc ,
 .IR action ,
 .IR init ,
@@ -4178,6 +4182,11 @@ and
 .I context 
 (value is an integer constant, default is 1).
 .TP
+.IR egtoken " (optional)"
+token for building the event group string that is matched with
+.I egpattern 
+(default value is 1).
+.TP
 .B ...
 .TP 
 .IR continueN " (optional)"
@@ -4215,6 +4224,11 @@ counting threshold for events matched by
 and
 .I contextN
 (value is an integer constant, default is 1).
+.TP
+.IR egtokenN " (optional)"
+token for building the event group string that is matched with
+.I egpattern
+(default value is N).
 .TP 
 .I desc
 operation description string.
@@ -4395,12 +4409,23 @@ defined with the
 and
 .I egptype
 fields, the event group pattern is used for matching the event group string.
-The event group string consists of positive integers Xi that are separated 
+The event group string consists of tokens Xi that are separated 
 by a single space character:
 "X1 X2 ... XM". 
 M is the number of events a given event correlation operation has observed 
-within its event correlation window. Also, if the i-th event that the event
-correlation operation has observed is an instance of event eK, then Xi = K.
+within its event correlation window. 
+.PP
+If the i-th event that the event
+correlation operation has observed is an instance of event eK, then Xi is set
+as follows. If the rule definition has a token defined with the
+.I egtokenK
+field for event eK, Xi is set to that token (the token definition may contain 
+match variables that are substituted with values from matching the current
+instance of eK). 
+If the rule does not have the
+.I egtokenK
+field, then Xi = K (note that K is a positive integer).
+.PP
 Event group string is built and matched with event group pattern after all
 threshold conditions (given with
 .I thresh*
@@ -4422,12 +4447,14 @@ field is set to RegExp or NRegExp, the
 field defines a regular expression, while in the case of SubStr and NSubStr
 .I egpattern
 provides a string pattern.
+.PP
 If the
 .I egptype
-field is set to PerlFunc or NPerlFunc, event group string is the only
-parameter for the Perl function given with the
+field is set to PerlFunc or NPerlFunc, the Perl function given with the
 .I egpattern
-field, and the function is called in the Perl scalar context. 
+field is called in the Perl scalar context, with the function having two 
+parameters: the event group string, and the reference to the list of tokens 
+from the event group string.
 With 
 .IR egptype=PerlFunc ,
 event group pattern matches if the return value of the function evaluates 
@@ -4540,6 +4567,15 @@ window has slidden forward.
 However, note that moving the window with the
 .I setwpos
 action will *not* trigger the execution.
+.PP
+Also note that when the event correlation window slides forward, 
+the event group pattern (given with the
+.I egpattern
+field) and numeric threshold conditions (given with
+.I thresh*
+fields) will *not* be evaluated for checking if the action list given with the
+.I action
+field should be executed.
 .PP
 .B Examples:
 .PP
@@ -4748,6 +4784,69 @@ about 10.1.2.7 to root@localhost. After that, the operation silently consumes
 all further matching events for 10.1.2.7 until 19:02:06, and then terminates. 
 Immediately before termination, the operation deletes the context OPER_10.1.2.7
 which also drops its alias name LOGIN_FAILED_risto_10.1.2.7.
+.PP
+The following example rule correlates SSH login failure events:
+.PP
+type=EventGroup
+.br
+ptype=RegExp
+.br
+pattern=sshd\\[\\d+\\]: Failed .+ for (\\S+) from ([\\d.]+) port \\d+ ssh2
+.br
+desc=SSH login failures from three different hosts within 1m for user $1
+.br
+egtoken=$2
+.br
+egptype=PerlFunc
+.br
+egpattern=sub { my(%hosts) = map { $_ => 1 } @{$_[1]}; \\
+                return scalar(keys %hosts) >= 3; }
+.br
+action=pipe '%t: %s' /bin/mail root@localhost
+.br
+window=60
+.br
+thresh=3
+.PP
+The rule runs event correlation operations for counting the number of SSH
+login failure events. Each operation counts events for one user name, and
+if the operation has observed login failures from three different hosts 
+within 60 seconds, it sends an e-mail warning to root@localhost. 
+For verifying that hosts are different, the
+.I egtoken
+field configures the use of host IP addresses as tokens for building 
+the event group string. Also, the Perl function provided with the
+.I egpattern 
+field checks if the list of tokens contains at least three unique IP addresses.
+Note that the list of tokens is referenced by the second input parameter 
+($_[1]) of the function, while the first input parameter ($_[0]) holds 
+the event group string (the above Perl function only processes the list of 
+tokens).
+.PP
+Suppose the following events are generated by an SSH daemon,
+and each event timestamp reflects the time SEC observes the event:
+.PP
+Apr  4 23:04:00 test sshd[21137]: Failed password for risto from 10.1.1.7 port 32182 ssh2
+.br
+Apr  4 23:04:03 test sshd[21145]: Failed password for risto from 10.1.1.9 port 42176 ssh2
+.br
+Apr  4 23:04:04 test sshd[21212]: Failed password for risto from 10.1.1.7 port 34191 ssh2
+.br
+Apr  4 23:04:07 test sshd[21226]: Failed password for risto from 10.1.1.2 port 18999 ssh2
+.PP
+When the first event is observed at 23:04:00, a counting operation is started 
+for user risto. Since at 23:04:04 the operation observes the third event,
+the threshold condition given with the
+.I thresh
+field becomes satisfied, and thus the event group pattern given with the 
+.I egpattern
+field is evaluated. However, the list of tokens (10.1.1.7, 10.1.1.9, 10.1.1.7)
+contains only two unique elements, and therefore the event group pattern does 
+not match.
+When the fourth event occurs at 23:04:07, event group pattern is evaluated
+again, and since the list of tokens (10.1.1.7, 10.1.1.9, 10.1.1.7, 10.1.1.2) 
+contains three unique elements now, the event group pattern matches and
+the operation will send an e-mail warning to root@localhost.
 .SS "SUPPRESS RULE"
 The Suppress rule supports the following fields.
 Note that match variables may be used in the
