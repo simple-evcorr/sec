@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.9.1 - sec.man
-.\" Copyright (C) 2000-2022 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.9.2 - sec.man
+.\" Copyright (C) 2000-2023 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "May 2022" "SEC 2.9.1"
+.TH sec 1 "June 2023" "SEC 2.9.2"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -4452,9 +4452,16 @@ If the
 .I egptype
 field is set to PerlFunc or NPerlFunc, the Perl function given with the
 .I egpattern
-field is called in the Perl scalar context, with the function having two 
-parameters: the event group string, and the reference to the list of tokens 
-from the event group string.
+field is called in the Perl scalar context, with the function having three
+parameters: the event group string, the reference to the list of tokens 
+from the event group string, and the reference to the list of event
+occurrence times that correspond to tokens. 
+Each event occurrence time is provided in seconds since Epoch, 
+with the first element in the list being the occurrence time
+of the event represented by the first token in the event group string,
+the second element in the list being the occurrence time of the event
+represented by the second token in the event group string, etc. 
+.PP
 With 
 .IR egptype=PerlFunc ,
 event group pattern matches if the return value of the function evaluates 
@@ -6821,7 +6828,7 @@ With some locale settings, single quotes (') in this man page might
 be displayed incorrectly. As a workaround, set the LANG environment
 variable to C when reading this man page (e.g., env LANG=C man sec).
 .SH AUTHOR
-Risto Vaarandi (ristov at users d0t s0urcef0rge d0t net)
+Risto Vaarandi (firstname d0t lastname at gmail d0t c0m)
 .SH ACKNOWLEDGMENTS
 The author is grateful to SEB Estonia for supporting this work.
 The author also thanks the following people for supplying software patches,

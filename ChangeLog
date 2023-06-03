@@ -1,3 +1,10 @@
+--- version 2.9.2
+
+* starting from this version, list of event occurrence times that correspond
+  to event group string tokens is passed to PerlFunc and NPerlFunc event 
+  group patterns as an additional parameter.
+
+
 --- version 2.9.1
 
 * added support for 'egtoken*' fields in EventGroup rules.

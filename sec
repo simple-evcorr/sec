@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.9.1 - sec
-# Copyright (C) 2000-2022 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.9.2 - sec
+# Copyright (C) 2000-2023 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -183,8 +183,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.1";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2022 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.2";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2023 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -8392,60 +8392,93 @@ sub update_times_eg {
 
 
 # Parameters: par1 - event group matching pattern
-#             par2 - event group string
-#             par3 - reference to the list of tokens from event group string
-# Action: match event group string par2 with event group pattern par1;
+#             par2 - reference to the list of observed events
+# Action: build the event group string from the list referenced by par2,
+#         and match this event group string with event group pattern par1;
 #         return 1 if match was found, otherwise return 0.
 #         In the case of PerlFunc and NPerlFunc patterns, the perl function 
-#         referenced by par1 takes event group string par2 and reference to 
-#         the list of tokens par3 as parameters, i.e., the function is invoked 
-#         as follows: par1->(par2, par3)
+#         referenced by par1 takes three parameters: event group string, 
+#         reference to the list of tokens, and reference to the list of 
+#         event occurrence times 
 
 sub match_eventgroup_substr {
 
-  my($substr, $string) = @_;
+  my($substr, $ref) = @_;
+  my($egrpstring);
 
-  if (index($string, $substr) != -1)  { return 1; } 
+  # build the event group string and match it with the pattern
+
+  $egrpstring = join(" ", map { $_->[2] } @{$ref});
+
+  if (index($egrpstring, $substr) != -1)  { return 1; } 
+
   return 0;
 }
 
 
 sub match_eventgroup_nsubstr {
 
-  my($substr, $string) = @_;
+  my($substr, $ref) = @_;
+  my($egrpstring);
 
-  if (index($string, $substr) == -1)  { return 1; } 
+  # build the event group string and match it with the pattern
+
+  $egrpstring = join(" ", map { $_->[2] } @{$ref});
+
+  if (index($egrpstring, $substr) == -1)  { return 1; } 
+
   return 0;
 }
 
 
 sub match_eventgroup_regexp {
 
-  my($regexp, $string) = @_;
+  my($regexp, $ref) = @_;
+  my($egrpstring);
 
-  if ($string =~ /$regexp/)  { return 1; } 
+  # build the event group string and match it with the pattern
+
+  $egrpstring = join(" ", map { $_->[2] } @{$ref});
+
+  if ($egrpstring =~ /$regexp/)  { return 1; } 
+
   return 0;
 }
 
 
 sub match_eventgroup_nregexp {
 
-  my($regexp, $string) = @_;
+  my($regexp, $ref) = @_;
+  my($egrpstring);
 
-  if ($string !~ /$regexp/)  { return 1; } 
+  # build the event group string and match it with the pattern
+
+  $egrpstring = join(" ", map { $_->[2] } @{$ref});
+
+  if ($egrpstring !~ /$regexp/)  { return 1; } 
+
   return 0;
 }
 
 
 sub match_eventgroup_perlfunc {
 
-  my($codeptr, $string, $tokenlist) = @_;
-  my($retval);
+  my($codeptr, $ref) = @_;
+  my(@timelist, @tokenlist, $egrpstring, $elem, $retval);
+
+  # build the event group string and list parameters for the function
+
+  foreach $elem (@{$ref}) {
+    push @timelist, $elem->[0];
+    push @tokenlist, $elem->[2];
+  }
+
+  $egrpstring = join(" ", @tokenlist);
 
   # call the function and save its return value;
   # in the case of a function runtime error there is no match
 
-  $retval = eval { $codeptr->($string, $tokenlist) };
+  $retval = eval { $codeptr->($egrpstring, \@tokenlist, \@timelist) };
 
   if ($@) {
     log_msg(LOG_ERR, "PerlFunc pattern runtime error:", $@);
@@ -8456,19 +8489,29 @@ sub match_eventgroup_perlfunc {
   # context (neither undef, nor "", nor 0), return 1, otherwise return 0
 
   if ($retval)  { return 1; }
+
   return 0;
 }
 
 
 sub match_eventgroup_nperlfunc {
 
-  my($codeptr, $string, $tokenlist) = @_;
-  my($retval);
+  my($codeptr, $ref) = @_;
+  my(@timelist, @tokenlist, $egrpstring, $elem, $retval);
+
+  # build the event group string and list parameters for the function
+
+  foreach $elem (@{$ref}) {
+    push @timelist, $elem->[0];
+    push @tokenlist, $elem->[2];
+  }
+
+  $egrpstring = join(" ", @tokenlist);
 
   # call the function and save its return value;
   # in the case of a function runtime error there is no match
 
-  $retval = eval { $codeptr->($string, $tokenlist) };
+  $retval = eval { $codeptr->($egrpstring, \@tokenlist, \@timelist) };
 
   if ($@) {
     log_msg(LOG_ERR, "NPerlFunc pattern runtime error:", $@);
@@ -8479,6 +8522,7 @@ sub match_eventgroup_nperlfunc {
   # context (undef, "", or 0), return 1, otherwise return 0
 
   if (!$retval)  { return 1; }
+
   return 0;
 }
 
@@ -9177,7 +9221,7 @@ sub process_singlewith2thresholds_rule {
 sub process_eventgroup_rule {
 
   my($rule, $subst, $conffile, $index) = @_;
-  my($desc, $key, $time, $oper, $i, $egrpstring, @egrptokens);
+  my($desc, $key, $time, $oper, $i);
   my($initaction, $slideaction, $endaction, $countaction, $action);
 
   $desc = $rule->{"Desc"};
@@ -9329,19 +9373,15 @@ sub process_eventgroup_rule {
         $rule->{"ThresholdList"}->[$i])  { return; }
   }
 
-  # if event group pattern has been provided by the rule, create an event
-  # group string and match it with event group pattern; if the pattern is
-  # not matching, return
+  # if event group pattern has been provided by the rule, call a function
+  # that creates an event group string and matches it with the event group 
+  # pattern; if the pattern is not matching, return
 
   if (exists($rule->{"EGrpPattern"})) {
 
-    @egrptokens = map { $_->[2] } @{$oper->{"AllTimes"}};
-    $egrpstring = join(" ", @egrptokens);
-
     if (!$matchegrpfunc[$rule->{"EGrpPatType"}]->($rule->{"EGrpPattern"},
-                                                  $egrpstring,
-                                                  \@egrptokens)) {
-      return 0;
+                                                  $oper->{"AllTimes"})) {
+      return;
     }
   }
 
