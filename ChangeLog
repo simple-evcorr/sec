@@ -1,3 +1,9 @@
+--- version 2.9.3
+
+* added support for built-in action list variables %.chr32, ..., %.chr255
+  that are set to ASCII 32..255 characters.
+
+
 --- version 2.9.2
 
 * starting from this version, list of event occurrence times that correspond

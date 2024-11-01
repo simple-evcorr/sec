@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.9.2 - sec.man
-.\" Copyright (C) 2000-2023 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.9.3 - sec.man
+.\" Copyright (C) 2000-2024 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "June 2023" "SEC 2.9.2"
+.TH sec 1 "November 2024" "SEC 2.9.3"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -1866,9 +1866,10 @@ tabulation character.
 .I %.sp
 space character.
 .TP
-.I %.chr0, ..., %.chr31
-ASCII 0..31 control characters (e.g., %.chr7 is bell and %.chr12 is 
-form feed character).
+.I %.chr0, ..., %.chr255
+ASCII 0..255 characters (e.g., %.chr7 is bell and %.chr12 is form feed 
+character, whereas the sequence %.chr195%.chr132 is A-umlaut character
+in UTF-8 encoding).
 .PP
 For example, the following action list assigns the current time in 
 human-readable format and the string "This is a test event" to 
@@ -6015,6 +6016,9 @@ action can be replaced with
 which will disable the shell parsing:
 .PP
 action=pipeexec 'Failed SSH logins from $2' /bin/mail -s alert $1
+.PP
+However, when using that approach, you *must* make sure that the data passed
+to an external program is handled without any unexpected side effects.
 .PP
 As another workaround, the regular expression pattern of the rule can be 
 modified to match user names that do not contain shell metacharacters, 
