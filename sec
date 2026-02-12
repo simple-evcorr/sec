@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# SEC (Simple Event Correlator) 2.9.3 - sec
-# Copyright (C) 2000-2024 Risto Vaarandi
+# SEC (Simple Event Correlator) 2.9.4 - sec
+# Copyright (C) 2000-2026 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -183,8 +183,8 @@ $WIN32 = ($^O =~ /win/i  &&  $^O !~ /cygwin/i  &&  $^O !~ /darwin/i);
 
 # set version and usage variables
 
-$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.3";
-$SEC_COPYRIGHT = "Copyright (C) 2000-2024 Risto Vaarandi";
+$SEC_VERSION = "SEC (Simple Event Correlator) 2.9.4";
+$SEC_COPYRIGHT = "Copyright (C) 2000-2026 Risto Vaarandi";
 
 $SEC_USAGE = qq!Usage: $0 [options] 
 
@@ -312,30 +312,31 @@ use constant COPYCONTEXT	=> 33;
 use constant EMPTYCONTEXT	=> 34;
 use constant POP		=> 35;
 use constant SHIFT		=> 36;
-use constant EXISTS		=> 37;
-use constant GETSIZE		=> 38;
-use constant GETALIASES		=> 39;
-use constant GETLIFETIME	=> 40;
-use constant SETLIFETIME	=> 41;
-use constant GETCTIME		=> 42;
-use constant SETCTIME		=> 43;
-use constant EVENT		=> 44;
-use constant TEVENT		=> 45;
-use constant CEVENT		=> 46;
-use constant RESET		=> 47;
-use constant GETWINPOS		=> 48;
-use constant SETWINPOS		=> 49;
-use constant ASSIGN		=> 50;
-use constant ASSIGNSQ		=> 51;
-use constant FREE		=> 52;
-use constant EVAL		=> 53;
-use constant CALL		=> 54;
-use constant LCALL		=> 55;
-use constant REWRITE		=> 56;
-use constant ADDINPUT		=> 57;
-use constant DROPINPUT		=> 58;
-use constant SIGEMUL		=> 59;
-use constant VARIABLESET	=> 60;
+use constant TRIM		=> 37;
+use constant EXISTS		=> 38;
+use constant GETSIZE		=> 39;
+use constant GETALIASES		=> 40;
+use constant GETLIFETIME	=> 41;
+use constant SETLIFETIME	=> 42;
+use constant GETCTIME		=> 43;
+use constant SETCTIME		=> 44;
+use constant EVENT		=> 45;
+use constant TEVENT		=> 46;
+use constant CEVENT		=> 47;
+use constant RESET		=> 48;
+use constant GETWINPOS		=> 49;
+use constant SETWINPOS		=> 50;
+use constant ASSIGN		=> 51;
+use constant ASSIGNSQ		=> 52;
+use constant FREE		=> 53;
+use constant EVAL		=> 54;
+use constant CALL		=> 55;
+use constant LCALL		=> 56;
+use constant REWRITE		=> 57;
+use constant ADDINPUT		=> 58;
+use constant DROPINPUT		=> 59;
+use constant SIGEMUL		=> 60;
+use constant VARIABLESET	=> 61;
 use constant IF			=> 100;
 use constant WHILE		=> 101;
 use constant BREAK		=> 102;
@@ -1303,6 +1304,37 @@ sub analyze_action {
     if (!length($variable))  { return (EMPTYCONTEXT, $context, ""); }
 
     return (EMPTYCONTEXT, $context, substr($variable, 1)); 
+  }
+
+  elsif ($action =~ /^trim\s+(\S+)\s+(\S+)(?:\s+(\S+))?$/i) {
+
+    $timestamp = $1;
+    $context = $2;
+    $variable = defined($3)?$3:"";
+    process_action_parens($timestamp, $context);
+
+    if (!length($timestamp)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty timestamp given for trim action");
+      return INVALIDVALUE;
+    }
+
+    if (!length($context)) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+              "Empty context name given for trim action");
+      return INVALIDVALUE;
+    }
+
+    if (length($variable)  &&  $variable !~ /^%[[:alpha:]]\w*$/) {
+      log_msg(LOG_ERR, "Rule in $conffile at line $lineno:", 
+                       "Variable $variable does not have the form",
+                       "%<letter>[<letter>|<digit>|<underscore>]...");
+      return INVALIDVALUE;
+    }
+
+    if (!length($variable))  { return (TRIM, $timestamp, $context, ""); }
+
+    return (TRIM, $timestamp, $context, substr($variable, 1)); 
   }
 
   elsif ($action =~ /^(exists|getsize|getaliases|getltime|getctime)\s+(\S+)\s+(\S+)$/i) {
@@ -5538,7 +5570,7 @@ sub execute_pipeexec_action {
 sub execute_create_action {
 
   my($actionlist, $text, $i) = @_;
-  my($context, $lifetime, $list);
+  my($context, $lifetime, $list, $time);
 
   $context = $actionlist->[$i+1];
   $lifetime = $actionlist->[$i+2];
@@ -5553,15 +5585,18 @@ sub execute_create_action {
 
     $lifetime = $1;
 
+    $time = time();
+
     if (exists($context_list{$context})) {
 
       if (!exists($context_list{$context}->{"Internal"})) {
 
-        $context_list{$context}->{"Time"} = time();
+        $context_list{$context}->{"Time"} = $time;
         $context_list{$context}->{"Window"} = $lifetime;
         $context_list{$context}->{"Action"} = $list;
         $context_list{$context}->{"Desc"} = $text;
         @{$context_list{$context}->{"Buffer"}} = ();
+        @{$context_list{$context}->{"Times"}} = ();
         
       } else {
         log_msg(LOG_WARN,
@@ -5570,9 +5605,11 @@ sub execute_create_action {
 
     } else {
 
-      $context_list{$context} = { "Time" => time(), 
+      $context_list{$context} = { "InitTime" => $time,
+                                  "Time" => $time, 
                                   "Window" => $lifetime, 
                                   "Buffer" => [],
+                                  "Times" => [],
                                   "Action" => $list,
                                   "Desc" => $text,
                                   "Aliases" => { $context => 1 } };
@@ -5665,7 +5702,7 @@ sub execute_set_action {
 
   if ($lifetime =~ /^\s*(?:0*([0-9]+)|-)\s*$/) {
 
-    $lifetime = $1;
+    $lifetime = $1;   # for lifetime '-', $lifetime will be set to undef
 
     if (exists($context_list{$context})) {
 
@@ -5767,7 +5804,7 @@ sub execute_unalias_action {
 sub execute_add_action {
 
   my($actionlist, $text, $i) = @_;
-  my($context, $event, @event);
+  my($context, $event, @event, $time, $n);
 
   $context = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -5777,11 +5814,15 @@ sub execute_add_action {
 
   log_msg(LOG_DEBUG, "Adding event(s) '$event' to context '$context'");
 
+  $time = time();
+
   if (!exists($context_list{$context})) { 
 
-    $context_list{$context} = { "Time" => time(), 
+    $context_list{$context} = { "InitTime" => $time,
+                                "Time" => $time, 
                                 "Window" => 0, 
                                 "Buffer" => [],
+                                "Times" => [],
                                 "Action" => [],
                                 "Desc" => "",
                                 "Aliases" => { $context => 1 } };
@@ -5791,9 +5832,17 @@ sub execute_add_action {
 
     @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
-    if (!$evstoresize  ||  scalar(@{$context_list{$context}->{"Buffer"}}) 
-                         + scalar(@event) <= $evstoresize) {
+    $n = scalar(@event);
+
+    if (!$evstoresize  ||  
+        scalar(@{$context_list{$context}->{"Buffer"}}) + $n <= $evstoresize) {
+
       push @{$context_list{$context}->{"Buffer"}}, @event;
+
+      # x-operator produces a list if left operand is in parentheses
+
+      push @{$context_list{$context}->{"Times"}}, ( $time ) x $n;
+
     } else {
       log_msg(LOG_WARN,
       "Can't add event(s) '$event' to context '$context', store full");
@@ -5810,7 +5859,7 @@ sub execute_add_action {
 sub execute_prepend_action {
 
   my($actionlist, $text, $i) = @_;
-  my($context, $event, @event);
+  my($context, $event, @event, $time, $n);
 
   $context = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -5820,11 +5869,15 @@ sub execute_prepend_action {
 
   log_msg(LOG_DEBUG, "Prepending event(s) '$event' to context '$context'");
 
+  $time = time();
+
   if (!exists($context_list{$context})) { 
 
-    $context_list{$context} = { "Time" => time(), 
+    $context_list{$context} = { "InitTime" => $time,
+                                "Time" => $time, 
                                 "Window" => 0, 
                                 "Buffer" => [],
+                                "Times" => [],
                                 "Action" => [],
                                 "Desc" => "",
                                 "Aliases" => { $context => 1 } };
@@ -5834,9 +5887,17 @@ sub execute_prepend_action {
 
     @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
-    if (!$evstoresize  ||  scalar(@{$context_list{$context}->{"Buffer"}}) 
-                         + scalar(@event) <= $evstoresize) {
+    $n = scalar(@event);
+
+    if (!$evstoresize  ||  
+        scalar(@{$context_list{$context}->{"Buffer"}}) + $n <= $evstoresize) {
+
       unshift @{$context_list{$context}->{"Buffer"}}, @event;
+
+      # x-operator produces a list if left operand is in parentheses
+
+      unshift @{$context_list{$context}->{"Times"}}, ( $time ) x $n;
+
     } else {
       log_msg(LOG_WARN,
       "Can't prepend event(s) '$event' to context '$context', store full");
@@ -5853,7 +5914,7 @@ sub execute_prepend_action {
 sub execute_fill_action {
 
   my($actionlist, $text, $i) = @_;
-  my($context, $event, @event);
+  my($context, $event, @event, $time, $n);
 
   $context = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -5863,11 +5924,15 @@ sub execute_fill_action {
 
   log_msg(LOG_DEBUG, "Filling context '$context' with event(s) '$event'");
 
+  $time = time();
+
   if (!exists($context_list{$context})) { 
 
-    $context_list{$context} = { "Time" => time(), 
+    $context_list{$context} = { "InitTime" => $time,
+                                "Time" => $time, 
                                 "Window" => 0, 
                                 "Buffer" => [],
+                                "Times" => [],
                                 "Action" => [],
                                 "Desc" => "",
                                 "Aliases" => { $context => 1 } };
@@ -5877,8 +5942,16 @@ sub execute_fill_action {
 
     @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
-    if (!$evstoresize  ||  scalar(@event) <= $evstoresize) {
+    $n = scalar(@event);
+
+    if (!$evstoresize  ||  $n <= $evstoresize) {
+
       @{$context_list{$context}->{"Buffer"}} = @event;
+
+      # x-operator produces a list if left operand is in parentheses
+
+      @{$context_list{$context}->{"Times"}} = ( $time ) x $n;
+
     } else {
       log_msg(LOG_WARN,
       "Can't fill context '$context' with event(s) '$event', store full");
@@ -6012,6 +6085,7 @@ sub execute_empty_action {
     }
 
     @{$context_list{$context}->{"Buffer"}} = ();
+    @{$context_list{$context}->{"Times"}} = ();
 
   } else {
     log_msg(LOG_WARN, "Context '$context' does not exist, can't empty");
@@ -6035,6 +6109,8 @@ sub execute_pop_action {
   if (exists($context_list{$context})) { 
 
     $value = pop @{$context_list{$context}->{"Buffer"}};
+    pop @{$context_list{$context}->{"Times"}};
+
     if (!defined($value))  { $value = ""; }
     $variables{$variable} = $value;
     log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
@@ -6061,6 +6137,8 @@ sub execute_shift_action {
   if (exists($context_list{$context})) { 
 
     $value = shift @{$context_list{$context}->{"Buffer"}};
+    shift @{$context_list{$context}->{"Times"}};
+
     if (!defined($value))  { $value = ""; }
     $variables{$variable} = $value;
     log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
@@ -6070,6 +6148,85 @@ sub execute_shift_action {
   }
 
   return 3;
+}
+
+sub execute_trim_action {
+
+  my($actionlist, $text, $i) = @_;
+  my($context, $timestamp, $variable);
+  my($sign, $time, $ltime, @events, @times, @trimmed, $j, $n, $value);
+
+  $timestamp = $actionlist->[$i+1];
+  $context = $actionlist->[$i+2];
+  $variable = $actionlist->[$i+3];
+
+  substitute_actionlist_var($timestamp, $text);
+  substitute_actionlist_var($context, $text);
+
+  log_msg(LOG_DEBUG, 
+          "Trimming context '$context' event store by timestamp '$timestamp'"); 
+
+  if (!exists($context_list{$context})) {
+
+    log_msg(LOG_WARN, "Context '$context' does not exist, can't trim"); 
+    return 4;
+  }
+
+  if ($timestamp !~ /^\s*([+-]?)0*([0-9]+)\s*$/) { 
+
+    log_msg(LOG_WARN, 
+            "Invalid timestamp '$timestamp' for trimming context '$context'"); 
+    return 4;
+  }
+
+  $sign = $1;
+  $time = $2; 
+
+  # '+' means offset from context creation time and '-' from current time
+
+  if ($sign eq "+") { 
+    $timestamp = $context_list{$context}->{"Time"} + $time;
+  } elsif ($sign eq "-") {
+    $timestamp = time() - $time;
+  } else { 
+    $timestamp = $time; 
+  }
+
+  $ltime = scalar(localtime($timestamp));
+
+  $n = scalar(@{$context_list{$context}->{"Buffer"}});
+
+  @events = ();
+  @times = ();
+  if (length($variable)) { @trimmed = (); }
+
+  for ($j = 0; $j < $n; ++$j) {
+
+    if ($context_list{$context}->{"Times"}->[$j] < $timestamp) { 
+      if (length($variable)) { 
+        push @trimmed, $context_list{$context}->{"Buffer"}->[$j]; 
+      }
+      next; 
+    }
+
+    push @events, $context_list{$context}->{"Buffer"}->[$j];
+    push @times, $context_list{$context}->{"Times"}->[$j];
+  }
+
+  @{$context_list{$context}->{"Buffer"}} = @events;
+  @{$context_list{$context}->{"Times"}} = @times;
+
+  $j = $n - scalar(@{$context_list{$context}->{"Buffer"}});
+
+  log_msg(LOG_DEBUG, "Trimmed $j element(s) older than '$ltime' from context '$context' event store"); 
+
+  if (length($variable)) {
+    $value = join("\n", @trimmed);
+    $variables{$variable} = $value;
+    log_msg(LOG_DEBUG, "Variable '%$variable' set to '$value'");
+  }
+
+  return 4;
 }
 
 sub execute_exists_action {
@@ -6300,7 +6457,7 @@ sub execute_setctime_action {
 sub execute_event_action {
 
   my($actionlist, $text, $i) = @_;
-  my($createafter, $event, @event);
+  my($createafter, $event, @event, $time);
 
   $createafter = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -6310,11 +6467,15 @@ sub execute_event_action {
   @event = split(/\n/, $event);  # split returns empty list for "" or undef
 
   if ($createafter) {
+
+    $time = time();
+
     foreach $event (@event) {
       log_msg(LOG_DEBUG, "Scheduling the creation of event '$event' after $createafter seconds");
-      push @pending_events, [ time() + $createafter, $event, 
+      push @pending_events, [ $time + $createafter, $event, 
                               SYNEVENT_INT_CONTEXT ]; 
     }
+
   } else {
     foreach $event (@event) {
       log_msg(LOG_DEBUG, "Creating event '$event'");
@@ -6328,7 +6489,7 @@ sub execute_event_action {
 sub execute_tevent_action {
 
   my($actionlist, $text, $i) = @_;
-  my($createafter, $event, @event);
+  my($createafter, $event, @event, $time);
 
   $createafter = $actionlist->[$i+1];
   $event = $actionlist->[$i+2];
@@ -6343,11 +6504,15 @@ sub execute_tevent_action {
     $createafter = $1;
 
     if ($createafter) {
+
+      $time = time();
+
       foreach $event (@event) {
         log_msg(LOG_DEBUG, "Scheduling the creation of event '$event' after $createafter seconds");
-        push @pending_events, [ time() + $createafter, $event, 
+        push @pending_events, [ $time + $createafter, $event, 
                                 SYNEVENT_INT_CONTEXT ]; 
       }
+
     } else {
       foreach $event (@event) {
         log_msg(LOG_DEBUG, "Creating event '$event'");
@@ -6366,7 +6531,7 @@ sub execute_tevent_action {
 sub execute_cevent_action {
 
   my($actionlist, $text, $i) = @_;
-  my($context, $createafter, $event, @event);
+  my($context, $createafter, $event, @event, $time);
 
   $context = $actionlist->[$i+1];
   $createafter = $actionlist->[$i+2];
@@ -6383,10 +6548,14 @@ sub execute_cevent_action {
     $createafter = $1;
 
     if ($createafter) {
+
+      $time = time();
+
       foreach $event (@event) {
         log_msg(LOG_DEBUG, "Scheduling the creation of event '$event' with context '$context' after $createafter seconds");
-        push @pending_events, [ time() + $createafter, $event, $context ]; 
+        push @pending_events, [ $time + $createafter, $event, $context ]; 
       }
+
     } else {
       foreach $event (@event) {
         log_msg(LOG_DEBUG, "Creating event '$event' with context '$context'");
@@ -6870,17 +7039,17 @@ sub execute_addinput_action {
     return 4;
   }
 
-  if ($fpos !~ /^\s*(-|[0-9]+)\s*$/i) {
+  if ($fpos !~ /^\s*(?:0*([0-9]+)|-)\s*$/) {
     log_msg(LOG_WARN, 
             "Invalid file offset '$fpos' specified for input file '$file'");
     return 4;
   }
 
-  $fpos = $1;
+  $fpos = $1;   # for offset '-', $fpos will be set to undef
 
   # open dynamic input file
 
-  if ($fpos eq "-") {
+  if (!defined($fpos)) {
     $fpos = -1;
     log_msg(LOG_DEBUG, "Opening input file '$file' and seeking EOF");
   } else {
@@ -8219,6 +8388,15 @@ sub subst_copy_empty_etc_action {
 
   subst_string($subst_ref, $actionlist->[$i+1], $token);
   return 3;
+}
+
+sub subst_trim_action {
+
+  my($subst_ref, undef, $actionlist, $token, $i) = @_;
+
+  subst_string($subst_ref, $actionlist->[$i+1], $token);
+  subst_string($subst_ref, $actionlist->[$i+2], $token);
+  return 4;
 }
 
 sub subst_event_assign_etc_action {
@@ -10366,6 +10544,16 @@ sub actionlist2str {
       $i += 3;
     }
 
+    elsif ($actionlist->[$i] == TRIM) { 
+      if (length($actionlist->[$i+3])) {
+        $result .= "trim " . $actionlist->[$i+1] . " " . $actionlist->[$i+2] 
+                   . " %" . $actionlist->[$i+3];
+      } else {
+        $result .= "trim " . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
+      }
+      $i += 4;
+    }
+
     elsif ($actionlist->[$i] == EXISTS) { 
       $result .= "exists %" . $actionlist->[$i+1] . " " . $actionlist->[$i+2]; 
       $i += 3;
@@ -11046,7 +11234,7 @@ sub print_operation {
 
 sub dump_data {
 
-  my($dfilename, $dhandle, $i, $key, $ref, $file, $event, $fpos, @stat);
+  my($dfilename, $dhandle, $i, $j, $n, $key, $ref, $file, $fpos, @stat);
   my($time, $user, $system, $cuser, $csystem, $egid, @gidlist, %gids);
   my($len, $width1, $width2, $width3, $width4, $width5);
   my($name, %reported_names);
@@ -11075,7 +11263,6 @@ sub dump_data {
     log_msg(LOG_ERR, "Can't open dumpfile $dfilename ($!)");
     return;
   }
-
 
   # print program info
 
@@ -11323,7 +11510,7 @@ sub dump_data {
 
   print $dhandle "Total: $i elements\n\n";
 
-  # print the list of active event correlation operations
+  # print the list of existing event correlation operations
 
   $i = 0;
   print $dhandle "List of event correlation operations:\n";
@@ -11337,7 +11524,7 @@ sub dump_data {
 
   print $dhandle "Total: $i elements\n\n";
 
-  # print the list of active contexts
+  # print the list of existing contexts
 
   $i = 0;
   %reported_names = ();
@@ -11349,11 +11536,14 @@ sub dump_data {
     if (exists($reported_names{$key}))  { next; }
 
     foreach $name (keys %{$ref->{"Aliases"}}) {
-      print $dhandle "Context Name: ", $name, "\n";
+      print $dhandle "Context name: ", $name, "\n";
       $reported_names{$name} = 1;
     }
 
-    print $dhandle "Creation Time: ", 
+    print $dhandle "Initialized at: ", 
+                   scalar(localtime($ref->{"InitTime"})), "\n";
+
+    print $dhandle "Creation time: ", 
                    scalar(localtime($ref->{"Time"})), "\n";
 
     if ($ref->{"Window"}) {
@@ -11368,11 +11558,14 @@ sub dump_data {
       print $dhandle " (%s = ", $ref->{"Desc"}, ")\n";
     }
 
-    if (scalar(@{$ref->{"Buffer"}})) {
-      print $dhandle scalar(@{$ref->{"Buffer"}}), 
-                     " events associated with context:\n";
-      foreach $event (@{$ref->{"Buffer"}}) 
-              { print $dhandle $event, "\n"; }
+    $n = scalar(@{$ref->{"Buffer"}});
+
+    if ($n) {
+      print $dhandle "$n events associated with context:\n";
+      for ($j = 0; $j < $n; ++$j) {
+        print $dhandle $ref->{"Buffer"}->[$j], " (received at ",
+                       scalar(localtime($ref->{"Times"}->[$j])), ")\n";
+      }
     }
 
     print $dhandle '-' x 60, "\n";
@@ -11880,7 +12073,7 @@ sub dump_data_json {
 
   $data{"pmatchcache"} = \%pmatch_cache;
 
-  # list of active event correlation operations
+  # list of existing event correlation operations
 
   $data{"operations"} = {};
 
@@ -11889,7 +12082,7 @@ sub dump_data_json {
     convert_operation($data{"operations"}->{$key}, $key, $ref);
   }
 
-  # list of active contexts
+  # list of existing contexts
 
   $i = 0;
   %reported_names = ();
@@ -11905,6 +12098,7 @@ sub dump_data_json {
       $reported_names{$name} = 1;
     }
 
+    $data{"contexts"}->[$i]->{"inittime"} = $ref->{"InitTime"} + 0;
     $data{"contexts"}->[$i]->{"creationtime"} = $ref->{"Time"} + 0;
     $data{"contexts"}->[$i]->{"lifetime"} = $ref->{"Window"} + 0;
 
@@ -11913,6 +12107,7 @@ sub dump_data_json {
     }
 
     $data{"contexts"}->[$i]->{"buffer"} = $ref->{"Buffer"};
+    $data{"contexts"}->[$i]->{"times"} = [ map { $_ + 0 } @{$ref->{"Times"}} ];
 
     ++$i;
   }
@@ -14345,6 +14540,7 @@ $actioncopyfunc[COPYCONTEXT] = \&copy_three_elem_action;
 $actioncopyfunc[EMPTYCONTEXT] = \&copy_three_elem_action;
 $actioncopyfunc[POP] = \&copy_three_elem_action;
 $actioncopyfunc[SHIFT] = \&copy_three_elem_action;
+$actioncopyfunc[TRIM] = \&copy_four_elem_action;
 $actioncopyfunc[EXISTS] = \&copy_three_elem_action;
 $actioncopyfunc[GETSIZE] = \&copy_three_elem_action;
 $actioncopyfunc[GETALIASES] = \&copy_three_elem_action;
@@ -14411,6 +14607,7 @@ $actionsubstfunc[COPYCONTEXT] = \&subst_copy_empty_etc_action;
 $actionsubstfunc[EMPTYCONTEXT] = \&subst_copy_empty_etc_action;
 $actionsubstfunc[POP] = \&subst_copy_empty_etc_action;
 $actionsubstfunc[SHIFT] = \&subst_copy_empty_etc_action;
+$actionsubstfunc[TRIM] = \&subst_trim_action;
 $actionsubstfunc[EXISTS] = \&subst_event_assign_etc_action;
 $actionsubstfunc[GETSIZE] = \&subst_event_assign_etc_action;
 $actionsubstfunc[GETALIASES] = \&subst_event_assign_etc_action;
@@ -14477,6 +14674,7 @@ $execactionfunc[COPYCONTEXT] = \&execute_copy_action;
 $execactionfunc[EMPTYCONTEXT] = \&execute_empty_action;
 $execactionfunc[POP] = \&execute_pop_action;
 $execactionfunc[SHIFT] = \&execute_shift_action;
+$execactionfunc[TRIM] = \&execute_trim_action;
 $execactionfunc[EXISTS] = \&execute_exists_action;
 $execactionfunc[GETSIZE] = \&execute_getsize_action;
 $execactionfunc[GETALIASES] = \&execute_getaliases_action;
@@ -14506,12 +14704,19 @@ $execactionfunc[WHILE] = \&execute_while_action;
 $execactionfunc[BREAK] = \&execute_break_action;
 $execactionfunc[CONTINUE] = \&execute_continue_action;
 
+### Set various global variables
+
+$startuptime = time();
+$processedlines = 0;
+
 ### create a template that is shared by all internal contexts; note that 
 ### the Internal flag blocks actions that modify the internal context
 
-$int_context = { "Time" => time(),
+$int_context = { "InitTime" => $startuptime,
+                 "Time" => $startuptime,
                  "Window" => 0,
                  "Buffer" => [],
+                 "Times" => [],
                  "Action" => [],
                  "Desc" => "SEC internal",
                  "Internal" => 1,
@@ -14617,11 +14822,6 @@ if (override_sigint()) {
 
 %terminate = ();
 $SIG{TERM} = \&term_handler;
-
-### Set various global variables
-
-$startuptime = time();
-$processedlines = 0;
 
 ### Initialize input buffers
 

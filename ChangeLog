@@ -1,3 +1,8 @@
+--- version 2.9.4
+
+* added support for 'trim' action.
+
+
 --- version 2.9.3
 
 * added support for built-in action list variables %.chr32, ..., %.chr255

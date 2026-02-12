@@ -1,4 +1,4 @@
-SEC (Simple Event Correlator) 2.9.3
+SEC (Simple Event Correlator) 2.9.4
 
 Introduction:
 -------------
@@ -52,7 +52,7 @@ Risto Vaarandi (firstname d0t lastname at gmail d0t c0m)
 
 Acknowledgments:
 ----------------
-The author is grateful to SEB Estonia for supporting this work.
+The author is grateful to TalTech and SEB Estonia for supporting this work.
 The author also thanks the following people for supplying software patches,
 documentation fixes, and suggesting new features:
 Al Sorrell, Brian Mielke, David Lang, James Brown, Jon Frazier, Mark D. Nagel, 

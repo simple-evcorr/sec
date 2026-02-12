@@ -1,6 +1,6 @@
 .\"
-.\" SEC (Simple Event Correlator) 2.9.3 - sec.man
-.\" Copyright (C) 2000-2024 Risto Vaarandi
+.\" SEC (Simple Event Correlator) 2.9.4 - sec.man
+.\" Copyright (C) 2000-2026 Risto Vaarandi
 .\"
 .\" This program is free software; you can redistribute it and/or
 .\" modify it under the terms of the GNU General Public License
@@ -16,7 +16,7 @@
 .\" along with this program; if not, write to the Free Software
 .\" Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 .\" 
-.TH sec 1 "November 2024" "SEC 2.9.3"
+.TH sec 1 "February 2026" "SEC 2.9.4"
 .SH NAME
 sec \- simple event correlator
 .SH SYNOPSIS
@@ -2487,6 +2487,49 @@ Remove the first string from the event store of context <name>, and assign
 it to the action list variable %<var>. If the event store is empty, %<var> 
 is set to empty string.
 If the context <name> does not exist, the value of %<var> does not change.
+.TP
+.I trim <time> <name> [%<var>]
+Find the strings which were written to the event store of context <name>
+before <time> and remove them from the event store. If action list variable 
+%<var> is provided, removed strings are arranged in the same order s1,...,sk
+in which they appeared in the event store, and are assigned to variable %<var> 
+as a multi-line string "s1<NEWLINE>...<NEWLINE>sk".
+If the context <name> does not exist, the value of %<var> does not change.
+The <time> parameter must either evaluate to seconds since Epoch (as reported 
+by the
+.BR time (2)
+system call), or to a positive or negative offset in seconds which is preceded 
+by the plus (+) or minus (-) sign, respectively.
+Negative offset -T represents the current time minus T seconds, whereas 
+positive offset +T represents the creation time of context <name> plus T 
+seconds. For example, consider the following action list definition:
+.sp
+action=trim -10 TEST; trim +15 TEST2
+.sp
+If this action list is executed at 12:23:50, all strings which were written 
+to the event store of TEST before 12:23:40 are removed from the event store.
+In addition, if the creation time of context TEST2 is 12:23:05, all strings 
+which were written to the event store of TEST2 before 12:23:20 are removed 
+from the event store. 
+As another example, consider the following action list definition:
+.sp
+action=getwpos %pos 0; trim %pos TEST %data
+.sp
+This action list uses the
+.I getwpos
+action to set the %pos variable to the beginning of the event 
+correlation window for the current event correlation operation (see the
+.I getwpos
+action for more information). The action list then uses the
+.I trim
+action to find all strings which were written to the event store of TEST 
+before the time reflected by %pos. These strings are removed from the event 
+store and assigned to the %data variable as a multi-line string. 
+For example, if the event store of TEST contains the strings "abc", "def", 
+and "xyz" (in that order), and the first and second string are removed from 
+the event store by
+.IR trim , 
+then %data is set to "abc<NEWLINE>def".
 .TP 
 .I exists %<var> <name>
 If the context <name> exists, set the action list variable %<var> to 1, 
@@ -6834,7 +6877,7 @@ variable to C when reading this man page (e.g., env LANG=C man sec).
 .SH AUTHOR
 Risto Vaarandi (firstname d0t lastname at gmail d0t c0m)
 .SH ACKNOWLEDGMENTS
-The author is grateful to SEB Estonia for supporting this work.
+The author is grateful to TalTech and SEB Estonia for supporting this work.
 The author also thanks the following people for supplying software patches,
 documentation fixes, and suggesting new features:
 Al Sorrell, Brian Mielke, David Lang, James Brown, Jon Frazier, Mark D. Nagel, 
